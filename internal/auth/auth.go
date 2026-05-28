@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/machmqtt/nats-dashboard/internal/store"
+	"github.com/noodlebit/nats-dashboard/internal/store"
 )
 
 type contextKey int

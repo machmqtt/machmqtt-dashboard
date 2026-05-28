@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/machmqtt/nats-dashboard/internal/collector"
-	"github.com/machmqtt/nats-dashboard/internal/config"
+	"github.com/noodlebit/nats-dashboard/internal/collector"
+	"github.com/noodlebit/nats-dashboard/internal/config"
 )
 
 func (s *Server) envConfig(env string) *config.Environment {

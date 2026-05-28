@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/machmqtt/nats-dashboard/internal/config"
+	"github.com/noodlebit/nats-dashboard/internal/config"
 )
 
 const fetchTimeout = 3 * time.Second

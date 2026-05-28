@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/machmqtt/nats-dashboard/internal/store"
+	"github.com/noodlebit/nats-dashboard/internal/store"
 )
 
 func testAuth(t *testing.T) (*Auth, *store.Store) {
