@@ -54,6 +54,12 @@ services:
     build: .
     ports:
       - "8080:8080"
+    environment:
+      # Set a real secret before `docker compose up`, e.g.:
+      #   export SESSION_SECRET=$(openssl rand -hex 32)
+      # If unset, the short fallback fails the >= 32 char check and the
+      # dashboard refuses to start.
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
     volumes:
       - ./config.docker.yaml:/etc/nats-dashboard/config.yaml:ro
       - dashboard-data:/data

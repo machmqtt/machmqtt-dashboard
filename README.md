@@ -43,6 +43,8 @@ Time-series metrics are stored in SQLite for trend charts (configurable retentio
 Spin up a 3-node NATS cluster with the dashboard:
 
 ```bash
+# Required: the dashboard refuses to start without a real session secret
+export SESSION_SECRET=$(openssl rand -hex 32)
 docker compose up -d
 ```
 
@@ -59,7 +61,9 @@ cd nats-dashboard
 
 # Create config
 cp config.example.yaml config.yaml
-# Edit config.yaml with your NATS server URLs
+# Edit config.yaml with your NATS server URLs, and set a real session_secret
+# (>= 32 chars). Generate one with: openssl rand -hex 32
+# Or supply it via the SESSION_SECRET env var instead of editing the file.
 
 # Build
 cd ui && npm install && npx vite build && cd ..
@@ -73,7 +77,9 @@ go build -o bin/nats-dashboard ./cmd/nats-dashboard
 
 ```bash
 docker build -t nats-dashboard .
-docker run -p 8080:8080 -v ./config.yaml:/etc/nats-dashboard/config.yaml:ro nats-dashboard
+docker run -p 8080:8080 \
+  -e SESSION_SECRET=$(openssl rand -hex 32) \
+  -v ./config.yaml:/etc/nats-dashboard/config.yaml:ro nats-dashboard
 ```
 
 ## Configuration
@@ -81,7 +87,7 @@ docker run -p 8080:8080 -v ./config.yaml:/etc/nats-dashboard/config.yaml:ro nats
 ```yaml
 listen: ":8080"
 poll_interval: 5s
-session_secret: "change-me-to-a-random-string"
+session_secret: "change-me"   # required, >= 32 chars; or set the SESSION_SECRET env var
 data_dir: "./data"
 
 environments:

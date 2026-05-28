@@ -77,11 +77,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// SESSION_SECRET overrides the config file so the secret can be injected
+	// without writing it to disk (Docker, CI, secret managers).
+	if v := os.Getenv("SESSION_SECRET"); v != "" {
+		cfg.SessionSecret = v
+	}
+
 	if cfg.SessionSecret == "" {
-		return nil, fmt.Errorf("session_secret is required")
+		return nil, fmt.Errorf("session_secret is required: set it in the config file or the SESSION_SECRET env var; generate one with: openssl rand -hex 32")
 	}
 	if len(cfg.SessionSecret) < 32 {
-		return nil, fmt.Errorf("session_secret must be at least 32 characters")
+		return nil, fmt.Errorf("session_secret must be at least 32 characters (got %d) — the shipped placeholder is intentionally too short so the app refuses to start until you set a real one; generate one with: openssl rand -hex 32", len(cfg.SessionSecret))
 	}
 	if len(cfg.Environments) == 0 {
 		return nil, fmt.Errorf("at least one environment is required")

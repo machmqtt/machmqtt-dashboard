@@ -1,6 +1,9 @@
 listen: ":8080"
 poll_interval: 5s
-session_secret: "docker-dev-secret-change-me-in-production"
+# Overridden by the SESSION_SECRET env var set in docker-compose.yml. This
+# placeholder is intentionally < 32 chars so the app refuses to start if no
+# real secret is provided. Generate one with: openssl rand -hex 32
+session_secret: "change-me"
 data_dir: "/data"
 
 environments:

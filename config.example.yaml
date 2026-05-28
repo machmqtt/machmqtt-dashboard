@@ -1,6 +1,9 @@
 listen: ":8080"
 poll_interval: 5s
-session_secret: "change-me-to-a-random-string-at-least-32-chars"
+# Required. Must be >= 32 chars; this placeholder is intentionally too short so
+# the app refuses to start until you set a real one. Generate: openssl rand -hex 32
+# Can also be supplied via the SESSION_SECRET env var (which overrides this value).
+session_secret: "change-me"
 # secure_cookies: true  # Set to true when serving over HTTPS
 data_dir: "./data"
 
