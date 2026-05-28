@@ -28,7 +28,10 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		case name == "machmqtt_auth_success_total":
 			m.AuthSuccess = parseInt(value)
 		case name == "machmqtt_auth_failure_total":
-			m.AuthFailure = parseInt(value)
+			// machmqtt emits this only as per-reason labeled series
+			// (reason="bad_credentials|enhanced|locked|other") with no
+			// unlabeled aggregate, so sum the buckets into the total.
+			m.AuthFailure += parseInt(value)
 		case strings.HasPrefix(line, `machmqtt_messages_received_total{qos="0"}`):
 			m.MsgsRecvQoS0 = parseInt(value)
 		case strings.HasPrefix(line, `machmqtt_messages_received_total{qos="1"}`):

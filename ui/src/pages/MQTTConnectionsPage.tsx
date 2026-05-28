@@ -42,6 +42,7 @@ interface MQTTClient {
   inflight_out: number
   username: string
   state: string
+  slow_consumer?: boolean
 }
 
 interface ConnzResponse {
@@ -108,7 +109,19 @@ export function MQTTConnectionsPage() {
       header: 'IP',
       cell: (i) => <span className="font-mono text-xs">{i.getValue()}:{i.row.original.port}</span>,
     }),
-    col.accessor('state', { header: 'State' }),
+    col.accessor('state', {
+      header: 'State',
+      cell: (i) => (
+        <span className="flex items-center gap-1.5">
+          {i.getValue()}
+          {i.row.original.slow_consumer && (
+            <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              Slow
+            </span>
+          )}
+        </span>
+      ),
+    }),
     col.accessor('subscriptions', { header: 'Subs' }),
     col.accessor('in_msgs', { header: 'Msgs In', cell: (i) => fmtNum(i.getValue()) }),
     col.accessor('out_msgs', { header: 'Msgs Out', cell: (i) => fmtNum(i.getValue()) }),
@@ -252,6 +265,7 @@ export function MQTTConnectionsPage() {
               <DI label="Kind" value={selected.kind || '-'} />
               <DI label="Type" value={selected.type || '-'} />
               <DI label="State" value={selected.state} />
+              <DI label="Slow Consumer" value={selected.slow_consumer ? 'Yes' : 'No'} />
               <DI label="IP" value={`${selected.ip}:${selected.port}`} />
               <DI label="User" value={selected.username || '-'} />
               <DI label="Subscriptions" value={selected.subscriptions.toString()} />
