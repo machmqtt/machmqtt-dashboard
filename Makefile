@@ -25,7 +25,7 @@ dev-frontend:
 	cd ui && $(NPX) vite
 
 test:
-	$(GO) test -count=1 -timeout 120s github.com/machmqtt/nats-dashboard/...
+	$(GO) test -count=1 -timeout 120s github.com/noodlebit/nats-dashboard/...
 
 docker-build:
 	docker build -t nats-dashboard .

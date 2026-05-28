@@ -54,7 +54,7 @@ Prerequisites: Go 1.22+, Node.js 20+
 
 ```bash
 # Clone
-git clone https://github.com/machmqtt/nats-dashboard.git
+git clone https://github.com/noodlebit/nats-dashboard.git
 cd nats-dashboard
 
 # Create config

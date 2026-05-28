@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/machmqtt/nats-dashboard/internal/api"
-	"github.com/machmqtt/nats-dashboard/internal/auth"
-	"github.com/machmqtt/nats-dashboard/internal/collector"
-	"github.com/machmqtt/nats-dashboard/internal/config"
-	"github.com/machmqtt/nats-dashboard/internal/store"
-	"github.com/machmqtt/nats-dashboard/internal/ws"
+	"github.com/noodlebit/nats-dashboard/internal/api"
+	"github.com/noodlebit/nats-dashboard/internal/auth"
+	"github.com/noodlebit/nats-dashboard/internal/collector"
+	"github.com/noodlebit/nats-dashboard/internal/config"
+	"github.com/noodlebit/nats-dashboard/internal/store"
+	"github.com/noodlebit/nats-dashboard/internal/ws"
 )
 
 var version = "dev"

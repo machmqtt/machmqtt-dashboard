@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/machmqtt/nats-dashboard/internal/auth"
-	"github.com/machmqtt/nats-dashboard/internal/collector"
-	"github.com/machmqtt/nats-dashboard/internal/config"
-	"github.com/machmqtt/nats-dashboard/internal/store"
-	"github.com/machmqtt/nats-dashboard/internal/ws"
+	"github.com/noodlebit/nats-dashboard/internal/auth"
+	"github.com/noodlebit/nats-dashboard/internal/collector"
+	"github.com/noodlebit/nats-dashboard/internal/config"
+	"github.com/noodlebit/nats-dashboard/internal/store"
+	"github.com/noodlebit/nats-dashboard/internal/ws"
 )
 
 func setupTestServer(t *testing.T) (*Server, *auth.Auth, string) {
