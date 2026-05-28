@@ -65,6 +65,7 @@ type MQTTLicense struct {
 	Instances         int    `json:"instances"`
 	ExpiresAt         string `json:"expires_at,omitempty"`
 	GraceDays         int    `json:"grace_days,omitempty"`
+	Degraded          bool   `json:"degraded,omitempty"`
 }
 
 // MQTTReadyz mirrors the bridge /readyz response.
@@ -111,6 +112,7 @@ type MQTTClientInfo struct {
 	InflightOut    int       `json:"inflight_out"`
 	Username       string    `json:"username,omitempty"`
 	State          string    `json:"state"`
+	SlowConsumer   bool      `json:"slow_consumer,omitempty"`
 }
 
 // MQTTNATSDiag mirrors the bridge /diag/nats response.
