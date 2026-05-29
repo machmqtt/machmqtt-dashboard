@@ -2,12 +2,26 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 )
+
+// mqttAdminActions maps a dashboard action name to the MachMQTT bridge admin
+// endpoint path. The allowlist is the only way to reach a bridge admin POST,
+// so unknown actions are rejected before any request is made.
+var mqttAdminActions = map[string]string{
+	"kick-all-clients":         "/admin/kick-all-clients",
+	"cluster-kick-client":      "/admin/cluster/kick-client",
+	"cluster-kick-by-username": "/admin/cluster/kick-by-username",
+	"cluster-kick-all":         "/admin/cluster/kick-all",
+	"drain":                    "/admin/drain",
+	"undrain":                  "/admin/undrain",
+	"reload":                   "/admin/reload",
+}
 
 func (s *Server) envConfig(env string) *config.Environment {
 	for i := range s.cfg.Environments {
@@ -304,6 +318,52 @@ func (s *Server) handleMQTTClusterInspect(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]any{"found": false, "reason": "admin authentication failed — set the bridge admin token in the environment config"})
 	default:
 		writeJSON(w, map[string]any{"found": false, "reason": fmt.Sprintf("bridge returned HTTP %d", code)})
+	}
+}
+
+// handleMQTTAdminAction proxies a state-changing POST to a bridge admin
+// endpoint. Admin-role only (gated by AdminMiddleware on the route). It
+// forwards the request body (for cluster-kick-client / -by-username) and
+// relays the bridge's status + body, so the UI surfaces 403 (endpoint
+// disabled), 409 (cluster not enabled) and 404 (unsupported) precisely.
+func (s *Server) handleMQTTAdminAction(w http.ResponseWriter, r *http.Request) {
+	env := r.PathValue("env")
+	bridgeName := r.PathValue("bridge")
+	action := r.PathValue("action")
+
+	path, ok := mqttAdminActions[action]
+	if !ok {
+		http.Error(w, `{"error":"unknown admin action"}`, http.StatusBadRequest)
+		return
+	}
+
+	bridge := s.findBridge(env, bridgeName)
+	if bridge == nil {
+		http.Error(w, `{"error":"bridge not found"}`, http.StatusNotFound)
+		return
+	}
+
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(io.LimitReader(r.Body, 4096))
+	}
+
+	f := collector.NewMQTTBridgeFetcher(bridge.URL, bridge.Name, bridge.BearerToken)
+	code, respBody, err := f.PostAdmin(r.Context(), path, body)
+	if err != nil {
+		s.log.Warn("mqtt bridge admin action failed", "action", action, "err", err)
+		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		return
+	}
+	s.log.Info("mqtt admin action proxied", "env", env, "bridge", bridgeName, "action", action, "status", code)
+
+	if code == 0 {
+		code = http.StatusBadGateway
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if len(respBody) > 0 {
+		_, _ = w.Write(respBody)
 	}
 }
 

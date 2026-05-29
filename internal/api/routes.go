@@ -57,6 +57,10 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 
 	protected.HandleFunc("GET /api/ws", s.handleWS)
 
+	// MQTT bridge admin actions (state-changing) — admin role only.
+	protected.Handle("POST /api/environments/{env}/mqtt/{bridge}/admin/{action}",
+		auth.AdminMiddleware(http.HandlerFunc(s.handleMQTTAdminAction)))
+
 	// Admin-only routes (wrapped with AdminMiddleware).
 	admin := http.NewServeMux()
 	admin.HandleFunc("GET /api/admin/users", a.HandleListUsers)

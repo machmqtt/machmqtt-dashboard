@@ -59,7 +59,7 @@ function AuthenticatedApp({ user, onLogout }: { user: User; onLogout: () => void
         <Route path="/mqtt" element={<MQTTOverviewPage />} />
         <Route path="/mqtt/connections" element={<MQTTAllConnectionsPage />} />
         <Route path="/mqtt/:bridge/connections" element={<MQTTConnectionsPage />} />
-        <Route path="/mqtt/:bridge/detail" element={<MQTTBridgeDetailPage />} />
+        <Route path="/mqtt/:bridge/detail" element={<MQTTBridgeDetailPage role={user.role} />} />
         {user.role === 'admin' && (
           <Route path="/admin/users" element={<UsersPage />} />
         )}

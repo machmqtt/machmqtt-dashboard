@@ -237,6 +237,33 @@ func TestViewerCannotAccessAdmin(t *testing.T) {
 	}
 }
 
+func TestMQTTAdminActionRejectsViewer(t *testing.T) {
+	srv, a, _ := setupTestServer(t)
+
+	viewer, _ := a.Store().CreateUser("viewer", "pass", "viewer")
+	viewerToken, _ := a.IssueToken(viewer)
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, authedReq("POST", "/api/environments/test/mqtt/b/admin/kick-all-clients", viewerToken, ""))
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("viewer admin action status = %d, want 403", w.Code)
+	}
+}
+
+func TestMQTTAdminActionUnknownActionRejected(t *testing.T) {
+	srv, _, token := setupTestServer(t)
+
+	// Admin token, but an action that isn't in the allowlist must 400 before
+	// any bridge request is attempted.
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, authedReq("POST", "/api/environments/test/mqtt/b/admin/rm-rf", token, ""))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown action status = %d, want 400", w.Code)
+	}
+}
+
 func TestDefaultAdminMustChangePassword(t *testing.T) {
 	// Use EnsureDefaultAdmin (the real startup path) instead of CreateUser.
 	s, err := store.Open(t.TempDir())

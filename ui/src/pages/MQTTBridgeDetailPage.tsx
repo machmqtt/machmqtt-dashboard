@@ -8,11 +8,11 @@ import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
 
-type Tab = 'nats' | 'metrics' | 'pool' | 'cluster' | 'license' | 'config'
+type Tab = 'nats' | 'metrics' | 'pool' | 'cluster' | 'license' | 'config' | 'admin'
 
 const REFRESH_INTERVAL = 10_000
 
-export function MQTTBridgeDetailPage() {
+export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const { bridge } = useParams<{ bridge: string }>()
   const activeEnv = useStore((s) => s.activeEnv)
   const [tab, setTab] = useState<Tab>('nats')
@@ -71,6 +71,7 @@ export function MQTTBridgeDetailPage() {
     { id: 'cluster', label: 'Cluster' },
     { id: 'license', label: 'License' },
     { id: 'config', label: 'Config' },
+    ...(role === 'admin' ? [{ id: 'admin' as Tab, label: 'Admin' }] : []),
   ]
 
   return (
@@ -112,6 +113,9 @@ export function MQTTBridgeDetailPage() {
           {tab === 'cluster' && <ClusterTab data={cluster} env={activeEnv} bridge={bridge} />}
           {tab === 'license' && <LicenseTab data={license} />}
           {tab === 'config' && <ConfigTab data={diag} />}
+          {tab === 'admin' && role === 'admin' && (
+            <AdminTab env={activeEnv} bridge={bridge} clusterEnabled={cluster?.available === true} onChanged={fetchAll} />
+          )}
         </>
       )}
     </div>
@@ -492,6 +496,129 @@ function fmtLastSeen(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s ago${stale}`
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago${stale}`
   return `${Math.round(ms / 3_600_000)}h ago${stale}`
+}
+
+function ActionButton({ label, onClick, busy, danger, disabled, title }: {
+  label: string; onClick: () => void; busy: boolean; danger?: boolean; disabled?: boolean; title?: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || busy}
+      title={title}
+      className={`px-3 py-1.5 text-sm rounded text-white disabled:opacity-40 disabled:cursor-not-allowed ${danger ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-blue hover:opacity-90'}`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function AdminTab({ env, bridge, clusterEnabled, onChanged }: {
+  env: string; bridge?: string; clusterEnabled: boolean; onChanged: () => void
+}) {
+  const addToast = useStore((s) => s.addToast)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [pending, setPending] = useState<{ action: string; label: string; body?: Record<string, string> } | null>(null)
+  const [clientId, setClientId] = useState('')
+  const [username, setUsername] = useState('')
+
+  const confirm = (action: string, label: string, body?: Record<string, string>) => setPending({ action, label, body })
+
+  const run = async (action: string, label: string, body?: Record<string, string>) => {
+    if (!bridge) return
+    setPending(null)
+    setBusy(action)
+    try {
+      const b = encodeURIComponent(bridge)
+      const res = await fetchWithTimeout(`/api/environments/${env}/mqtt/${b}/admin/${action}`, {
+        method: 'POST',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any = null
+      try { data = await res.json() } catch { /* some actions return an empty body */ }
+      if (res.ok) {
+        addToast(`${label}: ${summarizeAction(data)}`, 'success')
+        onChanged()
+      } else {
+        addToast(`${label} failed: ${data?.error || `HTTP ${res.status}`}`, 'error')
+      }
+    } catch {
+      addToast(`${label} failed: network error`, 'error')
+    }
+    setBusy(null)
+  }
+
+  const anyBusy = busy !== null
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+        These actions disconnect live MQTT clients or change the instance's serving state. Each is also gated on the bridge (<span className="font-mono">allow_kick_endpoint</span> / <span className="font-mono">allow_drain_endpoint</span> / <span className="font-mono">allow_reload_endpoint</span>); a disabled action reports the reason.
+      </div>
+
+      {pending && (
+        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200 flex items-center justify-between gap-3">
+          <span>Confirm: <strong>{pending.label}</strong>?</span>
+          <span className="flex gap-2 shrink-0">
+            <button onClick={() => run(pending.action, pending.label, pending.body)} className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700">Confirm</button>
+            <button onClick={() => setPending(null)} className="px-3 py-1 rounded bg-gray-200 dark:bg-gray-600">Cancel</button>
+          </span>
+        </div>
+      )}
+
+      <Section title="This Instance">
+        <div className="flex flex-wrap gap-2">
+          <ActionButton label="Kick All (local)" danger busy={anyBusy} onClick={() => confirm('kick-all-clients', 'Kick all clients on this instance')} />
+          <ActionButton label="Drain" busy={anyBusy} onClick={() => confirm('drain', 'Drain this instance')} />
+          <ActionButton label="Undrain" busy={anyBusy} onClick={() => confirm('undrain', 'Undrain this instance')} />
+          <ActionButton label="Reload Config" busy={anyBusy} onClick={() => confirm('reload', 'Reload config from disk')} />
+        </div>
+        <p className="text-xs text-gray-400 mt-2">Drain stops new connections (existing sessions stay) until undrained.</p>
+      </Section>
+
+      <Section title="Cluster-wide">
+        {!clusterEnabled && (
+          <div className="text-xs text-amber-600 dark:text-amber-400 mb-3">Clustering is not enabled on this bridge — cluster-wide kicks are unavailable.</div>
+        )}
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Kick by client ID</label>
+            <div className="flex gap-2">
+              <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="client ID"
+                className="bg-gray-50 dark:bg-gray-700 rounded px-3 py-1.5 text-sm outline-none border border-gray-200 dark:border-gray-600" />
+              <ActionButton label="Kick" danger busy={anyBusy} disabled={!clusterEnabled || !clientId.trim()}
+                onClick={() => confirm('cluster-kick-client', `Kick client "${clientId.trim()}" across the cluster`, { client_id: clientId.trim() })} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Kick by username</label>
+            <div className="flex gap-2">
+              <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username"
+                className="bg-gray-50 dark:bg-gray-700 rounded px-3 py-1.5 text-sm outline-none border border-gray-200 dark:border-gray-600" />
+              <ActionButton label="Kick" danger busy={anyBusy} disabled={!clusterEnabled || !username.trim()}
+                onClick={() => confirm('cluster-kick-by-username', `Kick username "${username.trim()}" across the cluster`, { username: username.trim() })} />
+            </div>
+          </div>
+          <ActionButton label="Kick All (cluster)" danger busy={anyBusy} disabled={!clusterEnabled}
+            onClick={() => confirm('cluster-kick-all', 'Kick ALL clients across the entire cluster')} />
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function summarizeAction(d: any): string {
+  if (!d) return 'done'
+  if (typeof d.kicked === 'number') return `${d.kicked} kicked`
+  if (typeof d.kicked_locally === 'number') return `${d.kicked_locally} kicked locally (broadcast to cluster)`
+  if (typeof d.kicked_locally === 'boolean') return `kicked_locally=${d.kicked_locally} (broadcast to cluster)`
+  if (d.drained === true) return 'instance draining'
+  if (d.drained === false) return 'instance undrained'
+  if (d.reloaded) return 'config reloaded'
+  return 'done'
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -92,6 +93,38 @@ func (f *MQTTBridgeFetcher) getWithStatus(ctx context.Context, path string, out 
 		}
 	}
 	return resp.StatusCode, nil
+}
+
+// PostAdmin sends a POST to a bridge admin endpoint and returns the bridge's
+// HTTP status code and raw (length-capped) response body. reqBody may be nil
+// for body-less actions. A transport error returns (0, nil, err). The caller
+// relays the status/body so the UI can distinguish 403 (endpoint disabled),
+// 409 (cluster not enabled) and 404 (unsupported on an older bridge).
+func (f *MQTTBridgeFetcher) PostAdmin(ctx context.Context, path string, reqBody []byte) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, mqttFetchTimeout)
+	defer cancel()
+
+	var rdr io.Reader
+	if len(reqBody) > 0 {
+		rdr = bytes.NewReader(reqBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.baseURL+path, rdr)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if f.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+f.bearerToken)
+	}
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("post %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	return resp.StatusCode, body, nil
 }
 
 // FetchCluster fetches the bridge's cluster summary. The returned int is the
