@@ -230,7 +230,7 @@ func (c *Collector) discoverMQTTBridges(ctx context.Context) {
 		return
 	}
 
-	bridges := DiscoverMQTTBridges(ctx, snap, prev, c.env.MQTTDiscoveryPorts())
+	bridges := DiscoverMQTTBridges(ctx, snap, prev, c.env.MQTTDiscoveryPorts(), c.env.ResolveBridgeToken(""))
 
 	// Persist discovered bridges.
 	if c.store != nil {

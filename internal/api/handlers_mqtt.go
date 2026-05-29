@@ -52,7 +52,7 @@ func (s *Server) handleMQTTBridges(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			f := collector.NewMQTTBridgeFetcher(b.URL, b.Name, b.BearerToken)
+			f := collector.NewMQTTBridgeFetcher(b.URL, b.Name, envCfg.ResolveBridgeToken(b.BearerToken))
 			status := f.FetchStatus(r.Context())
 			discovered = append(discovered, collector.MQTTBridgeInstance{
 				IP:             b.URL,
@@ -239,12 +239,22 @@ type resolvedBridge struct {
 	BearerToken string
 }
 
-// findBridge looks up a bridge by name from both config and auto-discovered bridges.
+// findBridge looks up a bridge by name from both config and auto-discovered
+// bridges, resolving the admin bearer token (per-bridge override, else the
+// environment-level default) so authed reads and admin actions can reach it.
 func (s *Server) findBridge(env, name string) *resolvedBridge {
+	envCfg := s.envConfig(env)
+	resolveToken := func(perBridge string) string {
+		if envCfg == nil {
+			return perBridge
+		}
+		return envCfg.ResolveBridgeToken(perBridge)
+	}
+
 	// Check manually configured bridges first.
 	for _, b := range s.mqttBridges(env) {
 		if b.Name == name {
-			return &resolvedBridge{URL: b.URL, Name: b.Name, BearerToken: b.BearerToken}
+			return &resolvedBridge{URL: b.URL, Name: b.Name, BearerToken: resolveToken(b.BearerToken)}
 		}
 	}
 
@@ -259,7 +269,7 @@ func (s *Server) findBridge(env, name string) *resolvedBridge {
 		}
 		if displayName == name || b.IP == name || b.AdminURL == name {
 			if b.AdminURL != "" {
-				return &resolvedBridge{URL: b.AdminURL, Name: displayName}
+				return &resolvedBridge{URL: b.AdminURL, Name: displayName, BearerToken: resolveToken("")}
 			}
 		}
 	}

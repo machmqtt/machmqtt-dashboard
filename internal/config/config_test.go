@@ -130,3 +130,25 @@ environments:
 		t.Errorf("default data_dir = %q, want ./data", cfg.DataDir)
 	}
 }
+
+func TestResolveBridgeToken(t *testing.T) {
+	cases := []struct {
+		name       string
+		envDefault string
+		perBridge  string
+		want       string
+	}{
+		{"per-bridge overrides env default", "env-tok", "bridge-tok", "bridge-tok"},
+		{"falls back to env default", "env-tok", "", "env-tok"},
+		{"empty when neither set", "", "", ""},
+		{"per-bridge with no env default", "", "bridge-tok", "bridge-tok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &Environment{AdminToken: tc.envDefault}
+			if got := e.ResolveBridgeToken(tc.perBridge); got != tc.want {
+				t.Errorf("ResolveBridgeToken(%q) with AdminToken=%q = %q, want %q", tc.perBridge, tc.envDefault, got, tc.want)
+			}
+		})
+	}
+}

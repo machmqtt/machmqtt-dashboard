@@ -20,6 +20,15 @@ environments:
     #   ca_file: "/path/to/ca.pem"
     #   insecure: false
 
+    # Environment-level ("cluster") default bearer token for the MachMQTT bridge
+    # admin API. Inherited by every bridge in this environment — both
+    # auto-discovered instances and configured bridges without their own token.
+    # Required to reach token-protected admin endpoints (metrics/license/connz)
+    # and to perform admin actions (kick/drain/reload). A per-bridge bearer_token
+    # below overrides it. Omit if the bridges' admin API has no token configured.
+    # Prefer injecting via a secret manager in production.
+    # admin_token: "shared-cluster-admin-token"
+
     # MQTT bridge auto-discovery (enabled by default).
     # Bridges are found from NATS connection data (connections named machmqtt-bridge / machmqtt-pool-*).
     # mqtt_discovery:
@@ -27,10 +36,11 @@ environments:
     #   admin_ports: [8080]   # ports to probe for bridge admin API
 
     # Manually configured MQTT bridges (in addition to auto-discovery).
+    # bearer_token here overrides the environment-level admin_token for that bridge.
     # mqtt_bridges:
     #   - name: mqtt-bridge-1
     #     url: "http://mqtt-bridge-1:8080"
-    #     bearer_token: "optional-admin-token"
+    #     bearer_token: "per-bridge-override-token"
 
   # - name: staging
   #   servers:
