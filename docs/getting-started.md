@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide covers building and running the NATS Dashboard from source or via Docker.
+This guide covers building and running the MachMQTT Dashboard from source or via Docker.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ The fastest way to get a working dashboard with a 3-node NATS cluster:
 
 ```bash
 # Clone and enter the project
-cd nats-dashboard
+cd machmqtt-dashboard
 
 # Start the 3-node NATS cluster + dashboard
 docker compose up -d
@@ -62,7 +62,7 @@ nats sub "test.>"
 make build
 ```
 
-This runs `npm install` + `vite build` for the frontend, then compiles the Go binary with version info to `bin/nats-dashboard`.
+This runs `npm install` + `vite build` for the frontend, then compiles the Go binary with version info to `bin/machmqtt-dashboard`.
 
 ### Build Steps (Manual)
 
@@ -74,7 +74,7 @@ npx vite build   # outputs to ../internal/api/dist/
 cd ..
 
 # 2. Build the backend
-go build -o bin/nats-dashboard ./cmd/nats-dashboard
+go build -o bin/machmqtt-dashboard ./cmd/machmqtt-dashboard
 ```
 
 The Go binary embeds the frontend build output. The resulting binary is fully self-contained.
@@ -87,7 +87,7 @@ cp config.example.yaml config.yaml
 # Edit config.yaml — set session_secret and server URLs
 
 # Run
-./bin/nats-dashboard -config config.yaml
+./bin/machmqtt-dashboard -config config.yaml
 ```
 
 ### Development Mode
@@ -111,23 +111,23 @@ Build a standalone Docker image:
 ```bash
 make docker-build
 # or
-docker build -t nats-dashboard .
+docker build -t machmqtt-dashboard .
 ```
 
 Run it:
 
 ```bash
 docker run -p 8080:8080 \
-  -v $(pwd)/config.yaml:/etc/nats-dashboard/config.yaml:ro \
+  -v $(pwd)/config.yaml:/etc/machmqtt-dashboard/config.yaml:ro \
   -v dashboard-data:/data \
-  nats-dashboard
+  machmqtt-dashboard
 ```
 
 The Docker image:
 - Uses a 3-stage build (Node.js -> Go -> Alpine 3.21)
 - Produces a `CGO_ENABLED=0` static binary
 - Runs as non-root user `app` (uid 1000)
-- Expects config at `/etc/nats-dashboard/config.yaml`
+- Expects config at `/etc/machmqtt-dashboard/config.yaml`
 - Stores SQLite database in `/data`
 
 ## Running Tests
@@ -141,7 +141,7 @@ This runs all Go unit tests with a 120-second timeout.
 ## CLI Flags
 
 ```
-nats-dashboard [flags]
+machmqtt-dashboard [flags]
 
 Flags:
   -config string   Path to config file (default "config.yaml")

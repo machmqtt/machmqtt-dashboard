@@ -7,6 +7,7 @@ type MQTTBridgeStatus struct {
 	Name             string        `json:"name"`
 	URL              string        `json:"url"`
 	Ready            bool          `json:"ready"`
+	Draining         bool          `json:"draining"`
 	Connections      int           `json:"connections"`
 	NATSConnected    bool          `json:"nats_connected"`
 	ConnzAvailable   bool          `json:"connz_available"`
@@ -40,6 +41,22 @@ type MQTTMetrics struct {
 	PoolSubscribes      int64 `json:"pool_subscribes"`
 	NATSDisconnects     int64 `json:"nats_disconnects"`
 	NATSReconnects      int64 `json:"nats_reconnects"`
+
+	// Connection rejections broken out by remediation path
+	// (machmqtt_connections_rejected_by_reason_total{reason=...}).
+	RejectedMaxConns    int64 `json:"rejected_max_conns"`
+	RejectedLicense     int64 `json:"rejected_license"`
+	RejectedPerIPConns  int64 `json:"rejected_per_ip_conns"`
+	RejectedPerIPAccept int64 `json:"rejected_per_ip_accept"`
+	RejectedPoolFull    int64 `json:"rejected_pool_full"`
+
+	// Dispatch-pool saturation (machmqtt_dispatch_slots_active{pool=...}).
+	// Sustained proximity to the configured pool size precedes pool_full rejections.
+	DispatchSlotsTLS int64 `json:"dispatch_slots_tls"`
+	DispatchSlotsWS  int64 `json:"dispatch_slots_ws"`
+
+	// Drained is 1 when the instance is operator-drained (machmqtt_drained).
+	Drained int64 `json:"drained"`
 }
 
 // MQTTDiag mirrors the bridge /diag response.
@@ -169,6 +186,32 @@ type MQTTNATSKVBucket struct {
 	Bytes  uint64 `json:"bytes"`
 	TTL    string `json:"ttl,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+// MQTTCluster mirrors the bridge GET /admin/cluster response: a read-only view
+// of cluster members (from the heartbeat map) plus per-source HMAC failures.
+type MQTTCluster struct {
+	LocalInstanceID  string                `json:"local_instance_id"`
+	LocalConnections int64                 `json:"local_connections"`
+	Instances        []MQTTClusterInstance `json:"instances"`
+	HMACFailures     map[string]int64      `json:"hmac_failures,omitempty"`
+}
+
+type MQTTClusterInstance struct {
+	InstanceID string `json:"instance_id"`
+	Addr       string `json:"addr"`
+	Clients    int64  `json:"clients"`
+	StartedAt  string `json:"started_at"`
+	UpdatedAt  string `json:"updated_at"`
+	LastSeenMs int64  `json:"last_seen_ms"`
+	Self       bool   `json:"self"`
+}
+
+// MQTTClusterInspect mirrors GET /admin/cluster/inspect. Client is kept as a
+// raw object so the dashboard tolerates field drift across bridge versions.
+type MQTTClusterInspect struct {
+	InstanceID string `json:"instance_id"`
+	Client     any    `json:"client"`
 }
 
 // MQTTPool mirrors the bridge /pool response.

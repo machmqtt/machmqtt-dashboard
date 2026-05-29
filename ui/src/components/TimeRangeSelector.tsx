@@ -16,7 +16,7 @@ export function TimeRangeSelector({ value, onChange }: Props) {
           onClick={() => onChange(r)}
           className={`px-2.5 py-1 text-xs rounded font-medium transition-colors ${
             value === r
-              ? 'bg-nats-blue text-white'
+              ? 'bg-brand-blue text-white'
               : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
           }`}
         >

@@ -22,7 +22,13 @@ type Environment struct {
 	Servers       []Server             `yaml:"servers"`
 	MQTTBridges   []MQTTBridge         `yaml:"mqtt_bridges,omitempty"`
 	MQTTDiscovery *MQTTDiscoveryConfig `yaml:"mqtt_discovery,omitempty"`
-	TLS           *TLSConfig           `yaml:"tls,omitempty"`
+	// AdminToken is the environment-level ("cluster") default bearer token used
+	// to authenticate to every MachMQTT bridge admin API in this environment —
+	// both auto-discovered instances and configured bridges without their own
+	// token. A per-bridge MQTTBridge.BearerToken overrides it. Empty = send no
+	// token (works against bridges whose admin API has no token configured).
+	AdminToken string     `yaml:"admin_token,omitempty"`
+	TLS        *TLSConfig `yaml:"tls,omitempty"`
 }
 
 type MQTTBridge struct {
@@ -50,6 +56,15 @@ func (e *Environment) MQTTDiscoveryPorts() []int {
 		return e.MQTTDiscovery.AdminPorts
 	}
 	return []int{8080}
+}
+
+// ResolveBridgeToken returns the admin bearer token to use for a bridge: the
+// per-bridge override if set, otherwise the environment-level default.
+func (e *Environment) ResolveBridgeToken(perBridge string) string {
+	if perBridge != "" {
+		return perBridge
+	}
+	return e.AdminToken
 }
 
 type Server struct {

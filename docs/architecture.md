@@ -2,7 +2,7 @@
 
 ## Overview
 
-NATS Dashboard is a single-binary web application that monitors NATS clusters by polling their HTTP monitoring endpoints. It consists of a Go backend that embeds a React SPA.
+MachMQTT Dashboard is a single-binary web application that monitors NATS clusters by polling their HTTP monitoring endpoints. It consists of a Go backend that embeds a React SPA.
 
 ```
 ┌─────────────────────────────────────────────┐

@@ -55,3 +55,35 @@ machmqtt_nats_reconnects_total 2
 		}
 	}
 }
+
+func TestParsePrometheusMetrics_RejectionsDispatchAndDrain(t *testing.T) {
+	// The deprecated unlabeled total appears alongside the per-reason buckets;
+	// the parser must keep each reason distinct and not collapse them.
+	body := `machmqtt_connections_rejected_total 15
+machmqtt_connections_rejected_by_reason_total{reason="max_conns"} 5
+machmqtt_connections_rejected_by_reason_total{reason="license"} 4
+machmqtt_connections_rejected_by_reason_total{reason="per_ip_conns"} 3
+machmqtt_connections_rejected_by_reason_total{reason="per_ip_accept"} 2
+machmqtt_connections_rejected_by_reason_total{reason="pool_full"} 1
+machmqtt_dispatch_slots_active{pool="tls"} 12
+machmqtt_dispatch_slots_active{pool="websocket"} 8
+machmqtt_drained 1
+`
+	m := parsePrometheusMetrics(body)
+	checks := map[string]struct{ got, want int64 }{
+		"ConnectionsRejected (deprecated total)": {m.ConnectionsRejected, 15},
+		"RejectedMaxConns":                       {m.RejectedMaxConns, 5},
+		"RejectedLicense":                        {m.RejectedLicense, 4},
+		"RejectedPerIPConns":                     {m.RejectedPerIPConns, 3},
+		"RejectedPerIPAccept":                    {m.RejectedPerIPAccept, 2},
+		"RejectedPoolFull":                       {m.RejectedPoolFull, 1},
+		"DispatchSlotsTLS":                       {m.DispatchSlotsTLS, 12},
+		"DispatchSlotsWS":                        {m.DispatchSlotsWS, 8},
+		"Drained":                                {m.Drained, 1},
+	}
+	for field, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", field, c.got, c.want)
+		}
+	}
+}

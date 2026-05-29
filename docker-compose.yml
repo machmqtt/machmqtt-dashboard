@@ -61,7 +61,7 @@ services:
       # dashboard refuses to start.
       SESSION_SECRET: ${SESSION_SECRET:-change-me}
     volumes:
-      - ./config.docker.yaml:/etc/nats-dashboard/config.yaml:ro
+      - ./config.docker.yaml:/etc/machmqtt-dashboard/config.yaml:ro
       - dashboard-data:/data
     depends_on:
       - nats-1

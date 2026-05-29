@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/noodlebit/nats-dashboard/internal/auth"
+	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
 )
 
 func (s *Server) registerRoutes(a *auth.Auth) {
@@ -43,6 +43,8 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/license", s.handleMQTTLicense)
 	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/metrics", s.handleMQTTMetrics)
 	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/pool", s.handleMQTTPool)
+	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/cluster", s.handleMQTTCluster)
+	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/cluster/inspect", s.handleMQTTClusterInspect)
 
 	// Topology position persistence.
 	protected.HandleFunc("GET /api/environments/{env}/topology/positions", s.handleGetPositions)
@@ -54,6 +56,10 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	protected.HandleFunc("GET /api/environments/{env}/metrics/mqtt", s.handleMQTTBridgeMetrics)
 
 	protected.HandleFunc("GET /api/ws", s.handleWS)
+
+	// MQTT bridge admin actions (state-changing) — admin role only.
+	protected.Handle("POST /api/environments/{env}/mqtt/{bridge}/admin/{action}",
+		auth.AdminMiddleware(http.HandlerFunc(s.handleMQTTAdminAction)))
 
 	// Admin-only routes (wrapped with AdminMiddleware).
 	admin := http.NewServeMux()

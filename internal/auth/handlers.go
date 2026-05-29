@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/noodlebit/nats-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 )
 
 func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {

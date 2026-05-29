@@ -8,9 +8,9 @@ body {
 }
 
 @theme {
-  --color-nats-blue: #27aae1;
-  --color-nats-dark: #1a1a2e;
-  --color-nats-sidebar: #16213e;
+  --color-brand-blue: #27aae1;
+  --color-brand-dark: #1a1a2e;
+  --color-brand-sidebar: #16213e;
   --color-healthy: #22c55e;
   --color-unhealthy: #ef4444;
 }

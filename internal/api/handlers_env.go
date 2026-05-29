@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/noodlebit/nats-dashboard/internal/collector"
-	"github.com/noodlebit/nats-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 )
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

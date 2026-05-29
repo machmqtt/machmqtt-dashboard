@@ -1,4 +1,4 @@
-# NATS Dashboard
+# MachMQTT Dashboard
 
 A real-time monitoring dashboard for [NATS](https://nats.io) clusters. Built with Go and React.
 
@@ -56,8 +56,8 @@ Prerequisites: Go 1.22+, Node.js 20+
 
 ```bash
 # Clone
-git clone https://github.com/noodlebit/nats-dashboard.git
-cd nats-dashboard
+git clone https://github.com/noodlebit/machmqtt-dashboard.git
+cd machmqtt-dashboard
 
 # Create config
 cp config.example.yaml config.yaml
@@ -67,19 +67,19 @@ cp config.example.yaml config.yaml
 
 # Build
 cd ui && npm install && npx vite build && cd ..
-go build -o bin/nats-dashboard ./cmd/nats-dashboard
+go build -o bin/machmqtt-dashboard ./cmd/machmqtt-dashboard
 
 # Run
-./bin/nats-dashboard -config config.yaml
+./bin/machmqtt-dashboard -config config.yaml
 ```
 
 ### Docker
 
 ```bash
-docker build -t nats-dashboard .
+docker build -t machmqtt-dashboard .
 docker run -p 8080:8080 \
   -e SESSION_SECRET=$(openssl rand -hex 32) \
-  -v ./config.yaml:/etc/nats-dashboard/config.yaml:ro nats-dashboard
+  -v ./config.yaml:/etc/machmqtt-dashboard/config.yaml:ro machmqtt-dashboard
 ```
 
 ## Configuration
@@ -110,7 +110,7 @@ Run the backend and frontend separately for hot-reload:
 
 ```bash
 # Terminal 1: Backend (requires config.yaml)
-go run ./cmd/nats-dashboard -config config.yaml
+go run ./cmd/machmqtt-dashboard -config config.yaml
 
 # Terminal 2: Frontend (proxies API to backend)
 cd ui && npx vite

@@ -29,7 +29,7 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
     return (
       <button
         onClick={toggleSidebar}
-        className="fixed top-4 left-4 z-50 bg-nats-sidebar text-white p-2 rounded-lg shadow-lg hover:bg-nats-sidebar/90"
+        className="fixed top-4 left-4 z-50 bg-brand-sidebar text-white p-2 rounded-lg shadow-lg hover:bg-brand-sidebar/90"
         title="Open sidebar"
       >
         <PanelLeft className="w-5 h-5" />
@@ -38,12 +38,12 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
   }
 
   return (
-    <aside className="fixed top-0 left-0 h-screen w-64 bg-nats-sidebar text-white flex flex-col z-40">
+    <aside className="fixed top-0 left-0 h-screen w-64 bg-brand-sidebar text-white flex flex-col z-40">
       <div className="p-4 border-b border-white/10">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <Server className="w-6 h-6 text-nats-blue" />
-            <span className="font-semibold text-lg">NATS Dashboard</span>
+            <Server className="w-6 h-6 text-brand-blue" />
+            <span className="font-semibold text-lg">MachMQTT Dashboard</span>
           </div>
           <button onClick={toggleSidebar} className="text-white/50 hover:text-white" title="Collapse sidebar">
             <PanelLeftClose className="w-4 h-4" />
@@ -55,7 +55,7 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
           className="w-full bg-white/10 rounded px-2 py-1.5 text-sm outline-none"
         >
           {environments.map((env) => (
-            <option key={env} value={env} className="bg-nats-sidebar">{env}</option>
+            <option key={env} value={env} className="bg-brand-sidebar">{env}</option>
           ))}
         </select>
       </div>
@@ -68,7 +68,7 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
             end={to === '/'}
             className={({ isActive }) =>
               `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                isActive ? 'bg-white/10 text-nats-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
+                isActive ? 'bg-white/10 text-brand-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
               }`
             }
           >
@@ -78,24 +78,24 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
         ))}
 
         <div className="mx-4 my-2 border-t border-white/10" />
-        <div className="px-4 py-1 text-[10px] text-white/40 uppercase tracking-wider">MQTT Bridge</div>
+        <div className="px-4 py-1 text-[10px] text-white/40 uppercase tracking-wider">Bridge Fleet</div>
         <NavLink
           to="/mqtt"
           end
           className={({ isActive }) =>
             `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-              isActive ? 'bg-white/10 text-nats-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
+              isActive ? 'bg-white/10 text-brand-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
             }`
           }
         >
           <Radio className="w-4 h-4" />
-          MachMQTT
+          Overview
         </NavLink>
         <NavLink
           to="/mqtt/connections"
           className={({ isActive }) =>
             `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-              isActive ? 'bg-white/10 text-nats-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
+              isActive ? 'bg-white/10 text-brand-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
             }`
           }
         >
@@ -110,7 +110,7 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
               to="/admin/users"
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
-                  isActive ? 'bg-white/10 text-nats-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
+                  isActive ? 'bg-white/10 text-brand-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
                 }`
               }
             >

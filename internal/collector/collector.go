@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/noodlebit/nats-dashboard/internal/config"
-	"github.com/noodlebit/nats-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -230,7 +230,7 @@ func (c *Collector) discoverMQTTBridges(ctx context.Context) {
 		return
 	}
 
-	bridges := DiscoverMQTTBridges(ctx, snap, prev, c.env.MQTTDiscoveryPorts())
+	bridges := DiscoverMQTTBridges(ctx, snap, prev, c.env.MQTTDiscoveryPorts(), c.env.ResolveBridgeToken(""))
 
 	// Persist discovered bridges.
 	if c.store != nil {

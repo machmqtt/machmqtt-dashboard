@@ -69,6 +69,7 @@ interface BridgeStatus {
   name: string
   url: string
   ready: boolean
+  draining?: boolean
   connections: number
   nats_connected: boolean
   connz_available: boolean
@@ -211,17 +212,22 @@ export function MQTTOverviewPage() {
                 <div className="flex items-center gap-3">
                   <span className={`w-2.5 h-2.5 rounded-full ${healthy ? 'bg-healthy' : b.reachable ? 'bg-yellow-400' : 'bg-unhealthy'}`} />
                   <h2 className="font-semibold text-lg">{displayName}</h2>
+                  {s?.draining && (
+                    <span className="text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="Operator-drained: not accepting new connections">
+                      Draining
+                    </span>
+                  )}
                   <span className="text-xs text-gray-400">on {b.server_name}</span>
                   {b.admin_url && <span className="text-xs text-gray-400 font-mono">{b.admin_url}</span>}
                 </div>
                 <div className="flex items-center gap-4">
                   {s?.connz_available && (
-                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/connections`} className="text-nats-blue text-sm hover:underline">
+                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/connections`} className="text-brand-blue text-sm hover:underline">
                       Connections ({s.connections})
                     </Link>
                   )}
                   {b.reachable && (
-                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/detail`} className="text-nats-blue text-sm hover:underline">
+                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/detail`} className="text-brand-blue text-sm hover:underline">
                       Details
                     </Link>
                   )}

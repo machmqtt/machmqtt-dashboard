@@ -30,25 +30,25 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME}
           LDFLAGS="-s -w -X main.version=${VERSION}"
-          GOOS=linux   GOARCH=amd64 go build -ldflags="$LDFLAGS" -o bin/nats-dashboard-linux-amd64       ./cmd/nats-dashboard
-          GOOS=darwin  GOARCH=amd64 go build -ldflags="$LDFLAGS" -o bin/nats-dashboard-darwin-amd64      ./cmd/nats-dashboard
-          GOOS=darwin  GOARCH=arm64 go build -ldflags="$LDFLAGS" -o bin/nats-dashboard-darwin-arm64      ./cmd/nats-dashboard
-          GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o bin/nats-dashboard-windows-amd64.exe ./cmd/nats-dashboard
+          GOOS=linux   GOARCH=amd64 go build -ldflags="$LDFLAGS" -o bin/machmqtt-dashboard-linux-amd64       ./cmd/machmqtt-dashboard
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="$LDFLAGS" -o bin/machmqtt-dashboard-darwin-amd64      ./cmd/machmqtt-dashboard
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="$LDFLAGS" -o bin/machmqtt-dashboard-darwin-arm64      ./cmd/machmqtt-dashboard
+          GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o bin/machmqtt-dashboard-windows-amd64.exe ./cmd/machmqtt-dashboard
 
       - name: Create release archives
         run: |
           cd bin
-          tar czf nats-dashboard-linux-amd64.tar.gz    nats-dashboard-linux-amd64
-          tar czf nats-dashboard-darwin-amd64.tar.gz   nats-dashboard-darwin-amd64
-          tar czf nats-dashboard-darwin-arm64.tar.gz   nats-dashboard-darwin-arm64
-          zip     nats-dashboard-windows-amd64.zip      nats-dashboard-windows-amd64.exe
+          tar czf machmqtt-dashboard-linux-amd64.tar.gz    machmqtt-dashboard-linux-amd64
+          tar czf machmqtt-dashboard-darwin-amd64.tar.gz   machmqtt-dashboard-darwin-amd64
+          tar czf machmqtt-dashboard-darwin-arm64.tar.gz   machmqtt-dashboard-darwin-arm64
+          zip     machmqtt-dashboard-windows-amd64.zip      machmqtt-dashboard-windows-amd64.exe
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            bin/nats-dashboard-linux-amd64.tar.gz
-            bin/nats-dashboard-darwin-amd64.tar.gz
-            bin/nats-dashboard-darwin-arm64.tar.gz
-            bin/nats-dashboard-windows-amd64.zip
+            bin/machmqtt-dashboard-linux-amd64.tar.gz
+            bin/machmqtt-dashboard-darwin-amd64.tar.gz
+            bin/machmqtt-dashboard-darwin-arm64.tar.gz
+            bin/machmqtt-dashboard-windows-amd64.zip

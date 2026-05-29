@@ -33,7 +33,9 @@ type MQTTBridgeInstance struct {
 }
 
 // DiscoverMQTTBridges finds MQTT bridge instances from NATS connection data.
-func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts []int) []MQTTBridgeInstance {
+// adminToken is the environment-level bearer token used to authenticate the
+// admin-API probe against each discovered bridge ("" = send no token).
+func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts []int, adminToken string) []MQTTBridgeInstance {
 	if snap == nil {
 		return nil
 	}
@@ -188,7 +190,7 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 					host = "[" + host + "]"
 				}
 				url := fmt.Sprintf("http://%s:%d", host, port)
-				f := NewMQTTBridgeFetcher(url, inst.IP, "")
+				f := NewMQTTBridgeFetcher(url, inst.IP, adminToken)
 				status := f.FetchStatus(ctx)
 				if status.Error == "" {
 					inst.AdminURL = url

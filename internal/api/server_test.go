@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/noodlebit/nats-dashboard/internal/auth"
-	"github.com/noodlebit/nats-dashboard/internal/collector"
-	"github.com/noodlebit/nats-dashboard/internal/config"
-	"github.com/noodlebit/nats-dashboard/internal/store"
-	"github.com/noodlebit/nats-dashboard/internal/ws"
+	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
+	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
 
 func setupTestServer(t *testing.T) (*Server, *auth.Auth, string) {
@@ -234,6 +234,33 @@ func TestViewerCannotAccessAdmin(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", w.Code)
+	}
+}
+
+func TestMQTTAdminActionRejectsViewer(t *testing.T) {
+	srv, a, _ := setupTestServer(t)
+
+	viewer, _ := a.Store().CreateUser("viewer", "pass", "viewer")
+	viewerToken, _ := a.IssueToken(viewer)
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, authedReq("POST", "/api/environments/test/mqtt/b/admin/kick-all-clients", viewerToken, ""))
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("viewer admin action status = %d, want 403", w.Code)
+	}
+}
+
+func TestMQTTAdminActionUnknownActionRejected(t *testing.T) {
+	srv, _, token := setupTestServer(t)
+
+	// Admin token, but an action that isn't in the allowlist must 400 before
+	// any bridge request is attempted.
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, authedReq("POST", "/api/environments/test/mqtt/b/admin/rm-rf", token, ""))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown action status = %d, want 400", w.Code)
 	}
 }
 

@@ -46,11 +46,11 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-nats-dark flex items-center justify-center">
+    <div className="min-h-screen bg-brand-dark flex items-center justify-center">
       <div className="bg-white rounded-lg shadow-xl p-8 w-96">
         <div className="flex items-center justify-center gap-2 mb-4">
-          <Server className="w-8 h-8 text-nats-blue" />
-          <h1 className="text-2xl font-semibold">NATS Dashboard</h1>
+          <Server className="w-8 h-8 text-brand-blue" />
+          <h1 className="text-2xl font-semibold">MachMQTT Dashboard</h1>
         </div>
         <p className="text-sm text-gray-600 text-center mb-6">
           You must change your password before continuing.
@@ -62,7 +62,7 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
               type="password"
               value={oldPassword}
               onChange={(e) => setOldPassword(e.target.value)}
-              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-nats-blue"
+              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
               autoFocus
             />
           </div>
@@ -72,7 +72,7 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-nats-blue"
+              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
             />
           </div>
           <div>
@@ -81,14 +81,14 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-nats-blue"
+              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
             />
           </div>
           {error && <p className="text-red-500 text-sm">{error}</p>}
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-nats-blue text-white rounded py-2 font-medium hover:opacity-90 disabled:opacity-50"
+            className="w-full bg-brand-blue text-white rounded py-2 font-medium hover:opacity-90 disabled:opacity-50"
           >
             {loading ? 'Changing...' : 'Change Password'}
           </button>
