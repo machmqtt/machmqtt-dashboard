@@ -58,6 +58,26 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.NATSDisconnects = parseInt(value)
 		case name == "machmqtt_nats_reconnects_total":
 			m.NATSReconnects = parseInt(value)
+		// Connection rejections by reason. Match the full labeled line (qos-style)
+		// rather than the bare name, so each reason bucket is kept distinct
+		// instead of collapsed into one total.
+		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="max_conns"}`):
+			m.RejectedMaxConns = parseInt(value)
+		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="license"}`):
+			m.RejectedLicense = parseInt(value)
+		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="per_ip_conns"}`):
+			m.RejectedPerIPConns = parseInt(value)
+		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="per_ip_accept"}`):
+			m.RejectedPerIPAccept = parseInt(value)
+		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="pool_full"}`):
+			m.RejectedPoolFull = parseInt(value)
+		// Dispatch-pool saturation gauges.
+		case strings.HasPrefix(line, `machmqtt_dispatch_slots_active{pool="tls"}`):
+			m.DispatchSlotsTLS = parseInt(value)
+		case strings.HasPrefix(line, `machmqtt_dispatch_slots_active{pool="websocket"}`):
+			m.DispatchSlotsWS = parseInt(value)
+		case name == "machmqtt_drained":
+			m.Drained = parseInt(value)
 		}
 	}
 	return m

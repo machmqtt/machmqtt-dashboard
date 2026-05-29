@@ -76,6 +76,11 @@ export function MQTTBridgeDetailPage() {
         </Link>
         <h1 className="text-2xl font-semibold">{bridge}</h1>
         {diag?.version && <span className="text-xs text-gray-400 bg-gray-100 dark:bg-gray-700 rounded px-2 py-0.5">{diag.version}</span>}
+        {metrics?.drained === 1 && (
+          <span className="text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="Operator-drained: not accepting new connections (POST /admin/drain)">
+            Draining
+          </span>
+        )}
       </div>
 
       <div className="flex gap-1 mb-4 border-b dark:border-gray-700">
@@ -111,8 +116,14 @@ export function MQTTBridgeDetailPage() {
 function NATSTab({ data }: { data: any }) {
   if (!data) return <Empty msg="NATS diagnostics not available" />
   const c = data.connection
+  const minimalMode = c?.connected && !data.account
   return (
     <div className="space-y-6">
+      {minimalMode && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+          JetStream unavailable — bridge is running in minimal mode. QoS 1/2 and persistent sessions are disabled (QoS capped at 0).
+        </div>
+      )}
       <Section title="Connection">
         <Grid>
           <DI label="Connected" value={c?.connected ? 'Yes' : 'No'} />
@@ -233,6 +244,22 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="WS Active" value={fmtNum(data.ws_connections_active)} />
           <DI label="WS Total" value={fmtNum(data.ws_connections_total)} />
         </Grid>
+      </Section>
+      <Section title="Rejections by Reason">
+        <Grid>
+          <DI label="Max Conns" value={fmtNum(data.rejected_max_conns)} />
+          <DI label="License" value={fmtNum(data.rejected_license)} />
+          <DI label="Per-IP Conns" value={fmtNum(data.rejected_per_ip_conns)} />
+          <DI label="Per-IP Accept" value={fmtNum(data.rejected_per_ip_accept)} />
+          <DI label="Pool Full" value={fmtNum(data.rejected_pool_full)} />
+        </Grid>
+      </Section>
+      <Section title="Dispatch Pool Saturation">
+        <Grid>
+          <DI label="TLS Slots Active" value={fmtNum(data.dispatch_slots_tls)} />
+          <DI label="WebSocket Slots Active" value={fmtNum(data.dispatch_slots_ws)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">Sustained proximity to the configured handshake pool size precedes <span className="font-mono">pool_full</span> rejections.</p>
       </Section>
       <Section title="Authentication">
         <Grid>

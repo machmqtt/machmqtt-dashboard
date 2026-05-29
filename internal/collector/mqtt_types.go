@@ -7,6 +7,7 @@ type MQTTBridgeStatus struct {
 	Name             string        `json:"name"`
 	URL              string        `json:"url"`
 	Ready            bool          `json:"ready"`
+	Draining         bool          `json:"draining"`
 	Connections      int           `json:"connections"`
 	NATSConnected    bool          `json:"nats_connected"`
 	ConnzAvailable   bool          `json:"connz_available"`
@@ -40,6 +41,22 @@ type MQTTMetrics struct {
 	PoolSubscribes      int64 `json:"pool_subscribes"`
 	NATSDisconnects     int64 `json:"nats_disconnects"`
 	NATSReconnects      int64 `json:"nats_reconnects"`
+
+	// Connection rejections broken out by remediation path
+	// (machmqtt_connections_rejected_by_reason_total{reason=...}).
+	RejectedMaxConns    int64 `json:"rejected_max_conns"`
+	RejectedLicense     int64 `json:"rejected_license"`
+	RejectedPerIPConns  int64 `json:"rejected_per_ip_conns"`
+	RejectedPerIPAccept int64 `json:"rejected_per_ip_accept"`
+	RejectedPoolFull    int64 `json:"rejected_pool_full"`
+
+	// Dispatch-pool saturation (machmqtt_dispatch_slots_active{pool=...}).
+	// Sustained proximity to the configured pool size precedes pool_full rejections.
+	DispatchSlotsTLS int64 `json:"dispatch_slots_tls"`
+	DispatchSlotsWS  int64 `json:"dispatch_slots_ws"`
+
+	// Drained is 1 when the instance is operator-drained (machmqtt_drained).
+	Drained int64 `json:"drained"`
 }
 
 // MQTTDiag mirrors the bridge /diag response.

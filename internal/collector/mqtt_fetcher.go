@@ -139,6 +139,7 @@ func (f *MQTTBridgeFetcher) FetchStatus(ctx context.Context) *MQTTBridgeStatus {
 		return status
 	}
 	status.Ready = readyz.Status == "ready"
+	status.Draining = readyz.Status == "draining"
 	status.Connections = readyz.Connections
 	status.NATSConnected = readyz.NATSConnected
 
