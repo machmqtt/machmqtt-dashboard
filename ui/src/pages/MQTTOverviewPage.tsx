@@ -216,12 +216,12 @@ export function MQTTOverviewPage() {
                 </div>
                 <div className="flex items-center gap-4">
                   {s?.connz_available && (
-                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/connections`} className="text-nats-blue text-sm hover:underline">
+                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/connections`} className="text-brand-blue text-sm hover:underline">
                       Connections ({s.connections})
                     </Link>
                   )}
                   {b.reachable && (
-                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/detail`} className="text-nats-blue text-sm hover:underline">
+                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/detail`} className="text-brand-blue text-sm hover:underline">
                       Details
                     </Link>
                   )}

@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
-	"github.com/noodlebit/nats-dashboard/internal/auth"
-	"github.com/noodlebit/nats-dashboard/internal/collector"
-	"github.com/noodlebit/nats-dashboard/internal/config"
-	"github.com/noodlebit/nats-dashboard/internal/store"
-	"github.com/noodlebit/nats-dashboard/internal/ws"
+	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
+	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
 
 //go:embed dist/*

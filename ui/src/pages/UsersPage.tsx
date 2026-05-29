@@ -110,7 +110,7 @@ export function UsersPage() {
         <h1 className="text-2xl font-semibold">User Management</h1>
         <button
           onClick={() => setShowCreate(!showCreate)}
-          className="bg-nats-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
+          className="bg-brand-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
         >
           {showCreate ? 'Cancel' : 'Create User'}
         </button>
@@ -191,7 +191,7 @@ export function UsersPage() {
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
                         <button onClick={() => { setChangePwUser(u); setOldPw(''); setNewPw('') }}
-                          className="text-gray-400 hover:text-nats-blue" title="Change password">
+                          className="text-gray-400 hover:text-brand-blue" title="Change password">
                           <Key className="w-4 h-4" />
                         </button>
                         {!isDefaultAdmin && (
@@ -227,7 +227,7 @@ export function UsersPage() {
               </div>
               <div className="flex gap-2">
                 <button onClick={handleChangePassword}
-                  className="flex-1 bg-nats-blue text-white rounded py-2 text-sm hover:opacity-90">
+                  className="flex-1 bg-brand-blue text-white rounded py-2 text-sm hover:opacity-90">
                   Change Password
                 </button>
                 <button onClick={() => setChangePwUser(null)}

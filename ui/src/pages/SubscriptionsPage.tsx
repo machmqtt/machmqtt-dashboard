@@ -258,7 +258,7 @@ export function SubscriptionsPage() {
             <button
               onClick={fetchDetail}
               disabled={detailFetching}
-              className="bg-nats-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+              className="bg-brand-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${detailFetching ? 'animate-spin' : ''}`} />
               Refresh
@@ -300,7 +300,7 @@ export function SubscriptionsPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <div className="w-16 bg-gray-200 dark:bg-gray-600 rounded-full h-2">
-                          <div className="bg-nats-blue h-2 rounded-full" style={{ width: `${Math.min(100, s.cache_hit_rate)}%` }} />
+                          <div className="bg-brand-blue h-2 rounded-full" style={{ width: `${Math.min(100, s.cache_hit_rate)}%` }} />
                         </div>
                         <span>{s.cache_hit_rate}%</span>
                       </div>

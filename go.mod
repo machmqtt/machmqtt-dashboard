@@ -1,4 +1,4 @@
-module github.com/noodlebit/nats-dashboard
+module github.com/noodlebit/machmqtt-dashboard
 
 go 1.26.3
 

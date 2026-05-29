@@ -11,24 +11,24 @@ build-ui:
 	cd ui && $(NPM) install && $(NPX) vite build
 
 build: build-ui
-	$(GO) build $(LDFLAGS) -o bin/nats-dashboard ./cmd/nats-dashboard
+	$(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard ./cmd/machmqtt-dashboard
 
 build-all: build-ui
-	GOOS=linux   GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/nats-dashboard-linux-amd64       ./cmd/nats-dashboard
-	GOOS=darwin  GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/nats-dashboard-darwin-amd64      ./cmd/nats-dashboard
-	GOOS=darwin  GOARCH=arm64 $(GO) build $(LDFLAGS) -o bin/nats-dashboard-darwin-arm64      ./cmd/nats-dashboard
+	GOOS=linux   GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-linux-amd64       ./cmd/machmqtt-dashboard
+	GOOS=darwin  GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-darwin-amd64      ./cmd/machmqtt-dashboard
+	GOOS=darwin  GOARCH=arm64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-darwin-arm64      ./cmd/machmqtt-dashboard
 
 dev-backend:
-	$(GO) run ./cmd/nats-dashboard -config config.yaml
+	$(GO) run ./cmd/machmqtt-dashboard -config config.yaml
 
 dev-frontend:
 	cd ui && $(NPX) vite
 
 test:
-	$(GO) test -count=1 -timeout 120s github.com/noodlebit/nats-dashboard/...
+	$(GO) test -count=1 -timeout 120s github.com/noodlebit/machmqtt-dashboard/...
 
 docker-build:
-	docker build -t nats-dashboard .
+	docker build -t machmqtt-dashboard .
 
 clean:
 	rm -rf bin/ internal/api/dist/assets/ ui/node_modules/

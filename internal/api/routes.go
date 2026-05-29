@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/noodlebit/nats-dashboard/internal/auth"
+	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
 )
 
 func (s *Server) registerRoutes(a *auth.Auth) {

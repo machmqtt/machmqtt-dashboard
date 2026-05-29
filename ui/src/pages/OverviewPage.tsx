@@ -31,7 +31,7 @@ export function OverviewPage() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <Card
-          icon={<Server className="w-5 h-5 text-nats-blue" />}
+          icon={<Server className="w-5 h-5 text-brand-blue" />}
           label="Servers"
           value={`${overview.healthy_count}/${overview.server_count}`}
           sub="healthy"

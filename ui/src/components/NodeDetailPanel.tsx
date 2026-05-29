@@ -29,7 +29,7 @@ export const NodeDetailPanel = memo(function NodeDetailPanel({ node, onClose }: 
         {node.type === 'server' && (
           <Link
             to={`/servers/${node.id}`}
-            className="block text-center bg-nats-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
+            className="block text-center bg-brand-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
           >
             View Server Detail
           </Link>

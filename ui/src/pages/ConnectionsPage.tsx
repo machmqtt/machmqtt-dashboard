@@ -235,7 +235,7 @@ export function ConnectionsPage() {
         </select>
         <button
           onClick={() => { fetchCounter.current++; fetchData() }}
-          className="bg-nats-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90"
+          className="bg-brand-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90"
         >
           Refresh
         </button>

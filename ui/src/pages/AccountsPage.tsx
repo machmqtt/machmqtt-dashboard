@@ -221,11 +221,11 @@ function ClickableMetric({ label, value, active, onClick }: { label: string; val
     <button onClick={onClick}
       className={`text-left rounded-lg p-3 transition-all border ${
         active
-          ? 'bg-nats-blue/10 border-nats-blue shadow-sm'
-          : 'border-gray-200 dark:border-gray-600 hover:border-nats-blue/50 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer'
+          ? 'bg-brand-blue/10 border-brand-blue shadow-sm'
+          : 'border-gray-200 dark:border-gray-600 hover:border-brand-blue/50 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer'
       }`}>
       <div className="text-gray-500 dark:text-gray-400 text-xs">{label}</div>
-      <div className="font-semibold text-xl text-nats-blue">{value.toLocaleString()}</div>
+      <div className="font-semibold text-xl text-brand-blue">{value.toLocaleString()}</div>
     </button>
   )
 }
@@ -262,7 +262,7 @@ function DrillTable({ title, headers, rows }: { title: string; headers: string[]
                   value={filters[i] || ''}
                   onChange={(e) => setFilter(i, e.target.value)}
                   placeholder="Filter..."
-                  className="mt-1 w-full border dark:border-gray-600 dark:bg-gray-800 rounded px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:text-gray-300 placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:ring-1 focus:ring-nats-blue"
+                  className="mt-1 w-full border dark:border-gray-600 dark:bg-gray-800 rounded px-1.5 py-0.5 text-xs font-normal text-gray-700 dark:text-gray-300 placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:ring-1 focus:ring-brand-blue"
                 />
               </th>
             ))}</tr>

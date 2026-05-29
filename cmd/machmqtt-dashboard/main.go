@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/noodlebit/nats-dashboard/internal/api"
-	"github.com/noodlebit/nats-dashboard/internal/auth"
-	"github.com/noodlebit/nats-dashboard/internal/collector"
-	"github.com/noodlebit/nats-dashboard/internal/config"
-	"github.com/noodlebit/nats-dashboard/internal/store"
-	"github.com/noodlebit/nats-dashboard/internal/ws"
+	"github.com/noodlebit/machmqtt-dashboard/internal/api"
+	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
+	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
 
 var version = "dev"
@@ -27,7 +27,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("nats-dashboard", version)
+		fmt.Println("machmqtt-dashboard", version)
 		os.Exit(0)
 	}
 

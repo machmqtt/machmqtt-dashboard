@@ -12,11 +12,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui-builder /app/internal/api/dist/ internal/api/dist/
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /nats-dashboard ./cmd/nats-dashboard
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /machmqtt-dashboard ./cmd/machmqtt-dashboard
 
 FROM alpine:3.21
 RUN adduser -D -u 1000 app && mkdir -p /data && chown app:app /data
-COPY --from=go-builder /nats-dashboard /usr/local/bin/nats-dashboard
+COPY --from=go-builder /machmqtt-dashboard /usr/local/bin/machmqtt-dashboard
 USER app
-ENTRYPOINT ["nats-dashboard"]
-CMD ["-config", "/etc/nats-dashboard/config.yaml"]
+ENTRYPOINT ["machmqtt-dashboard"]
+CMD ["-config", "/etc/machmqtt-dashboard/config.yaml"]

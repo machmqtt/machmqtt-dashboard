@@ -5,26 +5,26 @@
 ### Build the Image
 
 ```bash
-docker build -t nats-dashboard .
+docker build -t machmqtt-dashboard .
 
 # With version tag
-docker build --build-arg VERSION=v1.0.0 -t nats-dashboard:v1.0.0 .
+docker build --build-arg VERSION=v1.0.0 -t machmqtt-dashboard:v1.0.0 .
 ```
 
 ### Run
 
 ```bash
 docker run -d \
-  --name nats-dashboard \
+  --name machmqtt-dashboard \
   -p 8080:8080 \
-  -v /path/to/config.yaml:/etc/nats-dashboard/config.yaml:ro \
+  -v /path/to/config.yaml:/etc/machmqtt-dashboard/config.yaml:ro \
   -v dashboard-data:/data \
-  nats-dashboard
+  machmqtt-dashboard
 ```
 
 The container:
 - Runs as non-root user `app` (uid 1000)
-- Expects config at `/etc/nats-dashboard/config.yaml`
+- Expects config at `/etc/machmqtt-dashboard/config.yaml`
 - Stores the SQLite database in `/data`
 - Listens on the port defined in the config (`listen` field)
 
@@ -51,24 +51,24 @@ Ports:
 
 ```bash
 make build
-# Produces: bin/nats-dashboard
+# Produces: bin/machmqtt-dashboard
 ```
 
 The binary is statically linked (`CGO_ENABLED=0`) and self-contained. Copy it and the config file to your server.
 
 ### Systemd Service
 
-Create `/etc/systemd/system/nats-dashboard.service`:
+Create `/etc/systemd/system/machmqtt-dashboard.service`:
 
 ```ini
 [Unit]
-Description=NATS Dashboard
+Description=MachMQTT Dashboard
 After=network.target
 
 [Service]
 Type=simple
-User=nats-dashboard
-ExecStart=/usr/local/bin/nats-dashboard -config /etc/nats-dashboard/config.yaml
+User=machmqtt-dashboard
+ExecStart=/usr/local/bin/machmqtt-dashboard -config /etc/machmqtt-dashboard/config.yaml
 Restart=on-failure
 RestartSec=5
 
@@ -78,20 +78,20 @@ WantedBy=multi-user.target
 
 ```bash
 # Copy files
-sudo cp bin/nats-dashboard /usr/local/bin/
-sudo mkdir -p /etc/nats-dashboard /var/lib/nats-dashboard
-sudo cp config.yaml /etc/nats-dashboard/
+sudo cp bin/machmqtt-dashboard /usr/local/bin/
+sudo mkdir -p /etc/machmqtt-dashboard /var/lib/machmqtt-dashboard
+sudo cp config.yaml /etc/machmqtt-dashboard/
 
 # Create user
-sudo useradd -r -s /usr/sbin/nologin nats-dashboard
-sudo chown -R nats-dashboard: /var/lib/nats-dashboard
+sudo useradd -r -s /usr/sbin/nologin machmqtt-dashboard
+sudo chown -R machmqtt-dashboard: /var/lib/machmqtt-dashboard
 
-# Set data_dir in config.yaml to /var/lib/nats-dashboard
+# Set data_dir in config.yaml to /var/lib/machmqtt-dashboard
 
 # Enable and start
 sudo systemctl daemon-reload
-sudo systemctl enable nats-dashboard
-sudo systemctl start nats-dashboard
+sudo systemctl enable machmqtt-dashboard
+sudo systemctl start machmqtt-dashboard
 ```
 
 ## Kubernetes
@@ -102,43 +102,43 @@ Example deployment manifest:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nats-dashboard
+  name: machmqtt-dashboard
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: nats-dashboard
+      app: machmqtt-dashboard
   template:
     metadata:
       labels:
-        app: nats-dashboard
+        app: machmqtt-dashboard
     spec:
       containers:
         - name: dashboard
-          image: nats-dashboard:latest
+          image: machmqtt-dashboard:latest
           ports:
             - containerPort: 8080
           volumeMounts:
             - name: config
-              mountPath: /etc/nats-dashboard
+              mountPath: /etc/machmqtt-dashboard
               readOnly: true
             - name: data
               mountPath: /data
       volumes:
         - name: config
           configMap:
-            name: nats-dashboard-config
+            name: machmqtt-dashboard-config
         - name: data
           persistentVolumeClaim:
-            claimName: nats-dashboard-data
+            claimName: machmqtt-dashboard-data
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: nats-dashboard
+  name: machmqtt-dashboard
 spec:
   selector:
-    app: nats-dashboard
+    app: machmqtt-dashboard
   ports:
     - port: 8080
       targetPort: 8080
@@ -147,7 +147,7 @@ spec:
 Create the ConfigMap from your config file:
 
 ```bash
-kubectl create configmap nats-dashboard-config --from-file=config.yaml
+kubectl create configmap machmqtt-dashboard-config --from-file=config.yaml
 ```
 
 ## Reverse Proxy

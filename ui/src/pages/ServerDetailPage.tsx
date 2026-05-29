@@ -71,7 +71,7 @@ export function ServerDetailPage() {
       <div className="text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 rounded-lg shadow p-8 text-center">
         Server not found.
         <div className="mt-4">
-          <Link to="/" className="text-nats-blue hover:underline">Back to Overview</Link>
+          <Link to="/" className="text-brand-blue hover:underline">Back to Overview</Link>
         </div>
       </div>
     )

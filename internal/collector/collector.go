@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/noodlebit/nats-dashboard/internal/config"
-	"github.com/noodlebit/nats-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 	"golang.org/x/sync/errgroup"
 )
 
