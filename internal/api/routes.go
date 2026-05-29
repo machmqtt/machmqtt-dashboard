@@ -43,6 +43,8 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/license", s.handleMQTTLicense)
 	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/metrics", s.handleMQTTMetrics)
 	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/pool", s.handleMQTTPool)
+	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/cluster", s.handleMQTTCluster)
+	protected.HandleFunc("GET /api/environments/{env}/mqtt/{bridge}/cluster/inspect", s.handleMQTTClusterInspect)
 
 	// Topology position persistence.
 	protected.HandleFunc("GET /api/environments/{env}/topology/positions", s.handleGetPositions)

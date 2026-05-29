@@ -8,7 +8,7 @@ import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
 
-type Tab = 'nats' | 'metrics' | 'pool' | 'license' | 'config'
+type Tab = 'nats' | 'metrics' | 'pool' | 'cluster' | 'license' | 'config'
 
 const REFRESH_INTERVAL = 10_000
 
@@ -26,6 +26,8 @@ export function MQTTBridgeDetailPage() {
   const [license, setLicense] = useState<any>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [diag, setDiag] = useState<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [cluster, setCluster] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
   const bridgeMetricsParams = useMemo(() => (bridge ? { bridge_id: bridge } : undefined), [bridge])
@@ -42,12 +44,14 @@ export function MQTTBridgeDetailPage() {
       fetchWithTimeout(`${base}/pool`).then(r => r.ok ? r.json() : null),
       fetchWithTimeout(`${base}/license`).then(r => r.ok ? r.json() : null),
       fetchWithTimeout(`${base}/diag/config`).then(r => r.ok ? r.json() : null),
+      fetchWithTimeout(`${base}/cluster`).then(r => r.ok ? r.json() : null),
     ])
     setNats(results[0].status === 'fulfilled' ? results[0].value : null)
     setMetrics(results[1].status === 'fulfilled' ? results[1].value : null)
     setPool(results[2].status === 'fulfilled' ? results[2].value : null)
     setLicense(results[3].status === 'fulfilled' ? results[3].value : null)
     setDiag(results[4].status === 'fulfilled' ? results[4].value : null)
+    setCluster(results[5].status === 'fulfilled' ? results[5].value : null)
     setLoading(false)
   }, [activeEnv, bridge])
 
@@ -64,6 +68,7 @@ export function MQTTBridgeDetailPage() {
     { id: 'nats', label: 'NATS Connection' },
     { id: 'metrics', label: 'Metrics' },
     { id: 'pool', label: 'Connection Pool' },
+    { id: 'cluster', label: 'Cluster' },
     { id: 'license', label: 'License' },
     { id: 'config', label: 'Config' },
   ]
@@ -104,6 +109,7 @@ export function MQTTBridgeDetailPage() {
           {tab === 'nats' && <NATSTab data={nats} />}
           {tab === 'metrics' && <MetricsTab data={metrics} tsMetrics={bridgeMetrics} />}
           {tab === 'pool' && <PoolTab data={pool} />}
+          {tab === 'cluster' && <ClusterTab data={cluster} env={activeEnv} bridge={bridge} />}
           {tab === 'license' && <LicenseTab data={license} />}
           {tab === 'config' && <ConfigTab data={diag} />}
         </>
@@ -368,6 +374,124 @@ function PoolTab({ data }: { data: any }) {
       </Section>
     </div>
   )
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ClusterTab({ data, env, bridge }: { data: any; env: string; bridge?: string }) {
+  const [clientId, setClientId] = useState('')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [inspect, setInspect] = useState<any>(null)
+  const [inspecting, setInspecting] = useState(false)
+
+  const doInspect = async () => {
+    if (!clientId.trim() || !bridge) return
+    setInspecting(true)
+    setInspect(null)
+    try {
+      const b = encodeURIComponent(bridge)
+      const res = await fetchWithTimeout(
+        `/api/environments/${env}/mqtt/${b}/cluster/inspect?client_id=${encodeURIComponent(clientId.trim())}`,
+      )
+      setInspect(res.ok ? await res.json() : { found: false, reason: `request failed (HTTP ${res.status})` })
+    } catch {
+      setInspect({ found: false, reason: 'request failed' })
+    }
+    setInspecting(false)
+  }
+
+  if (!data || data.available === false) {
+    return <Empty msg={data?.reason || 'Cluster information not available'} />
+  }
+  const c = data.cluster
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const instances = (c?.instances || []) as any[]
+  const hmac = (c?.hmac_failures || {}) as Record<string, number>
+  const hmacEntries = Object.entries(hmac)
+
+  return (
+    <div className="space-y-6">
+      <Section title="Cluster">
+        <Grid>
+          <DI label="Local Instance" value={c?.local_instance_id || '-'} mono />
+          <DI label="Local Connections" value={fmtNum(c?.local_connections || 0)} />
+          <DI label="Instances" value={instances.length.toString()} />
+        </Grid>
+      </Section>
+
+      <Section title="Members">
+        <Table
+          headers={['Instance', 'Address', 'Clients', 'Started', 'Last Seen']}
+          rows={instances.map((i) => [
+            i.self ? `${i.instance_id} (self)` : i.instance_id,
+            i.addr,
+            (i.clients || 0).toLocaleString(),
+            i.started_at ? new Date(i.started_at).toLocaleString() : '-',
+            fmtLastSeen(i.last_seen_ms),
+          ])}
+        />
+      </Section>
+
+      <Section title="HMAC Failures by Source Instance">
+        {hmacEntries.length === 0 ? (
+          <div className="text-sm text-gray-400">No HMAC failures recorded — cluster message authentication is healthy.</div>
+        ) : (
+          <Table
+            headers={['Source Instance', 'Failures']}
+            rows={hmacEntries.map(([id, n]) => [id, n.toLocaleString()])}
+          />
+        )}
+      </Section>
+
+      <Section title="Inspect Client Across Cluster">
+        <div className="flex gap-2 mb-3">
+          <input
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') doInspect() }}
+            placeholder="MQTT client ID"
+            className="flex-1 bg-gray-50 dark:bg-gray-700 rounded px-3 py-1.5 text-sm outline-none border border-gray-200 dark:border-gray-600"
+          />
+          <button
+            onClick={doInspect}
+            disabled={inspecting || !clientId.trim()}
+            className="px-3 py-1.5 text-sm rounded bg-brand-blue text-white disabled:opacity-50"
+          >
+            {inspecting ? 'Locating…' : 'Inspect'}
+          </button>
+        </div>
+        {inspect && (inspect.found === false
+          ? <div className="text-sm text-gray-500 dark:text-gray-400">{inspect.reason || 'Not found'}</div>
+          : <InspectResult data={inspect.inspect} />)}
+      </Section>
+    </div>
+  )
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function InspectResult({ data }: { data: any }) {
+  if (!data) return null
+  const client = data.client || {}
+  return (
+    <div>
+      <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+        Found on instance <span className="font-mono">{data.instance_id}</span>
+      </div>
+      <Grid>
+        {Object.entries(client).map(([k, v]) => (
+          <DI key={k} label={k} value={typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)} />
+        ))}
+      </Grid>
+    </div>
+  )
+}
+
+function fmtLastSeen(ms: number): string {
+  if (ms == null) return '-'
+  const stale = ms >= 30_000 ? ' (stale)' : ''
+  if (ms < 1000) return 'just now'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago${stale}`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago${stale}`
+  return `${Math.round(ms / 3_600_000)}h ago${stale}`
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

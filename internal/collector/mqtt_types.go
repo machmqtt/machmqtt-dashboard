@@ -188,6 +188,32 @@ type MQTTNATSKVBucket struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// MQTTCluster mirrors the bridge GET /admin/cluster response: a read-only view
+// of cluster members (from the heartbeat map) plus per-source HMAC failures.
+type MQTTCluster struct {
+	LocalInstanceID  string                `json:"local_instance_id"`
+	LocalConnections int64                 `json:"local_connections"`
+	Instances        []MQTTClusterInstance `json:"instances"`
+	HMACFailures     map[string]int64      `json:"hmac_failures,omitempty"`
+}
+
+type MQTTClusterInstance struct {
+	InstanceID string `json:"instance_id"`
+	Addr       string `json:"addr"`
+	Clients    int64  `json:"clients"`
+	StartedAt  string `json:"started_at"`
+	UpdatedAt  string `json:"updated_at"`
+	LastSeenMs int64  `json:"last_seen_ms"`
+	Self       bool   `json:"self"`
+}
+
+// MQTTClusterInspect mirrors GET /admin/cluster/inspect. Client is kept as a
+// raw object so the dashboard tolerates field drift across bridge versions.
+type MQTTClusterInspect struct {
+	InstanceID string `json:"instance_id"`
+	Client     any    `json:"client"`
+}
+
 // MQTTPool mirrors the bridge /pool response.
 type MQTTPool struct {
 	Size  int            `json:"size"`

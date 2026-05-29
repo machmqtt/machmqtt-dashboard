@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -230,6 +231,80 @@ func (s *Server) handleMQTTMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, metrics)
+}
+
+// handleMQTTCluster proxies GET /admin/cluster, relaying the bridge's "feature
+// unavailable" responses (409 not clustered, 404 unsupported on older bridges)
+// as a clean {available:false, reason} payload instead of an error.
+func (s *Server) handleMQTTCluster(w http.ResponseWriter, r *http.Request) {
+	env := r.PathValue("env")
+	bridgeName := r.PathValue("bridge")
+
+	bridge := s.findBridge(env, bridgeName)
+	if bridge == nil {
+		http.Error(w, `{"error":"bridge not found"}`, http.StatusNotFound)
+		return
+	}
+
+	f := collector.NewMQTTBridgeFetcher(bridge.URL, bridge.Name, bridge.BearerToken)
+	cluster, code, err := f.FetchCluster(r.Context())
+	if err != nil {
+		s.log.Warn("mqtt bridge request failed", "err", err)
+		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		return
+	}
+	switch code {
+	case http.StatusOK:
+		writeJSON(w, map[string]any{"available": true, "cluster": cluster})
+	case http.StatusConflict:
+		writeJSON(w, map[string]any{"available": false, "reason": "clustering is not enabled on this bridge (set cluster.enabled: true)"})
+	case http.StatusNotFound:
+		writeJSON(w, map[string]any{"available": false, "reason": "this bridge version does not expose the cluster API"})
+	case http.StatusUnauthorized, http.StatusForbidden:
+		writeJSON(w, map[string]any{"available": false, "reason": "admin authentication failed — set the bridge admin token in the environment config"})
+	default:
+		writeJSON(w, map[string]any{"available": false, "reason": fmt.Sprintf("bridge returned HTTP %d", code)})
+	}
+}
+
+// handleMQTTClusterInspect proxies GET /admin/cluster/inspect?client_id=, used
+// to locate a single client across the cluster.
+func (s *Server) handleMQTTClusterInspect(w http.ResponseWriter, r *http.Request) {
+	env := r.PathValue("env")
+	bridgeName := r.PathValue("bridge")
+	clientID := r.URL.Query().Get("client_id")
+	if clientID == "" {
+		http.Error(w, `{"error":"client_id query parameter is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	bridge := s.findBridge(env, bridgeName)
+	if bridge == nil {
+		http.Error(w, `{"error":"bridge not found"}`, http.StatusNotFound)
+		return
+	}
+
+	f := collector.NewMQTTBridgeFetcher(bridge.URL, bridge.Name, bridge.BearerToken)
+	ins, code, err := f.FetchClusterInspect(r.Context(), clientID)
+	if err != nil {
+		s.log.Warn("mqtt bridge request failed", "err", err)
+		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		return
+	}
+	switch code {
+	case http.StatusOK:
+		writeJSON(w, map[string]any{"found": true, "inspect": ins})
+	case http.StatusNotFound:
+		writeJSON(w, map[string]any{"found": false, "reason": "client not found in the cluster"})
+	case http.StatusConflict:
+		writeJSON(w, map[string]any{"found": false, "reason": "clustering is not enabled on this bridge"})
+	case http.StatusTooManyRequests:
+		writeJSON(w, map[string]any{"found": false, "reason": "bridge busy with concurrent inspects — retry shortly"})
+	case http.StatusUnauthorized, http.StatusForbidden:
+		writeJSON(w, map[string]any{"found": false, "reason": "admin authentication failed — set the bridge admin token in the environment config"})
+	default:
+		writeJSON(w, map[string]any{"found": false, "reason": fmt.Sprintf("bridge returned HTTP %d", code)})
+	}
 }
 
 // resolvedBridge holds the URL and auth info needed to talk to a bridge.
