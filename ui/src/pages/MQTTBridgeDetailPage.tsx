@@ -213,6 +213,23 @@ function NATSTab({ data }: { data: any }) {
   )
 }
 
+// fmtMs formats average latency from histogram sum/count into milliseconds.
+// Returns '—' when count is zero to avoid division-by-zero.
+function fmtMs(sumSeconds: number, count: number): string {
+  if (!count) return '—'
+  const ms = (sumSeconds / count) * 1000
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + ' s'
+  if (ms >= 1) return ms.toFixed(2) + ' ms'
+  return (ms * 1000).toFixed(0) + ' µs'
+}
+
+// fmtPending renders consumer_pending_messages.
+// -1 means JetStream is unavailable and the metric was absent.
+function fmtPending(v: number): string {
+  if (v < 0) return 'n/a (JS unavailable)'
+  return fmtNum(v)
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<typeof useMetrics> }) {
   if (!data) return <Empty msg="Metrics not available" />
@@ -274,10 +291,22 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
       <Section title="Authentication">
         <Grid>
           <DI label="Auth Success" value={fmtNum(data.auth_success)} />
-          <DI label="Auth Failure" value={fmtNum(data.auth_failure)} />
+          <DI label="Auth Failure (total)" value={fmtNum(data.auth_failure)} />
+          <DI label="Bad Credentials" value={fmtNum(data.auth_fail_bad_credentials)} />
+          <DI label="Enhanced (SCRAM)" value={fmtNum(data.auth_fail_enhanced)} />
+          <DI label="Account Locked" value={fmtNum(data.auth_fail_locked)} />
+          <DI label="Other" value={fmtNum(data.auth_fail_other)} />
+          <DI label="SCRAM Sessions Active" value={fmtNum(data.scram_sessions_active)} />
         </Grid>
       </Section>
-      <Section title="MQTT Messages">
+      <Section title="License Rejections">
+        <Grid>
+          <DI label="Auth Method" value={fmtNum(data.license_rejected_auth_method)} />
+          <DI label="Retain" value={fmtNum(data.license_rejected_retain)} />
+          <DI label="Proxy Protocol" value={fmtNum(data.license_rejected_proxy_protocol)} />
+        </Grid>
+      </Section>
+      <Section title="Client Messages (MQTT ↔ Broker)">
         <Grid>
           <DI label="Recv QoS 0" value={fmtNum(data.msgs_recv_qos0)} />
           <DI label="Recv QoS 1" value={fmtNum(data.msgs_recv_qos1)} />
@@ -285,6 +314,29 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Sent QoS 0" value={fmtNum(data.msgs_sent_qos0)} />
           <DI label="Sent QoS 1" value={fmtNum(data.msgs_sent_qos1)} />
           <DI label="Sent QoS 2" value={fmtNum(data.msgs_sent_qos2)} />
+          <DI label="Redelivered" value={fmtNum(data.msgs_redelivered)} />
+        </Grid>
+      </Section>
+      <Section title="Server Messages (Broker ↔ NATS)">
+        <Grid>
+          <DI label="Published QoS 0" value={fmtNum(data.server_published_qos0)} />
+          <DI label="Published QoS 1" value={fmtNum(data.server_published_qos1)} />
+          <DI label="Published QoS 2" value={fmtNum(data.server_published_qos2)} />
+          <DI label="Consumed QoS 0" value={fmtNum(data.server_consumed_qos0)} />
+          <DI label="Consumed QoS 1" value={fmtNum(data.server_consumed_qos1)} />
+          <DI label="Consumed QoS 2" value={fmtNum(data.server_consumed_qos2)} />
+        </Grid>
+      </Section>
+      <Section title="Will Messages">
+        <Grid>
+          <DI label="Published" value={fmtNum(data.will_published)} />
+          <DI label="Dropped: Queue Full" value={fmtNum(data.will_dropped_queue_full)} />
+          <DI label="Dropped: Publish Error" value={fmtNum(data.will_dropped_publish_error)} />
+          <DI label="Dropped: Invalid Topic" value={fmtNum(data.will_dropped_invalid_topic)} />
+          <DI label="Dropped: Shutdown" value={fmtNum(data.will_dropped_shutdown)} />
+          <DI label="Suppressed (Reconnected)" value={fmtNum(data.will_suppressed_reconnected)} />
+          <DI label="Pending" value={fmtNum(data.will_pending)} />
+          <DI label="Retry Pending" value={fmtNum(data.will_retry_pending)} />
         </Grid>
       </Section>
       <Section title="Protocol">
@@ -292,20 +344,70 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Subscribes" value={fmtNum(data.subscribes)} />
           <DI label="Unsubscribes" value={fmtNum(data.unsubscribes)} />
           <DI label="Keepalive Timeouts" value={fmtNum(data.keepalive_timeouts)} />
-        </Grid>
-      </Section>
-      <Section title="Connection Pool">
-        <Grid>
-          <DI label="Pool Publishes" value={fmtNum(data.pool_publishes)} />
-          <DI label="Pool Subscribes" value={fmtNum(data.pool_subscribes)} />
+          <DI label="PINGREQ Rate-Limited" value={fmtNum(data.pingreq_rate_limited)} />
         </Grid>
       </Section>
       <Section title="NATS">
         <Grid>
           <DI label="Disconnects" value={fmtNum(data.nats_disconnects)} />
           <DI label="Reconnects" value={fmtNum(data.nats_reconnects)} />
+          <DI label="Slow Consumer Events" value={fmtNum(data.nats_slow_consumer)} />
         </Grid>
       </Section>
+      <Section title="Errors">
+        <Grid>
+          <DI label="Panics Recovered" value={fmtNum(data.panics_recovered)} />
+          <DI label="TLS Handshake Failures" value={fmtNum(data.tls_handshake_failures)} />
+          <DI label="Proxy Protocol Errors" value={fmtNum(data.proxy_protocol_errors)} />
+          <DI label="WS Upgrade Failures" value={fmtNum(data.ws_upgrade_failures)} />
+          <DI label="Flow-Control Overflow" value={fmtNum(data.flowcontrol_overflow)} />
+        </Grid>
+      </Section>
+      <Section title="Durability & DLQ">
+        <Grid>
+          <DI label="QoS 2 Publish Failed" value={fmtNum(data.qos2_server_publish_failed)} />
+          <DI label="QoS 1 Client Send Failed" value={fmtNum(data.qos1_client_send_failed)} />
+          <DI label="Server Publish Dropped" value={fmtNum(data.server_publish_dropped)} />
+          <DI label="Dead Lettered" value={fmtNum(data.messages_dead_lettered)} />
+          <DI label="Poison Terminated" value={fmtNum(data.poison_messages_terminated)} />
+          <DI label="DLQ Write Failed" value={fmtNum(data.dead_letter_write_failed)} />
+          <DI label="Outbound Queue Dropped" value={fmtNum(data.outbound_queue_dropped)} />
+        </Grid>
+      </Section>
+      <Section title="JetStream Health">
+        <Grid>
+          <DI label="Session Write-Behind Depth" value={fmtNum(data.session_write_behind_depth)} />
+          <DI label="Consumer Pending Messages" value={fmtPending(data.consumer_pending_messages ?? -1)} />
+          <DI label="Stalled Consumers" value={fmtNum(data.stalled_consumers)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">Consumer Pending shows the QoS 1/2 backlog in the MQTT5_msgs stream. Updated every 15 s; shows <em>n/a</em> when JetStream is unavailable.</p>
+      </Section>
+      <Section title="Latency (averages)">
+        <Grid>
+          <DI label="Publish" value={fmtMs(data.publish_latency_sum_seconds, data.publish_latency_count)} />
+          <DI label="Auth" value={fmtMs(data.auth_duration_sum_seconds, data.auth_duration_count)} />
+          <DI label="JetStream Publish" value={fmtMs(data.jetstream_publish_duration_sum_seconds, data.jetstream_publish_duration_count)} />
+          <DI label="Subscribe" value={fmtMs(data.subscribe_duration_sum_seconds, data.subscribe_duration_count)} />
+          <DI label="Dispatch Wait" value={fmtMs(data.dispatch_wait_sum_seconds, data.dispatch_wait_count)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">All values are process-lifetime averages (sum/count from histogram). High dispatch wait correlates with <span className="font-mono">pool_full</span> events.</p>
+      </Section>
+      <Section title="Go Runtime">
+        <Grid>
+          <DI label="Goroutines" value={fmtNum(data.go_goroutines)} />
+          <DI label="Heap In-Use" value={fmtBytes(data.go_heap_inuse_bytes)} />
+          <DI label="GC Cycles" value={fmtNum(data.go_gc_cycles)} />
+          <DI label="GC Pause Total" value={fmtMs(data.go_gc_pause_ns_total / 1e9, 1)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">Heap and GC stats are cached with a 60 s TTL to limit stop-the-world impact.</p>
+      </Section>
+      {data.instance_id && (
+        <Section title="Instance">
+          <Grid>
+            <DI label="Instance ID" value={data.instance_id} mono />
+          </Grid>
+        </Section>
+      )}
     </div>
   )
 }

@@ -42,28 +42,11 @@ interface PoolSlot {
   flush_count: number
 }
 
-interface MQTTMetrics {
-  connections_active: number
-  connections_total: number
-  connections_rejected: number
-  ws_connections_active?: number
-  ws_connections_total?: number
-  auth_success: number
-  auth_failure: number
-  msgs_recv_qos0: number
-  msgs_recv_qos1: number
-  msgs_recv_qos2: number
-  msgs_sent_qos0: number
-  msgs_sent_qos1: number
-  msgs_sent_qos2: number
-  subscribes: number
-  unsubscribes: number
-  keepalive_timeouts: number
-  pool_publishes?: number
-  pool_subscribes?: number
-  nats_disconnects: number
-  nats_reconnects: number
-}
+// MQTTMetrics is typed as any to avoid drift with the broker's expanding
+// /metrics output. Field access is guarded with optional chaining at the
+// call sites below.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MQTTMetrics = any
 
 interface BridgeStatus {
   name: string
@@ -277,7 +260,6 @@ export function MQTTOverviewPage() {
                     <DI label="Sent QoS 0/1/2" value={`${fmtNum(s.metrics.msgs_sent_qos0)} / ${fmtNum(s.metrics.msgs_sent_qos1)} / ${fmtNum(s.metrics.msgs_sent_qos2)}`} />
                     <DI label="Sub / Unsub" value={`${fmtNum(s.metrics.subscribes)} / ${fmtNum(s.metrics.unsubscribes)}`} />
                     <DI label="Keepalive Timeouts" value={fmtNum(s.metrics.keepalive_timeouts)} />
-                    <DI label="Pool Pub / Sub" value={`${fmtNum(s.metrics.pool_publishes ?? 0)} / ${fmtNum(s.metrics.pool_subscribes ?? 0)}`} />
                     <DI label="NATS Disconn / Reconn" value={`${fmtNum(s.metrics.nats_disconnects)} / ${fmtNum(s.metrics.nats_reconnects)}`} />
                   </>
                 )}

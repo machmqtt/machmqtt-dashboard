@@ -6,7 +6,10 @@ import (
 )
 
 func parsePrometheusMetrics(body string) *MQTTMetrics {
-	m := &MQTTMetrics{}
+	// ConsumerPendingMessages is absent when JetStream is unavailable; sentinel -1
+	// lets the UI distinguish "absent" from "zero pending".
+	m := &MQTTMetrics{ConsumerPendingMessages: -1}
+
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -15,6 +18,7 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 
 		name, value := parseMetricLine(line)
 		switch {
+		// --- Connections ---
 		case name == "machmqtt_connections_active":
 			m.ConnectionsActive = parseInt(value)
 		case name == "machmqtt_connections_total":
@@ -25,57 +29,219 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.WSConnectionsActive = parseInt(value)
 		case name == "machmqtt_ws_connections_total":
 			m.WSConnectionsTotal = parseInt(value)
+
+		// Connection rejections by reason.
+		case name == "machmqtt_connections_rejected_by_reason_total":
+			switch extractLabel(line, "reason") {
+			case "max_conns":
+				m.RejectedMaxConns = parseInt(value)
+			case "license":
+				m.RejectedLicense = parseInt(value)
+			case "per_ip_conns":
+				m.RejectedPerIPConns = parseInt(value)
+			case "per_ip_accept":
+				m.RejectedPerIPAccept = parseInt(value)
+			case "pool_full":
+				m.RejectedPoolFull = parseInt(value)
+			}
+
+		// Dispatch-pool saturation gauges.
+		case name == "machmqtt_dispatch_slots_active":
+			switch extractLabel(line, "pool") {
+			case "tls":
+				m.DispatchSlotsTLS = parseInt(value)
+			case "websocket":
+				m.DispatchSlotsWS = parseInt(value)
+			}
+
+		// --- Authentication ---
 		case name == "machmqtt_auth_success_total":
 			m.AuthSuccess = parseInt(value)
 		case name == "machmqtt_auth_failure_total":
-			// machmqtt emits this only as per-reason labeled series
-			// (reason="bad_credentials|enhanced|locked|other") with no
-			// unlabeled aggregate, so sum the buckets into the total.
-			m.AuthFailure += parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_messages_received_total{qos="0"}`):
-			m.MsgsRecvQoS0 = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_messages_received_total{qos="1"}`):
-			m.MsgsRecvQoS1 = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_messages_received_total{qos="2"}`):
-			m.MsgsRecvQoS2 = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_messages_sent_total{qos="0"}`):
-			m.MsgsSentQoS0 = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_messages_sent_total{qos="1"}`):
-			m.MsgsSentQoS1 = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_messages_sent_total{qos="2"}`):
-			m.MsgsSentQoS2 = parseInt(value)
-		case name == "machmqtt_subscribes_total":
+			// machmqtt emits only per-reason labeled series; sum them into the total
+			// and also keep each reason distinct.
+			v := parseInt(value)
+			m.AuthFailure += v
+			switch extractLabel(line, "reason") {
+			case "bad_credentials":
+				m.AuthFailBadCreds = v
+			case "enhanced":
+				m.AuthFailEnhanced = v
+			case "locked":
+				m.AuthFailLocked = v
+			case "other":
+				m.AuthFailOther = v
+			}
+		case name == "machmqtt_scram_sessions_active":
+			m.ScramSessionsActive = parseInt(value)
+
+		// --- License feature-gate rejections ---
+		case name == "machmqtt_license_feature_rejected_total":
+			switch extractLabel(line, "feature") {
+			case "auth_method":
+				m.LicenseRejectedAuthMethod = parseInt(value)
+			case "retain":
+				m.LicenseRejectedRetain = parseInt(value)
+			case "proxy_protocol":
+				m.LicenseRejectedProxyProtocol = parseInt(value)
+			}
+
+		// --- Client messages (MQTT client ↔ broker) ---
+		case name == "machmqtt_client_messages_received_total":
+			switch extractLabel(line, "qos") {
+			case "0":
+				m.MsgsRecvQoS0 = parseInt(value)
+			case "1":
+				m.MsgsRecvQoS1 = parseInt(value)
+			case "2":
+				m.MsgsRecvQoS2 = parseInt(value)
+			}
+		case name == "machmqtt_client_messages_sent_total":
+			switch extractLabel(line, "qos") {
+			case "0":
+				m.MsgsSentQoS0 = parseInt(value)
+			case "1":
+				m.MsgsSentQoS1 = parseInt(value)
+			case "2":
+				m.MsgsSentQoS2 = parseInt(value)
+			}
+		case name == "machmqtt_client_messages_redelivered_total":
+			m.MsgsRedelivered = parseInt(value)
+
+		// --- Server messages (broker ↔ NATS) ---
+		case name == "machmqtt_server_messages_published_total":
+			switch extractLabel(line, "qos") {
+			case "0":
+				m.ServerPublishedQoS0 = parseInt(value)
+			case "1":
+				m.ServerPublishedQoS1 = parseInt(value)
+			case "2":
+				m.ServerPublishedQoS2 = parseInt(value)
+			}
+		case name == "machmqtt_server_messages_consumed_total":
+			switch extractLabel(line, "qos") {
+			case "0":
+				m.ServerConsumedQoS0 = parseInt(value)
+			case "1":
+				m.ServerConsumedQoS1 = parseInt(value)
+			case "2":
+				m.ServerConsumedQoS2 = parseInt(value)
+			}
+
+		// --- Will (Last-Will-and-Testament) ---
+		case name == "machmqtt_will_published_total":
+			m.WillPublished = parseInt(value)
+		case name == "machmqtt_will_dropped_total":
+			switch extractLabel(line, "reason") {
+			case "queue_full":
+				m.WillDroppedQueueFull = parseInt(value)
+			case "publish_error":
+				m.WillDroppedPublishError = parseInt(value)
+			case "invalid_topic":
+				m.WillDroppedInvalidTopic = parseInt(value)
+			case "shutdown":
+				m.WillDroppedShutdown = parseInt(value)
+			}
+		case name == "machmqtt_will_suppressed_total":
+			// Only one reason ("reconnected") exists today; store directly.
+			m.WillSuppressedReconnect = parseInt(value)
+		case name == "machmqtt_will_pending":
+			m.WillPending = parseInt(value)
+		case name == "machmqtt_will_retry_pending":
+			m.WillRetryPending = parseInt(value)
+
+		// --- Protocol ops ---
+		case name == "machmqtt_subscriptions_total":
 			m.Subscribes = parseInt(value)
-		case name == "machmqtt_unsubscribes_total":
+		case name == "machmqtt_unsubscriptions_total":
 			m.Unsubscribes = parseInt(value)
 		case name == "machmqtt_keepalive_timeouts_total":
 			m.KeepaliveTimeouts = parseInt(value)
-		case name == "machmqtt_pool_publishes_total":
-			m.PoolPublishes = parseInt(value)
-		case name == "machmqtt_pool_subscribes_total":
-			m.PoolSubscribes = parseInt(value)
+		case name == "machmqtt_pingreq_rate_limited_total":
+			m.PingreqRateLimited = parseInt(value)
+
+		// --- NATS connection ---
 		case name == "machmqtt_nats_disconnects_total":
 			m.NATSDisconnects = parseInt(value)
 		case name == "machmqtt_nats_reconnects_total":
 			m.NATSReconnects = parseInt(value)
-		// Connection rejections by reason. Match the full labeled line (qos-style)
-		// rather than the bare name, so each reason bucket is kept distinct
-		// instead of collapsed into one total.
-		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="max_conns"}`):
-			m.RejectedMaxConns = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="license"}`):
-			m.RejectedLicense = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="per_ip_conns"}`):
-			m.RejectedPerIPConns = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="per_ip_accept"}`):
-			m.RejectedPerIPAccept = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_connections_rejected_by_reason_total{reason="pool_full"}`):
-			m.RejectedPoolFull = parseInt(value)
-		// Dispatch-pool saturation gauges.
-		case strings.HasPrefix(line, `machmqtt_dispatch_slots_active{pool="tls"}`):
-			m.DispatchSlotsTLS = parseInt(value)
-		case strings.HasPrefix(line, `machmqtt_dispatch_slots_active{pool="websocket"}`):
-			m.DispatchSlotsWS = parseInt(value)
+		case name == "machmqtt_nats_slow_consumer_total":
+			m.NATSSlowConsumer = parseInt(value)
+
+		// --- Reliability ---
+		case name == "machmqtt_panics_recovered_total":
+			m.PanicsRecovered = parseInt(value)
+		case name == "machmqtt_tls_handshake_failures_total":
+			m.TLSHandshakeFailures = parseInt(value)
+		case name == "machmqtt_proxy_protocol_errors_total":
+			m.ProxyProtocolErrors = parseInt(value)
+		case name == "machmqtt_ws_upgrade_failures_total":
+			m.WSUpgradeFailures = parseInt(value)
+		case name == "machmqtt_flowcontrol_overflow_total":
+			m.FlowcontrolOverflow = parseInt(value)
+
+		// --- Durability / DLQ ---
+		case name == "machmqtt_qos2_server_publish_failed_total":
+			m.QoS2ServerPublishFailed = parseInt(value)
+		case name == "machmqtt_qos1_client_send_failed_total":
+			m.QoS1ClientSendFailed = parseInt(value)
+		case name == "machmqtt_server_publish_dropped_total":
+			m.ServerPublishDropped = parseInt(value)
+		case name == "machmqtt_messages_dead_lettered_total":
+			m.MessagesDeadLettered = parseInt(value)
+		case name == "machmqtt_poison_messages_terminated_total":
+			m.PoisonMessagesTerminated = parseInt(value)
+		case name == "machmqtt_dead_letter_write_failed_total":
+			m.DeadLetterWriteFailed = parseInt(value)
+		case name == "machmqtt_outbound_queue_dropped_total":
+			m.OutboundQueueDropped = parseInt(value)
+
+		// --- JetStream / consumer gauges ---
+		case name == "machmqtt_session_write_behind_depth":
+			m.SessionWriteBehindDepth = parseInt(value)
+		case name == "machmqtt_consumer_pending_messages":
+			m.ConsumerPendingMessages = parseInt(value)
+		case name == "machmqtt_stalled_consumers":
+			m.StalledConsumers = parseInt(value)
+
+		// --- Histograms (count + sum only; _bucket lines are ignored) ---
+		// Exact-name match avoids accidentally matching _bucket{le=...} lines.
+		case name == "machmqtt_publish_latency_seconds_count":
+			m.PublishLatencyCount = parseInt(value)
+		case name == "machmqtt_publish_latency_seconds_sum":
+			m.PublishLatencySumSeconds = parseFloat(value)
+		case name == "machmqtt_auth_duration_seconds_count":
+			m.AuthDurationCount = parseInt(value)
+		case name == "machmqtt_auth_duration_seconds_sum":
+			m.AuthDurationSumSeconds = parseFloat(value)
+		case name == "machmqtt_jetstream_publish_duration_seconds_count":
+			m.JSPublishDurationCount = parseInt(value)
+		case name == "machmqtt_jetstream_publish_duration_seconds_sum":
+			m.JSPublishDurationSumSeconds = parseFloat(value)
+		case name == "machmqtt_subscribe_duration_seconds_count":
+			m.SubscribeDurationCount = parseInt(value)
+		case name == "machmqtt_subscribe_duration_seconds_sum":
+			m.SubscribeDurationSumSeconds = parseFloat(value)
+		case name == "machmqtt_dispatch_wait_seconds_count":
+			m.DispatchWaitCount = parseInt(value)
+		case name == "machmqtt_dispatch_wait_seconds_sum":
+			m.DispatchWaitSumSeconds = parseFloat(value)
+
+		// --- Go runtime ---
+		case name == "machmqtt_go_goroutines":
+			m.GoGoroutines = parseInt(value)
+		case name == "machmqtt_go_heap_inuse_bytes":
+			m.GoHeapInuseBytes = parseInt(value)
+		case name == "machmqtt_go_gc_cycles_total":
+			m.GoGCCycles = parseInt(value)
+		case name == "machmqtt_go_gc_pause_ns_total":
+			m.GoGCPauseNsTotal = parseInt(value)
+
+		// --- Instance identity ---
+		case name == "machmqtt_instance_info":
+			m.InstanceID = extractLabel(line, "instance_id")
+
+		// --- Operator drain state (emitted from admin.go, not metrics.go) ---
 		case name == "machmqtt_drained":
 			m.Drained = parseInt(value)
 		}
@@ -83,6 +249,10 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 	return m
 }
 
+// parseMetricLine splits a Prometheus text line into the metric name (the part
+// before the first '{', or the first whitespace-delimited token) and the sample
+// value (the last whitespace-delimited token after the closing '}', or the
+// second token for unlabelled lines).
 func parseMetricLine(line string) (name, value string) {
 	idx := strings.IndexByte(line, '{')
 	if idx >= 0 {
@@ -101,7 +271,28 @@ func parseMetricLine(line string) (name, value string) {
 	return
 }
 
+// extractLabel returns the value of a single label key from the '{...}' portion
+// of a Prometheus text line, e.g. extractLabel(`foo{reason="bar"} 1`, "reason")
+// returns "bar".  Returns "" when the key is absent.
+func extractLabel(line, key string) string {
+	start := strings.Index(line, key+`="`)
+	if start < 0 {
+		return ""
+	}
+	start += len(key) + 2 // skip key="
+	end := strings.Index(line[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return line[start : start+end]
+}
+
 func parseInt(s string) int64 {
 	v, _ := strconv.ParseInt(s, 10, 64)
+	return v
+}
+
+func parseFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
 	return v
 }
