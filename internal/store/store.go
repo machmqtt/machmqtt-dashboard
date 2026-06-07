@@ -184,6 +184,9 @@ func (s *Store) migrate() error {
 	}
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_bid_ts ON mqtt_bridge_metrics (env, bridge_id, ts)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_ts ON mqtt_bridge_metrics (ts)`)
+	// idx_mqtt_bridge_metrics_env_ts covers the all-bridges aggregate query
+	// (no bridge_id predicate) that scans the full env over a time range.
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_ts ON mqtt_bridge_metrics (env, ts)`)
 	// Migrations for existing databases.
 	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_recv_qos2 INTEGER`)
 	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_sent_qos2 INTEGER`)
