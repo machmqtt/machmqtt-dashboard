@@ -261,6 +261,33 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
             yFormatter={fmtRateAxis}
           />
         </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">QoS Message Totals</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={[
+              { key: 'msgs_recv_qos0', color: '#22c55e', label: 'Recv QoS0' },
+              { key: 'msgs_recv_qos1', color: '#16a34a', label: 'Recv QoS1' },
+              { key: 'msgs_recv_qos2', color: '#15803d', label: 'Recv QoS2' },
+              { key: 'msgs_sent_qos0', color: '#f97316', label: 'Sent QoS0' },
+              { key: 'msgs_sent_qos1', color: '#ea580c', label: 'Sent QoS1' },
+              { key: 'msgs_sent_qos2', color: '#c2410c', label: 'Sent QoS2' },
+            ]}
+            yFormatter={fmtRateAxis}
+          />
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">JetStream Health</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={[
+              { key: 'consumer_pending_messages', color: '#f59e0b', label: 'Pending msgs' },
+              { key: 'session_write_behind_depth', color: '#6366f1', label: 'Write-behind depth' },
+              { key: 'stalled_consumers', color: '#ef4444', label: 'Stalled consumers' },
+            ]}
+            yFormatter={(v) => v.toFixed(0)}
+          />
+        </div>
       </div>
 
       <Section title="Connections">

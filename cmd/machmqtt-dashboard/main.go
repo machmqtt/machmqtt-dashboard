@@ -134,11 +134,20 @@ func main() {
 					bm.BridgeID = b.IP
 				}
 				if b.Status != nil && b.Status.Metrics != nil {
-					bm.ConnectionsActive = b.Status.Metrics.ConnectionsActive
-					bm.MsgsRecvQoS0 = b.Status.Metrics.MsgsRecvQoS0
-					bm.MsgsRecvQoS1 = b.Status.Metrics.MsgsRecvQoS1
-					bm.MsgsSentQoS0 = b.Status.Metrics.MsgsSentQoS0
-					bm.MsgsSentQoS1 = b.Status.Metrics.MsgsSentQoS1
+					mx := b.Status.Metrics
+					bm.ConnectionsActive = mx.ConnectionsActive
+					bm.MsgsRecvQoS0 = mx.MsgsRecvQoS0
+					bm.MsgsRecvQoS1 = mx.MsgsRecvQoS1
+					bm.MsgsSentQoS0 = mx.MsgsSentQoS0
+					bm.MsgsSentQoS1 = mx.MsgsSentQoS1
+					bm.MsgsRecvQoS2 = mx.MsgsRecvQoS2
+					bm.MsgsSentQoS2 = mx.MsgsSentQoS2
+					bm.SessionWriteBehindDepth = mx.SessionWriteBehindDepth
+					bm.StalledConsumers = mx.StalledConsumers
+					if mx.ConsumerPendingMessages >= 0 {
+						v := mx.ConsumerPendingMessages
+						bm.ConsumerPendingMessages = &v
+					}
 				}
 				sample.MQTTBridges = append(sample.MQTTBridges, bm)
 			}

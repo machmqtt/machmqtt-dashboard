@@ -61,6 +61,13 @@ type MQTTBridgeMetricSample struct {
 	MsgsRecvQoS1      int64
 	MsgsSentQoS0      int64
 	MsgsSentQoS1      int64
+	MsgsRecvQoS2      int64
+	MsgsSentQoS2      int64
+	SessionWriteBehindDepth int64
+	// ConsumerPendingMessages is nil when JetStream is unavailable (metric absent);
+	// stored as NULL in SQLite so AVG() skips absent-JS samples correctly.
+	ConsumerPendingMessages *int64
+	StalledConsumers        int64
 }
 
 // MetricPoint represents a single time-series data point returned by queries.
@@ -153,11 +160,15 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 	for _, b := range s.MQTTBridges {
 		_, err = tx.Exec(`INSERT INTO mqtt_bridge_metrics (ts, env, bridge_id,
 			connections_active, in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate,
-			msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1,
+			msgs_recv_qos2, msgs_sent_qos2,
+			session_write_behind_depth, consumer_pending_messages, stalled_consumers)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ts, s.Env, b.BridgeID,
 			b.ConnectionsActive, b.InMsgsRate, b.OutMsgsRate, b.InBytesRate, b.OutBytesRate,
-			b.MsgsRecvQoS0, b.MsgsRecvQoS1, b.MsgsSentQoS0, b.MsgsSentQoS1)
+			b.MsgsRecvQoS0, b.MsgsRecvQoS1, b.MsgsSentQoS0, b.MsgsSentQoS1,
+			b.MsgsRecvQoS2, b.MsgsSentQoS2,
+			b.SessionWriteBehindDepth, b.ConsumerPendingMessages, b.StalledConsumers)
 		if err != nil {
 			w.log.Warn("metrics insert mqtt", "bridge", b.BridgeID, "err", err)
 		}
@@ -301,7 +312,9 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 		SELECT (ts / ? ) * ? AS bucket, bridge_id,
 			AVG(connections_active),
 			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1)
+			AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1),
+			AVG(msgs_recv_qos2), AVG(msgs_sent_qos2),
+			AVG(session_write_behind_depth), AVG(consumer_pending_messages), AVG(stalled_consumers)
 		FROM mqtt_bridge_metrics
 		WHERE env = ? AND ts >= ? AND ts <= ?`
 	args := []any{step, step, env, from, to}
@@ -326,24 +339,39 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 		var connActive float64
 		var inMR, outMR, inBR, outBR float64
 		var rQ0, rQ1, sQ0, sQ1 float64
+		var rQ2, sQ2 float64
+		var writeBehind, stalledC float64
+		// consumer_pending_messages is NULL when JetStream was unavailable for the
+		// entire bucket; AVG of NULLs returns NULL, so use a nullable scan target.
+		var pendingMsg sql.NullFloat64
 		if err := rows.Scan(&ts, &bid, &connActive,
 			&inMR, &outMR, &inBR, &outBR,
-			&rQ0, &rQ1, &sQ0, &sQ1); err != nil {
+			&rQ0, &rQ1, &sQ0, &sQ1,
+			&rQ2, &sQ2,
+			&writeBehind, &pendingMsg, &stalledC); err != nil {
 			return nil, err
 		}
-		points = append(points, MetricPoint{
-			"ts":                 ts,
-			"bridge_id":          bid,
-			"connections_active": connActive,
-			"in_msgs_rate":       inMR,
-			"out_msgs_rate":      outMR,
-			"in_bytes_rate":      inBR,
-			"out_bytes_rate":     outBR,
-			"msgs_recv_qos0":     rQ0,
-			"msgs_recv_qos1":     rQ1,
-			"msgs_sent_qos0":     sQ0,
-			"msgs_sent_qos1":     sQ1,
-		})
+		pt := MetricPoint{
+			"ts":                       ts,
+			"bridge_id":                bid,
+			"connections_active":       connActive,
+			"in_msgs_rate":             inMR,
+			"out_msgs_rate":            outMR,
+			"in_bytes_rate":            inBR,
+			"out_bytes_rate":           outBR,
+			"msgs_recv_qos0":           rQ0,
+			"msgs_recv_qos1":           rQ1,
+			"msgs_sent_qos0":           sQ0,
+			"msgs_sent_qos1":           sQ1,
+			"msgs_recv_qos2":           rQ2,
+			"msgs_sent_qos2":           sQ2,
+			"session_write_behind_depth": writeBehind,
+			"stalled_consumers":        stalledC,
+		}
+		if pendingMsg.Valid {
+			pt["consumer_pending_messages"] = pendingMsg.Float64
+		}
+		points = append(points, pt)
 	}
 	return points, rows.Err()
 }

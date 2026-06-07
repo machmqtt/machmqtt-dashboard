@@ -171,7 +171,12 @@ func (s *Store) migrate() error {
 			msgs_recv_qos0 INTEGER,
 			msgs_recv_qos1 INTEGER,
 			msgs_sent_qos0 INTEGER,
-			msgs_sent_qos1 INTEGER
+			msgs_sent_qos1 INTEGER,
+			msgs_recv_qos2 INTEGER,
+			msgs_sent_qos2 INTEGER,
+			session_write_behind_depth INTEGER,
+			consumer_pending_messages INTEGER,
+			stalled_consumers INTEGER
 		)
 	`)
 	if err != nil {
@@ -179,6 +184,12 @@ func (s *Store) migrate() error {
 	}
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_bid_ts ON mqtt_bridge_metrics (env, bridge_id, ts)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_ts ON mqtt_bridge_metrics (ts)`)
+	// Migrations for existing databases.
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_recv_qos2 INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_sent_qos2 INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN session_write_behind_depth INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN consumer_pending_messages INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN stalled_consumers INTEGER`)
 
 	// Topology node position persistence.
 	_, err = s.db.Exec(`
