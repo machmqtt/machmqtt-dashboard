@@ -110,23 +110,37 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	limit := clampInt(q.Get("limit"), 50, 10000)
 	offset := clampInt(q.Get("offset"), 0, 100000)
 	acc := q.Get("acc")
-	state := q.Get("state")
 	filterSubject := q.Get("filter_subject")
 
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
+	snap := s.manager.Snapshot(env)
+	if snap == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	var allConns []collector.ConnInfo
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnz(r.Context(), url, 0, 0, "", acc, state, filterSubject)
-		if err != nil {
-			continue
+	// If filtering by subject, build a CID set from the subs cache (15s TTL).
+	var subCIDs map[uint64]bool
+	if filterSubject != "" {
+		rows := s.getSubsRows(r.Context(), env)
+		subCIDs = make(map[uint64]bool, len(rows))
+		for _, row := range rows {
+			if strings.Contains(row.Subject, filterSubject) {
+				subCIDs[row.ConnCid] = true
+			}
 		}
-		allConns = append(allConns, connz.Conns...)
+	}
+
+	var allConns []collector.ConnInfo
+	for _, connz := range snap.Connz {
+		for _, c := range connz.Conns {
+			if acc != "" && c.Account != acc {
+				continue
+			}
+			if subCIDs != nil && !subCIDs[c.Cid] {
+				continue
+			}
+			allConns = append(allConns, c)
+		}
 	}
 
 	total := len(allConns)
@@ -155,26 +169,49 @@ func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
+	snap := s.manager.Snapshot(env)
+	if snap == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnzWithSubs(r.Context(), url, 1024)
-		if err != nil {
-			continue
+	var found *collector.ConnInfo
+	for _, connz := range snap.Connz {
+		for i := range connz.Conns {
+			if connz.Conns[i].Cid == cid {
+				cp := connz.Conns[i]
+				found = &cp
+				break
+			}
 		}
-		for _, c := range connz.Conns {
-			if c.Cid == cid {
-				writeJSON(w, c)
-				return
+		if found != nil {
+			break
+		}
+	}
+
+	if found == nil {
+		http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Enrich subs from the cache when the snapshot doesn't carry them.
+	if len(found.SubsDetail) == 0 && len(found.Subs) == 0 {
+		rows := s.getSubsRows(r.Context(), env)
+		for _, row := range rows {
+			if row.ConnCid == cid {
+				found.SubsDetail = append(found.SubsDetail, collector.SubDetail{
+					Subject: row.Subject,
+					Queue:   row.Queue,
+					Sid:     row.Sid,
+					Msgs:    row.Msgs,
+					Account: row.Account,
+					Cid:     cid,
+				})
 			}
 		}
 	}
-	http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+
+	writeJSON(w, found)
 }
 
 func (s *Server) handleRoutez(w http.ResponseWriter, r *http.Request) {
@@ -266,10 +303,10 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		if len(all) >= maxRows {
 			break
 		}
-		connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 256)
+		connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 1024)
 		if err != nil {
 			// Fallback to subs=true (string list) if subs=detail fails.
-			connz, err = fetcher.FetchConnzWithSubs(ctx, url, 256)
+			connz, err = fetcher.FetchConnzWithSubs(ctx, url, 1024)
 			if err != nil {
 				continue
 			}
@@ -349,18 +386,7 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	filterServer := q.Get("server")
 	hideSystem := q.Get("hide_system") == "true"
 
-	var all []subRow
-
-	if filterSubject != "" {
-		// Targeted fetch: push filter_subject to NATS so it only returns
-		// connections with matching subscriptions. Much faster than fetching
-		// everything and filtering in-memory.
-		all = s.fetchSubsFiltered(r.Context(), env, filterSubject)
-	} else {
-		// Unfiltered: use cache.
-		all = s.getSubsRows(r.Context(), env)
-	}
-
+	all := s.getSubsRows(r.Context(), env)
 	if all == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
@@ -371,9 +397,6 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 		if hideSystem && isSystemSubject(row.Subject) {
 			continue
 		}
-		// If we used a targeted NATS fetch, filter_subject was already applied
-		// server-side. But NATS matches by subscription interest, not substring,
-		// so still apply our substring filter for exact UI behavior.
 		if filterSubject != "" && !strings.Contains(row.Subject, filterSubject) {
 			continue
 		}
@@ -403,48 +426,6 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fetchSubsFiltered uses subs=true + filter_subject for a fast, lightweight fetch.
-// NATS returns only connections with matching subscriptions, and only the subject
-// string list (no per-sub message counts), making this very fast even on large clusters.
-func (s *Server) fetchSubsFiltered(ctx context.Context, env, filterSubject string) []subRow {
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
-		return nil
-	}
-
-	snap := s.manager.Snapshot(env)
-	serverName := func(id string) string {
-		if snap != nil {
-			if v, ok := snap.Varz[id]; ok && v.ServerName != "" {
-				return v.ServerName
-			}
-		}
-		return id
-	}
-
-	var all []subRow
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnzWithSubsFiltered(ctx, url, 1024, filterSubject)
-		if err != nil {
-			continue
-		}
-		srvName := serverName(connz.ServerID)
-		for _, c := range connz.Conns {
-			for i, sub := range c.Subs {
-				all = append(all, subRow{
-					Subject: sub, Sid: strconv.Itoa(i + 1),
-					ConnCid: c.Cid, ConnName: c.Name,
-					ConnIP: c.IP, Account: c.Account,
-					ServerID: connz.ServerID, ServerName: srvName,
-				})
-			}
-		}
-	}
-
-	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
-	return all
-}
 
 func (s *Server) handleJSz(w http.ResponseWriter, r *http.Request) {
 	snap := s.envSnapshot(w, r)
@@ -466,62 +447,74 @@ func (s *Server) handleAccountDetail(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	acc := r.PathValue("acc")
 
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
+	snap := s.manager.Snapshot(env)
+	if snap == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// Aggregate account detail across all servers.
-	var merged *collector.AccountInfo
-	for _, url := range servers {
-		detail, err := fetcher.FetchAccountDetail(r.Context(), url, acc)
-		if err != nil || detail.Account == nil {
-			continue
-		}
-		if merged == nil {
-			copy := *detail.Account
-			merged = &copy
-		} else {
-			merged.ClientCnt += detail.Account.ClientCnt
-			merged.LeafCnt += detail.Account.LeafCnt
-			merged.SubCnt += detail.Account.SubCnt
-		}
-	}
-
-	if merged == nil {
-		http.Error(w, `{"error":"account not found"}`, http.StatusNotFound)
-		return
-	}
-
-	// Also count actual connections from connz for accuracy.
-	var clientConns int
-	var leafConns int
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnz(r.Context(), url, 0, 0, "", acc, "", "")
-		if err != nil {
-			continue
-		}
-		clientConns += len(connz.Conns)
-	}
-
-	snap := s.manager.Snapshot(env)
-	if snap != nil {
-		for _, lz := range snap.Leafz {
-			for _, l := range lz.Leafs {
-				if l.Account == acc {
-					leafConns++
-				}
+	// ClientCnt from snapshot connz.
+	var clientCnt int
+	for _, connz := range snap.Connz {
+		for _, c := range connz.Conns {
+			if c.Account == acc {
+				clientCnt++
 			}
 		}
 	}
 
-	// Use the live-counted values.
-	merged.ClientCnt = clientConns
-	merged.LeafCnt = leafConns
+	// LeafCnt from snapshot leafz.
+	var leafCnt int
+	for _, lz := range snap.Leafz {
+		for _, l := range lz.Leafs {
+			if l.Account == acc {
+				leafCnt++
+			}
+		}
+	}
 
-	writeJSON(w, merged)
+	// SubCnt from the subs cache (15s TTL).
+	var subCnt uint32
+	for _, row := range s.getSubsRows(r.Context(), env) {
+		if row.Account == acc {
+			subCnt++
+		}
+	}
+
+	// IsSystem: check whether this account is the system account on any server.
+	var isSystem bool
+	for _, az := range snap.Accountz {
+		if az.SystemAccount == acc {
+			isSystem = true
+			break
+		}
+	}
+
+	// Account existence: present in any server's account list, or has active connections.
+	var knownAccount bool
+	for _, az := range snap.Accountz {
+		for _, name := range az.Accounts {
+			if name == acc {
+				knownAccount = true
+				break
+			}
+		}
+		if knownAccount {
+			break
+		}
+	}
+	if !knownAccount && clientCnt == 0 && leafCnt == 0 && subCnt == 0 && !isSystem {
+		http.Error(w, `{"error":"account not found"}`, http.StatusNotFound)
+		return
+	}
+
+	writeJSON(w, &collector.AccountInfo{
+		AccountName: acc,
+		IsSystem:    isSystem,
+		LeafCnt:     leafCnt,
+		ClientCnt:   clientCnt,
+		SubCnt:      subCnt,
+	})
 }
 
 func (s *Server) envSnapshot(w http.ResponseWriter, r *http.Request) *collector.Snapshot {
