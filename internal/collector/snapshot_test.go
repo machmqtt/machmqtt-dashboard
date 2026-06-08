@@ -37,6 +37,47 @@ func TestComputeRates(t *testing.T) {
 	}
 }
 
+func TestComputeRatesSameTimestamp(t *testing.T) {
+	now := time.Now()
+	prev := &Snapshot{
+		Varz: map[string]*Varz{
+			"srv1": {InMsgs: 100, Now: now},
+		},
+	}
+	cur := &Snapshot{
+		Varz: map[string]*Varz{
+			// Same Now timestamp → dt == 0 → skip this server.
+			"srv1": {InMsgs: 200, Now: now},
+		},
+	}
+	rates := computeRates(prev, cur)
+	if rates == nil {
+		t.Fatal("rates map should be non-nil even if empty")
+	}
+	if _, ok := rates["srv1"]; ok {
+		t.Error("expected no rate entry when dt == 0")
+	}
+}
+
+func TestComputeRatesServerNotInPrev(t *testing.T) {
+	now := time.Now()
+	prev := &Snapshot{
+		Varz: map[string]*Varz{
+			"other": {InMsgs: 0, Now: now},
+		},
+	}
+	cur := &Snapshot{
+		Varz: map[string]*Varz{
+			// "srv1" is new — not present in prev → no rate entry.
+			"srv1": {InMsgs: 100, Now: now.Add(5 * time.Second)},
+		},
+	}
+	rates := computeRates(prev, cur)
+	if _, ok := rates["srv1"]; ok {
+		t.Error("expected no rate entry for server not in prev")
+	}
+}
+
 func TestComputeRatesNilPrev(t *testing.T) {
 	cur := &Snapshot{
 		Varz: map[string]*Varz{"srv1": {InMsgs: 100}},

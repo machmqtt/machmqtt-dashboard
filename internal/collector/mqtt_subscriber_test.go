@@ -271,6 +271,20 @@ func TestMQTTSubscriberAccountMapped(t *testing.T) {
 	}
 }
 
+func TestMQTTSubscriberRunExitsOnConnectError(t *testing.T) {
+	sub := newMQTTSubscriber()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Empty URLs → connectNATS returns error → run() exits cleanly.
+	go sub.run(ctx, &config.NATSConnConfig{})
+	time.Sleep(20 * time.Millisecond)
+	// Should not panic; bridges should remain empty.
+	if len(sub.Bridges()) != 0 {
+		t.Errorf("expected 0 bridges after connect error, got %d", len(sub.Bridges()))
+	}
+}
+
 func TestMQTTSubscriberSweepExpired(t *testing.T) {
 	sub := newMQTTSubscriber()
 	sub.bridges["live"] = &cachedBridge{receivedAt: time.Now()}

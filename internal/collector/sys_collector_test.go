@@ -283,6 +283,23 @@ func TestSYSCollectorSweepExpired(t *testing.T) {
 	}
 }
 
+func TestSYSCollectorRunExitsOnConnectError(t *testing.T) {
+	sc := newSYSCollector()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Empty URLs → connectNATS returns error → run() exits cleanly.
+	go sc.run(ctx, &config.NATSConnConfig{})
+	time.Sleep(20 * time.Millisecond)
+	// nc should remain nil since connect failed.
+	sc.mu.RLock()
+	nc := sc.nc
+	sc.mu.RUnlock()
+	if nc != nil {
+		t.Error("expected nc to remain nil after connect error")
+	}
+}
+
 func TestSYSCollectorNilWhenNotConnected(t *testing.T) {
 	// Use a URL that will not connect so nc stays nil.
 	cfg := &config.NATSConnConfig{

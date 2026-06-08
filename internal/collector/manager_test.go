@@ -230,6 +230,272 @@ func TestManagerUpdateClusterServerChange(t *testing.T) {
 
 // --- Race detector: concurrent access ---
 
+// --- Snapshot / PrevSnapshot ---
+
+func TestManagerSnapshotUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Snapshot("nope") != nil {
+		t.Error("expected nil Snapshot for unknown cluster")
+	}
+}
+
+func TestManagerSnapshotKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "snap", "http://snap:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Snapshot(cl.ID) == nil {
+		t.Error("expected non-nil initial Snapshot for known cluster")
+	}
+}
+
+func TestManagerPrevSnapshotUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.PrevSnapshot("nope") != nil {
+		t.Error("expected nil PrevSnapshot for unknown cluster")
+	}
+}
+
+func TestManagerPrevSnapshotKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "prev", "http://prev:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	// prev is nil before any poll
+	if snap := m.PrevSnapshot(cl.ID); snap != nil {
+		t.Errorf("expected nil PrevSnapshot before first poll, got %v", snap)
+	}
+}
+
+// --- Overview ---
+
+func TestManagerOverviewUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Overview("nope") != nil {
+		t.Error("expected nil Overview for unknown cluster")
+	}
+}
+
+func TestManagerOverviewKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "ov", "http://ov:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	// buildOverview on an empty snapshot should not panic and may return non-nil.
+	_ = m.Overview(cl.ID)
+}
+
+// --- Topology ---
+
+func TestManagerTopologyUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Topology("nope") != nil {
+		t.Error("expected nil Topology for unknown cluster")
+	}
+}
+
+func TestManagerTopologyKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "topo", "http://topo:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	_ = m.Topology(cl.ID) // empty snapshot → should not panic
+}
+
+// --- Health ---
+
+func TestManagerHealthUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Health("nope") != nil {
+		t.Error("expected nil Health for unknown cluster")
+	}
+}
+
+func TestManagerHealthKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "hlth", "http://hlth:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if h := m.Health(cl.ID); h == nil {
+		t.Error("expected non-nil Health map for known cluster (initial empty snapshot)")
+	}
+}
+
+// --- MQTTBridges ---
+
+func TestManagerMQTTBridgesUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.MQTTBridges("nope") != nil {
+		t.Error("expected nil MQTTBridges for unknown cluster")
+	}
+}
+
+func TestManagerMQTTBridgesKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "mqtt", "http://mqtt:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	// No subscriber set → returns mqttBridges slice (nil initially, not a hard rule)
+	_ = m.MQTTBridges(cl.ID)
+}
+
+// --- Environments ---
+
+func TestManagerEnvironmentsMatchesClusterIDs(t *testing.T) {
+	s := testStore(t)
+	addClusterToStore(t, s, "e1", "http://e1:8222")
+	addClusterToStore(t, s, "e2", "http://e2:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	envs := m.Environments()
+	ids := m.ClusterIDs()
+	if len(envs) != len(ids) {
+		t.Errorf("Environments() len %d != ClusterIDs() len %d", len(envs), len(ids))
+	}
+}
+
+// --- Fetcher ---
+
+func TestManagerFetcherUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Fetcher("nope") != nil {
+		t.Error("expected nil Fetcher for unknown cluster")
+	}
+}
+
+func TestManagerFetcherKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "ftch", "http://ftch:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.Fetcher(cl.ID) == nil {
+		t.Error("expected non-nil Fetcher for known cluster")
+	}
+}
+
+// --- EnvServers ---
+
+func TestManagerEnvServersUnknownID(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	if m.EnvServers("nope") != nil {
+		t.Error("expected nil EnvServers for unknown cluster")
+	}
+}
+
+func TestManagerEnvServersKnownID(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "esrv", "http://esrv:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	urls := m.EnvServers(cl.ID)
+	if len(urls) != 1 || urls[0] != "http://esrv:8222" {
+		t.Errorf("EnvServers = %v, want [http://esrv:8222]", urls)
+	}
+}
+
+// --- Pure functions: tlsEqual, natsConnEqual, isMQTTBridgeConn ---
+
+func TestTLSEqual(t *testing.T) {
+	if !tlsEqual(nil, nil) {
+		t.Error("both nil should be equal")
+	}
+	cfg := &config.TLSConfig{CAFile: "ca.pem", Insecure: false}
+	if tlsEqual(nil, cfg) {
+		t.Error("nil vs non-nil should not be equal")
+	}
+	if tlsEqual(cfg, nil) {
+		t.Error("non-nil vs nil should not be equal")
+	}
+	if !tlsEqual(cfg, &config.TLSConfig{CAFile: "ca.pem", Insecure: false}) {
+		t.Error("identical configs should be equal")
+	}
+	if tlsEqual(cfg, &config.TLSConfig{CAFile: "other.pem", Insecure: false}) {
+		t.Error("different CAFile should not be equal")
+	}
+	if tlsEqual(cfg, &config.TLSConfig{CAFile: "ca.pem", Insecure: true}) {
+		t.Error("different Insecure should not be equal")
+	}
+}
+
+func TestNATSConnEqual(t *testing.T) {
+	if !natsConnEqual(nil, nil) {
+		t.Error("both nil should be equal")
+	}
+	a := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "$MQTT5"}
+	if natsConnEqual(nil, a) {
+		t.Error("nil vs non-nil should not be equal")
+	}
+	if natsConnEqual(a, nil) {
+		t.Error("non-nil vs nil should not be equal")
+	}
+	b := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "$MQTT5"}
+	if !natsConnEqual(a, b) {
+		t.Error("identical configs should be equal")
+	}
+	// Different URL count
+	c := &config.NATSConnConfig{URLs: []string{"nats://a:4222", "nats://b:4222"}}
+	if natsConnEqual(a, c) {
+		t.Error("different URL count should not be equal")
+	}
+	// Different URL value
+	d := &config.NATSConnConfig{URLs: []string{"nats://other:4222"}, SubjectPrefix: "$MQTT5"}
+	if natsConnEqual(a, d) {
+		t.Error("different URL value should not be equal")
+	}
+	// Different SubjectPrefix
+	e := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "acme"}
+	if natsConnEqual(a, e) {
+		t.Error("different SubjectPrefix should not be equal")
+	}
+	// Different SYSCollection
+	f := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "$MQTT5", SYSCollection: true}
+	if natsConnEqual(a, f) {
+		t.Error("different SYSCollection should not be equal")
+	}
+}
+
+// --- serversEqual ---
+
+func TestServersEqualDifferentLength(t *testing.T) {
+	a := []config.Server{{URL: "http://a:8222"}}
+	b := []config.Server{{URL: "http://a:8222"}, {URL: "http://b:8222"}}
+	if serversEqual(a, b) {
+		t.Error("different-length slices should not be equal")
+	}
+}
+
+func TestServersEqualDifferentURL(t *testing.T) {
+	a := []config.Server{{URL: "http://a:8222"}}
+	b := []config.Server{{URL: "http://b:8222"}}
+	if serversEqual(a, b) {
+		t.Error("different URLs should not be equal")
+	}
+}
+
+func TestServersEqualIdentical(t *testing.T) {
+	a := []config.Server{{URL: "http://a:8222"}, {URL: "http://b:8222"}}
+	if !serversEqual(a, a) {
+		t.Error("identical slices should be equal")
+	}
+}
+
+func TestIsMQTTBridgeConn(t *testing.T) {
+	if !isMQTTBridgeConn("machmqtt-bridge") {
+		t.Error("machmqtt-bridge should match")
+	}
+	if !isMQTTBridgeConn("machmqtt-pool-0") {
+		t.Error("machmqtt-pool-0 should match")
+	}
+	if !isMQTTBridgeConn("machmqtt-pool-99") {
+		t.Error("machmqtt-pool-99 should match")
+	}
+	if isMQTTBridgeConn("nats-client") {
+		t.Error("nats-client should not match")
+	}
+	if isMQTTBridgeConn("") {
+		t.Error("empty string should not match")
+	}
+}
+
 func TestManagerConcurrentAccessNoRace(t *testing.T) {
 	s := testStore(t)
 	addClusterToStore(t, s, "a", "http://a:8222")

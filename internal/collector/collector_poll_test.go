@@ -1,0 +1,626 @@
+package collector
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+
+	nats "github.com/nats-io/nats.go"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/testutil/natstest"
+)
+
+// mockNATSServer serves minimal NATS monitoring JSON for each endpoint.
+func mockNATSServer(serverID, serverName string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now()
+		switch r.URL.Path {
+		case "/varz":
+			json.NewEncoder(w).Encode(Varz{
+				ServerID:    serverID,
+				ServerName:  serverName,
+				Connections: 5,
+				Now:         now,
+				Start:       now.Add(-time.Hour),
+			})
+		case "/routez":
+			json.NewEncoder(w).Encode(Routez{ServerID: serverID})
+		case "/gatewayz":
+			json.NewEncoder(w).Encode(Gatewayz{ServerID: serverID})
+		case "/leafz":
+			json.NewEncoder(w).Encode(Leafz{ServerID: serverID})
+		case "/healthz":
+			json.NewEncoder(w).Encode(HealthStatus{Status: "ok"})
+		case "/connz":
+			json.NewEncoder(w).Encode(Connz{ServerID: serverID, NumConns: 5})
+		case "/subsz":
+			json.NewEncoder(w).Encode(SubszResp{ServerID: serverID})
+		case "/jsz":
+			json.NewEncoder(w).Encode(JSInfo{ServerID: serverID})
+		case "/accountz":
+			json.NewEncoder(w).Encode(Accountz{})
+		default:
+			http.NotFound(w, r)
+		}
+	}
+}
+
+func newLiveCluster(t *testing.T, s *store.Store, name string, handler http.Handler) store.Cluster {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return addClusterToStore(t, s, name, srv.URL)
+}
+
+// --- Collector poll with real HTTP server ---
+
+func TestCollectorFastPollPopulatesVarz(t *testing.T) {
+	s := testStore(t)
+	cl := newLiveCluster(t, s, "live", mockNATSServer("srv-1", "nats-1"))
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	c.poll(context.Background(), cl.ID, false)
+
+	snap := c.Snapshot()
+	if snap == nil {
+		t.Fatal("snapshot is nil after poll")
+	}
+	if len(snap.Varz) == 0 {
+		t.Error("Varz is empty after poll")
+	}
+	if _, ok := snap.Varz["srv-1"]; !ok {
+		t.Error("expected srv-1 in Varz after poll")
+	}
+}
+
+func TestCollectorSlowPollPopulatesConnz(t *testing.T) {
+	s := testStore(t)
+	cl := newLiveCluster(t, s, "live-slow", mockNATSServer("srv-2", "nats-2"))
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	c.poll(context.Background(), cl.ID, true)
+
+	snap := c.Snapshot()
+	if snap == nil {
+		t.Fatal("snapshot is nil")
+	}
+	if len(snap.Connz) == 0 {
+		t.Error("Connz is empty after slow poll")
+	}
+}
+
+func TestCollectorBuildServerURLMap(t *testing.T) {
+	s := testStore(t)
+	cl := newLiveCluster(t, s, "urlmap", mockNATSServer("srv-3", "nats-3"))
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	c.poll(context.Background(), cl.ID, false)
+	snap := c.Snapshot()
+	urlMap := c.buildServerURLMap(snap)
+	_ = urlMap
+}
+
+func TestCollectorComputesRatesAcrossPolls(t *testing.T) {
+	s := testStore(t)
+	cl := newLiveCluster(t, s, "rates", mockNATSServer("srv-r", "nats-r"))
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	c.poll(context.Background(), cl.ID, false)
+	time.Sleep(10 * time.Millisecond)
+	c.poll(context.Background(), cl.ID, false)
+
+	snap := c.Snapshot()
+	if snap == nil {
+		t.Fatal("snapshot nil")
+	}
+	// prev should now be set after two polls.
+	prev := c.PrevSnapshot()
+	if prev == nil {
+		t.Error("expected non-nil PrevSnapshot after two polls")
+	}
+}
+
+// --- run() with onChange callback ---
+
+func TestCollectorRunCallsOnChange(t *testing.T) {
+	s := testStore(t)
+	cl := newLiveCluster(t, s, "onchange", mockNATSServer("srv-4", "nats-4"))
+
+	cfg := testCfg()
+	cfg.PollInterval = 30 * time.Millisecond
+
+	called := make(chan string, 10)
+	onChange := func(id string) { called <- id }
+
+	m, err := NewManager(cfg, onChange, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+
+	// Wait for the initial onChange call.
+	select {
+	case id := <-called:
+		if id != cl.ID {
+			t.Errorf("onChange called with %q, want %q", id, cl.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("onChange not called within 2s")
+	}
+	cancel()
+}
+
+func TestCollectorRunTickerFiresOnChange(t *testing.T) {
+	s := testStore(t)
+	cl := newLiveCluster(t, s, "ticker", mockNATSServer("srv-5", "nats-5"))
+
+	cfg := testCfg()
+	cfg.PollInterval = 20 * time.Millisecond
+
+	polls := make(chan struct{}, 20)
+	onChange := func(id string) {
+		if id == cl.ID {
+			select {
+			case polls <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	m, err := NewManager(cfg, onChange, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+
+	// Collect 3 polls (initial + 2 ticker fires) to exercise the ticker path.
+	count := 0
+	deadline := time.After(3 * time.Second)
+	for count < 3 {
+		select {
+		case <-polls:
+			count++
+		case <-deadline:
+			t.Errorf("only got %d polls, want ≥3", count)
+			cancel()
+			return
+		}
+	}
+	cancel()
+}
+
+// --- UpdateCluster with untracked ID ---
+
+func TestManagerUpdateClusterUntracked(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	// CreateCluster so it's in the DB, but don't add it to the manager first.
+	cl := &store.Cluster{
+		Name:    "untracked",
+		Servers: []config.Server{{URL: "http://untracked:8222"}},
+	}
+	if err := s.CreateCluster(cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+
+	// Manually remove it from the manager's map to simulate "untracked".
+	m.mu.Lock()
+	delete(m.collectors, cl.ID)
+	m.mu.Unlock()
+
+	if err := m.UpdateCluster(*cl); err != nil {
+		t.Fatal(err)
+	}
+	if m.ClusterConfig(cl.ID) == nil {
+		t.Error("expected cluster to be tracked after UpdateCluster on untracked ID")
+	}
+}
+
+// --- AddCluster with NATSConn ---
+
+func TestManagerAddClusterWithNATSConn(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	cl := store.Cluster{
+		Name:    "nats-cluster",
+		Servers: []config.Server{{URL: "http://nats:8222"}},
+		NATSConn: &config.NATSConnConfig{
+			URLs:          []string{"nats://127.0.0.1:14299"},
+			SubjectPrefix: "$MQTT5",
+		},
+	}
+	if err := s.CreateCluster(&cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+	if err := m.AddCluster(cl); err != nil {
+		t.Fatal(err)
+	}
+	if m.ClusterConfig(cl.ID) == nil {
+		t.Error("expected cluster to be tracked")
+	}
+}
+
+// --- Manager Start with NATSConn (exercises subscriber startup in Start) ---
+
+func TestManagerStartWithNATSConn(t *testing.T) {
+	s := testStore(t)
+
+	// Pre-load a cluster with NATSConn so NewManager loads it and Start spawns the subscriber.
+	cl := &store.Cluster{
+		Name:    "nats-pre",
+		Servers: []config.Server{{URL: "http://nats:8222"}},
+		NATSConn: &config.NATSConnConfig{
+			URLs:          []string{"nats://127.0.0.1:14299"},
+			SubjectPrefix: "$MQTT5",
+		},
+	}
+	if err := s.CreateCluster(cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx) // should spawn subscriber goroutines without panic
+	time.Sleep(20 * time.Millisecond)
+}
+
+func TestManagerStartWithSYSCollection(t *testing.T) {
+	s := testStore(t)
+
+	cl := &store.Cluster{
+		Name:    "sys-pre",
+		Servers: []config.Server{{URL: "http://sys:8222"}},
+		NATSConn: &config.NATSConnConfig{
+			URLs:          []string{"nats://127.0.0.1:14299"},
+			SubjectPrefix: "$MQTT5",
+			SYSCollection: true,
+		},
+	}
+	if err := s.CreateCluster(cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+	time.Sleep(20 * time.Millisecond)
+}
+
+// --- NewManager error paths ---
+
+func TestNewManagerDBError(t *testing.T) {
+	s := testStore(t)
+	s.Close() // close the DB to force a ListClusters error
+
+	_, err := NewManager(testCfg(), nil, testLog(), s)
+	if err == nil {
+		t.Error("expected error when DB is closed")
+	}
+}
+
+func TestNewManagerFetcherError(t *testing.T) {
+	s := testStore(t)
+	// Cluster with a CA file that doesn't exist → NewFetcher returns error.
+	cl := &store.Cluster{
+		Name:    "bad-tls",
+		Servers: []config.Server{{URL: "http://srv:8222"}},
+		TLS:     &config.TLSConfig{CAFile: "/nonexistent/no-such-ca.pem"},
+	}
+	if err := s.CreateCluster(cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+
+	_, err := NewManager(testCfg(), nil, testLog(), s)
+	if err == nil {
+		t.Error("expected error when cluster has invalid TLS CA file")
+	}
+}
+
+// --- NewFetcher with valid CA file ---
+
+func TestNewFetcherValidCAFile(t *testing.T) {
+	// AppendCertsFromPEM silently ignores bad PEM, so any file content works.
+	// What matters is that ReadFile + AppendCertsFromPEM + tc.RootCAs = pool runs.
+	caFile := t.TempDir() + "/ca.pem"
+	os.WriteFile(caFile, []byte("not-real-pem"), 0600)
+
+	f, err := NewFetcher(&config.TLSConfig{CAFile: caFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f == nil {
+		t.Fatal("expected non-nil Fetcher")
+	}
+}
+
+// --- pollSYS path ---
+
+func TestCollectorPollSYSFastPath(t *testing.T) {
+	natsS := natstest.New(t)
+
+	sStore := testStore(t)
+	cl := addClusterToStore(t, sStore, "sys-fast", "http://sys:8222")
+
+	m, err := NewManager(testCfg(), nil, testLog(), sStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	// Need a real NATS connection so sc.poll() doesn't return nil immediately.
+	nc, err := nats.Connect(natsS.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	sc := newSYSCollector()
+	sc.mu.Lock()
+	sc.nc = nc
+	sc.statsz["srv-1"] = &statszEntry{
+		server: sysServerInfo{ID: "srv-1", Name: "nats-1", Time: time.Now()},
+		stats:  sysServerStats{Start: time.Now().Add(-time.Hour)},
+		when:   time.Now(),
+	}
+	sc.mu.Unlock()
+	c.sys = sc
+
+	c.poll(context.Background(), cl.ID, false)
+
+	snap := c.Snapshot()
+	if snap == nil {
+		t.Fatal("snapshot is nil after pollSYS")
+	}
+	if len(snap.Varz) == 0 {
+		t.Error("expected Varz after pollSYS fast path")
+	}
+}
+
+// --- discoverMQTTBridges with store (exercises UpsertMQTTBridge / DeleteStaleMQTTBridges) ---
+
+func TestDiscoverMQTTBridgesWithStore(t *testing.T) {
+	// Start a real bridge admin server so the probe succeeds.
+	srv := httptest.NewServer(bridgeAdminMux(t))
+	defer srv.Close()
+	port := portFromURL(srv.URL)
+
+	enabled := true
+	s := testStore(t)
+	cl := &store.Cluster{
+		Name:    "disc-store",
+		Servers: []config.Server{{URL: "http://disc:8222"}},
+		MQTTDiscovery: &config.MQTTDiscoveryConfig{
+			Enabled:    &enabled,
+			AdminPorts: []int{port},
+		},
+	}
+	if err := s.CreateCluster(cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	// Seed snapshot with a bridge connection on 127.0.0.1.
+	c.snapMu.Lock()
+	c.snapshot = &Snapshot{
+		Timestamp: time.Now(),
+		Varz:      map[string]*Varz{"srv-1": {ServerName: "nats-1"}},
+		Connz: map[string]*Connz{
+			"srv-1": {Conns: []ConnInfo{
+				{Name: "machmqtt-bridge", IP: "127.0.0.1"},
+			}},
+		},
+		ServerURLs: map[string]string{"srv-1": "127.0.0.1"},
+		Health:     map[string]*HealthStatus{},
+		Routez:     map[string]*Routez{},
+		Rates:      map[string]*ServerRates{},
+	}
+	c.snapMu.Unlock()
+
+	c.discoverMQTTBridges(context.Background(), cl.ID)
+
+	// mqttBridges should be set (even if 0 due to probe result).
+	c.mqttMu.RLock()
+	bridges := c.mqttBridges
+	c.mqttMu.RUnlock()
+	_ = bridges // may be 1 or 0 depending on whether loopback is reachable
+}
+
+// --- collector.MQTTBridges path with subscriber ---
+
+func TestCollectorMQTTBridgesFromSubscriber(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "sub-mqtt", "http://sub:8222")
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	// Attach a subscriber with a pre-loaded bridge.
+	sub := newMQTTSubscriber()
+	sub.bridges["my-bridge"] = &cachedBridge{
+		msg: &BridgeMetricsMsg{
+			V: 1, InstanceID: "id-1", InstanceName: "my-bridge",
+		},
+		receivedAt: time.Now(),
+	}
+	c.subscriber = sub
+
+	bridges := m.MQTTBridges(cl.ID)
+	if len(bridges) != 1 {
+		t.Errorf("expected 1 bridge from subscriber, got %d", len(bridges))
+	}
+}
+
+// --- UpdateCluster with NATSConn rebuild ---
+
+func TestManagerUpdateClusterWithNATSConnRebuild(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "rebuild", "http://rebuild:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	// Change the cluster config to include a NATSConn — triggers rebuild path.
+	changed := cl
+	changed.Servers = []config.Server{{URL: "http://rebuild-new:8222"}}
+	changed.NATSConn = &config.NATSConnConfig{
+		URLs:          []string{"nats://127.0.0.1:14299"},
+		SubjectPrefix: "$MQTT5",
+	}
+	if err := m.UpdateCluster(changed); err != nil {
+		t.Fatal(err)
+	}
+	if m.ClusterConfig(cl.ID) == nil {
+		t.Error("expected cluster after UpdateCluster with NATSConn rebuild")
+	}
+}
+
+func TestManagerUpdateClusterWithSYSCollectionRebuild(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "sysrebuild", "http://sysrebuild:8222")
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	changed := cl
+	changed.Servers = []config.Server{{URL: "http://sysrebuild-new:8222"}}
+	changed.NATSConn = &config.NATSConnConfig{
+		URLs:          []string{"nats://127.0.0.1:14299"},
+		SubjectPrefix: "$MQTT5",
+		SYSCollection: true,
+	}
+	if err := m.UpdateCluster(changed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- AddCluster with SYSCollection ---
+
+func TestManagerAddClusterWithSYSCollection(t *testing.T) {
+	s := testStore(t)
+	m, _ := NewManager(testCfg(), nil, testLog(), s)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	cl := store.Cluster{
+		Name:    "sys-add",
+		Servers: []config.Server{{URL: "http://sysadd:8222"}},
+		NATSConn: &config.NATSConnConfig{
+			URLs:          []string{"nats://127.0.0.1:14299"},
+			SubjectPrefix: "$MQTT5",
+			SYSCollection: true,
+		},
+	}
+	if err := s.CreateCluster(&cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+	if err := m.AddCluster(cl); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- Pre-cancelled context: getWithStatus, PostAdmin, FetchMetrics transport errors ---
+
+func TestMQTTGetWithStatusTransportError(t *testing.T) {
+	f := NewMQTTBridgeFetcher("http://127.0.0.1:0", "b", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code, err := f.getWithStatus(ctx, "/anything", nil)
+	if err == nil {
+		t.Errorf("expected transport error, code=%d", code)
+	}
+}
+
+func TestMQTTPostAdminTransportError(t *testing.T) {
+	f := NewMQTTBridgeFetcher("http://127.0.0.1:0", "b", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code, _, err := f.PostAdmin(ctx, "/admin/action", nil)
+	if err == nil {
+		t.Errorf("expected transport error, code=%d", code)
+	}
+}
+
+func TestMQTTFetchMetricsTransportError(t *testing.T) {
+	f := NewMQTTBridgeFetcher("http://127.0.0.1:0", "b", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := f.FetchMetrics(ctx)
+	if err == nil {
+		t.Error("expected transport error for cancelled context")
+	}
+}

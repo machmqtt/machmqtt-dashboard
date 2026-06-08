@@ -375,6 +375,31 @@ func TestParsePrometheusMetrics_RuntimeAndInstance(t *testing.T) {
 	}
 }
 
+func TestExtractLabelFound(t *testing.T) {
+	line := `machmqtt_connections_rejected_by_reason_total{reason="max_conns"} 5`
+	got := extractLabel(line, "reason")
+	if got != "max_conns" {
+		t.Errorf("extractLabel = %q, want max_conns", got)
+	}
+}
+
+func TestExtractLabelNotFound(t *testing.T) {
+	line := `machmqtt_connections_active 7`
+	got := extractLabel(line, "reason")
+	if got != "" {
+		t.Errorf("extractLabel = %q, want empty", got)
+	}
+}
+
+func TestExtractLabelMalformedNoClosingQuote(t *testing.T) {
+	// Malformed label: opening quote but no closing quote.
+	line := `foo{reason="unclosed`
+	got := extractLabel(line, "reason")
+	if got != "" {
+		t.Errorf("extractLabel on malformed line = %q, want empty", got)
+	}
+}
+
 // TestParsePrometheusMetrics_InstanceAbsent verifies that InstanceID is empty
 // when machmqtt_instance_info is absent (broker has no InstanceID configured).
 func TestParsePrometheusMetrics_InstanceAbsent(t *testing.T) {
