@@ -28,10 +28,14 @@ type Collector struct {
 	prev     *Snapshot
 	tick     uint64
 
-	// Cached MQTT bridge discovery results.
+	// Cached MQTT bridge discovery results (HTTP connz-scan path).
 	mqttMu          sync.RWMutex
 	mqttBridges     []MQTTBridgeInstance
 	mqttDiscovering atomic.Bool
+
+	// subscriber is non-nil when NATS push-based collection is configured.
+	// When set it supersedes the connz-scan HTTP discovery path.
+	subscriber *MQTTSubscriber
 }
 
 func newCollector(env config.Environment, fetcher *Fetcher, interval time.Duration, log *slog.Logger, db *store.Store) *Collector {
@@ -172,8 +176,8 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 	c.snapshot = snap
 	c.snapMu.Unlock()
 
-	// Run MQTT bridge discovery on slow polls (skip if one is already running).
-	if slow && env.MQTTDiscoveryEnabled() && c.mqttDiscovering.CompareAndSwap(false, true) {
+	// Run MQTT bridge discovery on slow polls when no push subscriber is active.
+	if slow && env.MQTTDiscoveryEnabled() && c.subscriber == nil && c.mqttDiscovering.CompareAndSwap(false, true) {
 		go func() {
 			defer c.mqttDiscovering.Store(false)
 			c.discoverMQTTBridges(ctx, clusterID)
@@ -279,6 +283,9 @@ func (c *Collector) PrevSnapshot() *Snapshot {
 }
 
 func (c *Collector) MQTTBridges() []MQTTBridgeInstance {
+	if c.subscriber != nil {
+		return c.subscriber.Bridges()
+	}
 	c.mqttMu.RLock()
 	defer c.mqttMu.RUnlock()
 	return c.mqttBridges
@@ -335,6 +342,11 @@ func (m *Manager) Start(ctx context.Context) {
 		cctx, cancel := context.WithCancel(ctx)
 		m.cancels[id] = cancel
 		go c.run(cctx, id, m.onChange)
+		env := c.getEnv()
+		if env.NATSConn != nil {
+			c.subscriber = newMQTTSubscriber()
+			go c.subscriber.run(cctx, env.NATSConn)
+		}
 	}
 	m.mu.Unlock()
 }
@@ -362,6 +374,10 @@ func (m *Manager) AddCluster(cl store.Cluster) error {
 		cctx, cancel := context.WithCancel(m.rootCtx)
 		m.cancels[cl.ID] = cancel
 		go c.run(cctx, cl.ID, m.onChange)
+		if env.NATSConn != nil {
+			c.subscriber = newMQTTSubscriber()
+			go c.subscriber.run(cctx, env.NATSConn)
+		}
 	}
 
 	return nil
@@ -402,7 +418,8 @@ func (m *Manager) UpdateCluster(cl store.Cluster) error {
 	// Determine whether only the display name changed.
 	serversChanged := serversEqual(oldEnv.Servers, newEnv.Servers)
 	tlsChanged := tlsEqual(oldEnv.TLS, newEnv.TLS)
-	nameOnly := serversChanged && tlsChanged
+	natsConnSame := natsConnEqual(oldEnv.NATSConn, newEnv.NATSConn)
+	nameOnly := serversChanged && tlsChanged && natsConnSame
 
 	if nameOnly {
 		// Fast path: update the env label in-place, no goroutine restart.
@@ -429,6 +446,10 @@ func (m *Manager) UpdateCluster(cl store.Cluster) error {
 		cctx, cancel := context.WithCancel(m.rootCtx)
 		m.cancels[cl.ID] = cancel
 		go c.run(cctx, cl.ID, m.onChange)
+		if newEnv.NATSConn != nil {
+			c.subscriber = newMQTTSubscriber()
+			go c.subscriber.run(cctx, newEnv.NATSConn)
+		}
 	}
 
 	return nil
@@ -582,4 +603,29 @@ func tlsEqual(a, b *config.TLSConfig) bool {
 		return false
 	}
 	return a.CAFile == b.CAFile && a.Insecure == b.Insecure
+}
+
+// natsConnEqual reports whether two NATSConnConfig values are equivalent for
+// the purpose of deciding whether to rebuild the collector (and its subscriber).
+func natsConnEqual(a, b *config.NATSConnConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if len(a.URLs) != len(b.URLs) {
+		return false
+	}
+	for i := range a.URLs {
+		if a.URLs[i] != b.URLs[i] {
+			return false
+		}
+	}
+	return a.Username == b.Username &&
+		a.Password == b.Password &&
+		a.Token == b.Token &&
+		a.NKey == b.NKey &&
+		a.CredsFile == b.CredsFile &&
+		a.SubjectPrefix == b.SubjectPrefix
 }
