@@ -1,8 +1,11 @@
 package ws
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sync"
+
+	"github.com/gorilla/websocket"
 )
 
 type Hub struct {
@@ -30,16 +33,29 @@ func (h *Hub) Unregister(c *Client) {
 	h.mu.Unlock()
 }
 
-// Broadcast sends a message to all clients subscribed to the given environment.
+// Broadcast serializes the message once, pre-frames it as a WebSocket
+// PreparedMessage, and fans the single shared frame out to every client
+// subscribed to env. This removes the per-client JSON re-encode cost that
+// previously grew linearly with the number of connected viewers.
 func (h *Hub) Broadcast(env string, msgType string, data any) {
+	raw, err := json.Marshal(Message{Type: msgType, Env: env, Data: data})
+	if err != nil {
+		h.log.Error("ws broadcast marshal", "err", err)
+		return
+	}
+	pm, err := websocket.NewPreparedMessage(websocket.TextMessage, raw)
+	if err != nil {
+		h.log.Error("ws broadcast prepare", "err", err)
+		return
+	}
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	msg := Message{Type: msgType, Env: env, Data: data}
 	for c := range h.clients {
 		if c.Env() == env {
 			select {
-			case c.send <- msg:
+			case c.send <- pm:
 			default:
 				// Drop message if client is slow.
 			}

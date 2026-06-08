@@ -30,7 +30,7 @@ type subscribeMsg struct {
 type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
-	send chan Message
+	send chan *websocket.PreparedMessage
 	mu   sync.RWMutex
 	env  string
 	log  *slog.Logger
@@ -52,7 +52,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, log *slog.Logger) *Client {
 	return &Client{
 		hub:  hub,
 		conn: conn,
-		send: make(chan Message, sendBufLen),
+		send: make(chan *websocket.PreparedMessage, sendBufLen),
 		log:  log,
 	}
 }
@@ -101,13 +101,13 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case msg, ok := <-c.send:
+		case pm, ok := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, nil)
 				return
 			}
-			if err := c.conn.WriteJSON(msg); err != nil {
+			if err := c.conn.WritePreparedMessage(pm); err != nil {
 				return
 			}
 		case <-ticker.C:
