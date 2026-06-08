@@ -197,7 +197,7 @@ func (sc *SYSCollector) poll(ctx context.Context, carry *Snapshot, slow bool) *S
 	bootstrap := cacheLen == 0 && nc.IsConnected()
 
 	if bootstrap || slow {
-		sc.fillFromPing(ctx, nc, snap)
+		sc.fillFromPing(ctx, nc, snap, slow)
 		return snap
 	}
 
@@ -224,64 +224,77 @@ func (sc *SYSCollector) poll(ctx context.Context, carry *Snapshot, slow bool) *S
 	return snap
 }
 
+// connzSubsDetailBody is the request body sent to PING.CONNZ on slow polls to
+// request per-connection subscription detail. This allows getSubsRows to serve
+// from the snapshot rather than making live HTTP calls to NATS monitoring.
+var connzSubsDetailBody = json.RawMessage(`{"subscriptions_detail":true}`)
+
 // fillFromPing fires all PING fan-in requests in parallel and populates snap.
-func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *Snapshot) {
+// slowDetail requests per-connection subscription detail from PING.CONNZ so that
+// getSubsRows can be served from the snapshot without HTTP on slow polls.
+func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *Snapshot, slowDetail bool) {
 	type endpoint struct {
 		name string
+		body []byte
 		fill func(id string, data json.RawMessage)
+	}
+
+	connzBody := []byte(nil)
+	if slowDetail {
+		connzBody = connzSubsDetailBody
 	}
 
 	var mu sync.Mutex
 	endpoints := []endpoint{
-		{"VARZ", func(id string, data json.RawMessage) {
+		{"VARZ", nil, func(id string, data json.RawMessage) {
 			var v Varz
 			if json.Unmarshal(data, &v) == nil {
 				snap.Varz[id] = &v
 			}
 		}},
-		{"CONNZ", func(id string, data json.RawMessage) {
+		{"CONNZ", connzBody, func(id string, data json.RawMessage) {
 			var v Connz
 			if json.Unmarshal(data, &v) == nil {
 				snap.Connz[id] = &v
 			}
 		}},
-		{"ROUTEZ", func(id string, data json.RawMessage) {
+		{"ROUTEZ", nil, func(id string, data json.RawMessage) {
 			var v Routez
 			if json.Unmarshal(data, &v) == nil {
 				snap.Routez[id] = &v
 			}
 		}},
-		{"GATEWAYZ", func(id string, data json.RawMessage) {
+		{"GATEWAYZ", nil, func(id string, data json.RawMessage) {
 			var v Gatewayz
 			if json.Unmarshal(data, &v) == nil {
 				snap.Gatewayz[id] = &v
 			}
 		}},
-		{"LEAFZ", func(id string, data json.RawMessage) {
+		{"LEAFZ", nil, func(id string, data json.RawMessage) {
 			var v Leafz
 			if json.Unmarshal(data, &v) == nil {
 				snap.Leafz[id] = &v
 			}
 		}},
-		{"SUBSZ", func(id string, data json.RawMessage) {
+		{"SUBSZ", nil, func(id string, data json.RawMessage) {
 			var v SubszResp
 			if json.Unmarshal(data, &v) == nil {
 				snap.Subsz[id] = &v
 			}
 		}},
-		{"JSZ", func(id string, data json.RawMessage) {
+		{"JSZ", nil, func(id string, data json.RawMessage) {
 			var v JSInfo
 			if json.Unmarshal(data, &v) == nil {
 				snap.JSInfo[id] = &v
 			}
 		}},
-		{"ACCOUNTZ", func(id string, data json.RawMessage) {
+		{"ACCOUNTZ", nil, func(id string, data json.RawMessage) {
 			var v Accountz
 			if json.Unmarshal(data, &v) == nil {
 				snap.Accountz[id] = &v
 			}
 		}},
-		{"HEALTHZ", func(id string, data json.RawMessage) {
+		{"HEALTHZ", nil, func(id string, data json.RawMessage) {
 			var v HealthStatus
 			if json.Unmarshal(data, &v) == nil {
 				snap.Health[id] = &v
@@ -296,7 +309,7 @@ func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *S
 		go func() {
 			defer wg.Done()
 			subject := fmt.Sprintf("$SYS.REQ.SERVER.PING.%s", ep.name)
-			replies := fanIn(nc, subject, 2*time.Second)
+			replies := fanIn(nc, subject, 2*time.Second, ep.body)
 			mu.Lock()
 			for _, r := range replies {
 				if r.Error != nil || len(r.Data) == 0 {
@@ -311,7 +324,8 @@ func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *S
 }
 
 // fanIn publishes a request to subject and collects all replies within timeout.
-func fanIn(nc *nats.Conn, subject string, timeout time.Duration) []*pingEnvelope {
+// body is optional; nil sends an empty request (default NATS monitoring options).
+func fanIn(nc *nats.Conn, subject string, timeout time.Duration, body []byte) []*pingEnvelope {
 	inbox := nc.NewRespInbox()
 	sub, err := nc.SubscribeSync(inbox)
 	if err != nil {
@@ -319,7 +333,7 @@ func fanIn(nc *nats.Conn, subject string, timeout time.Duration) []*pingEnvelope
 	}
 	defer sub.Unsubscribe() //nolint:errcheck
 
-	if err := nc.PublishRequest(subject, inbox, nil); err != nil {
+	if err := nc.PublishRequest(subject, inbox, body); err != nil {
 		return nil
 	}
 	_ = nc.Flush()

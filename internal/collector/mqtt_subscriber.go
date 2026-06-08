@@ -123,7 +123,11 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 			return
 		}
 		s.mu.Lock()
-		s.bridges[m.InstanceName] = &cachedBridge{msg: &m, receivedAt: time.Now()}
+		if m.Drained {
+			delete(s.bridges, m.InstanceName)
+		} else {
+			s.bridges[m.InstanceName] = &cachedBridge{msg: &m, receivedAt: time.Now()}
+		}
 		s.mu.Unlock()
 	})
 	if err != nil {

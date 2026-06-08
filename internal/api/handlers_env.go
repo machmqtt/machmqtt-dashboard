@@ -280,6 +280,16 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 	}
 	subsDetailCacheMu.Unlock()
 
+	// Fast path: use snapshot Connz when sys_collection is active and the slow
+	// poll has populated per-connection subscription detail via PING.CONNZ.
+	if snap := s.manager.Snapshot(env); snap != nil {
+		if rows := subsRowsFromConnz(snap); rows != nil {
+			s.cacheSubsRows(env, rows)
+			return rows
+		}
+	}
+
+	// Fall back to HTTP (clusters without sys_collection=true).
 	fetcher := s.manager.Fetcher(env)
 	servers := s.manager.EnvServers(env)
 	if fetcher == nil || len(servers) == 0 {
@@ -296,7 +306,7 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		return id
 	}
 
-	const maxRows = 50000 // Hard cap to prevent OOM.
+	const maxRows = 50000
 
 	var all []subRow
 	for _, url := range servers {
@@ -305,7 +315,6 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		}
 		connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 1024)
 		if err != nil {
-			// Fallback to subs=true (string list) if subs=detail fails.
 			connz, err = fetcher.FetchConnzWithSubs(ctx, url, 1024)
 			if err != nil {
 				continue
@@ -350,14 +359,71 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 	}
 
 	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
+	s.cacheSubsRows(env, all)
+	return all
+}
 
+// subsRowsFromConnz builds the subscription row table from snapshot Connz entries
+// that carry per-connection subscription detail (populated by PING.CONNZ with
+// subscriptions_detail=true on slow polls when sys_collection=true). Returns nil
+// when no Connz entry has subscription data, signalling a fall-through to HTTP.
+func subsRowsFromConnz(snap *collector.Snapshot) []subRow {
+	const maxRows = 50000
+	var all []subRow
+	for srvID, connz := range snap.Connz {
+		srvName := srvID
+		if v, ok := snap.Varz[srvID]; ok && v.ServerName != "" {
+			srvName = v.ServerName
+		}
+		for _, c := range connz.Conns {
+			if len(c.SubsDetail) == 0 && len(c.Subs) == 0 {
+				continue
+			}
+			acct := c.Account
+			if len(c.SubsDetail) > 0 {
+				for _, sd := range c.SubsDetail {
+					a := sd.Account
+					if a == "" {
+						a = acct
+					}
+					all = append(all, subRow{
+						Subject: sd.Subject, Queue: sd.Queue, Sid: sd.Sid,
+						Msgs: sd.Msgs, ConnCid: c.Cid, ConnName: c.Name,
+						ConnIP: c.IP, Account: a,
+						ServerID: srvID, ServerName: srvName,
+					})
+					if len(all) >= maxRows {
+						break
+					}
+				}
+			} else {
+				for i, sub := range c.Subs {
+					all = append(all, subRow{
+						Subject: sub, Sid: strconv.Itoa(i + 1),
+						ConnCid: c.Cid, ConnName: c.Name,
+						ConnIP: c.IP, Account: acct,
+						ServerID: srvID, ServerName: srvName,
+					})
+					if len(all) >= maxRows {
+						break
+					}
+				}
+			}
+		}
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
+	return all
+}
+
+func (s *Server) cacheSubsRows(env string, rows []subRow) {
 	subsDetailCacheMu.Lock()
 	subsDetailCacheData[env] = &struct {
 		rows      []subRow
 		fetchedAt time.Time
-	}{rows: all, fetchedAt: time.Now()}
-
-	// Evict stale entries and enforce max cache size.
+	}{rows: rows, fetchedAt: time.Now()}
 	if len(subsDetailCacheData) > subsCacheMaxEntries {
 		var oldestKey string
 		var oldestTime time.Time
@@ -372,8 +438,6 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		}
 	}
 	subsDetailCacheMu.Unlock()
-
-	return all
 }
 
 func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {

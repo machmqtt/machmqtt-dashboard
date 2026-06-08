@@ -12,3 +12,22 @@ data_dir: "./data"
 
 # Clusters are managed at runtime via the admin UI — no YAML configuration needed.
 # Log in as admin and navigate to Cluster Management to add your first NATS cluster.
+#
+# Each cluster supports two optional push-collection modes configured in the admin UI:
+#
+#   MQTT bridge metrics (2a)
+#     Requires a NATS connection (nats_conn) on the cluster. The dashboard subscribes
+#     to <subject_prefix>.metrics.> and maintains a live TTL cache of bridge state.
+#     No connz scanning, no HTTP probing — bridges self-announce and age out
+#     automatically. Key fields: urls (nats://), auth (user/pass, creds file, nkey,
+#     or token), subject_prefix (default: $MQTT5).
+#
+#   $SYS server stats (2b)
+#     Requires system-account credentials. The dashboard subscribes to
+#     $SYS.SERVER.*.STATSZ for continuous per-server CPU/mem/connections/JetStream
+#     data and uses $SYS.REQ.SERVER.PING.* fan-in for topology and detail. Replaces
+#     the HTTP poller; servers are auto-discovered — no static URL list needed.
+#     Key fields: sys_creds (path to .creds file or inline nkey seed).
+#
+# When neither is configured the dashboard falls back to HTTP polling of the
+# NATS monitoring port (the legacy mode; always available as a fallback).
