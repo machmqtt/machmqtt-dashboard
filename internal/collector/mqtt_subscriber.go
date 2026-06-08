@@ -22,7 +22,7 @@ const bridgeTTL = 45 * time.Second
 // Field names and nesting match the publisher exactly; both sides must agree.
 type BridgeMetricsMsg struct {
 	V            int              `json:"v"`
-	PublishedAt  int64            `json:"published_at"` // unix seconds
+	PublishedAt  time.Time        `json:"published_at"`
 	InstanceID   string           `json:"instance_id"`   // ephemeral, matches cluster heartbeat id
 	InstanceName string           `json:"instance_name"` // stable across restarts — dashboard's historical key
 	Version      string           `json:"version,omitempty"`
