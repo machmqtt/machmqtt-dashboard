@@ -49,15 +49,19 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
             <PanelLeftClose className="w-4 h-4" />
           </button>
         </div>
-        <select
-          value={activeEnv}
-          onChange={(e) => setActiveEnv(e.target.value)}
-          className="w-full bg-white/10 rounded px-2 py-1.5 text-sm outline-none"
-        >
-          {environments.map((env) => (
-            <option key={env} value={env} className="bg-brand-sidebar">{env}</option>
-          ))}
-        </select>
+        {environments.length === 0 ? (
+          <div className="text-xs text-white/50 italic px-1 py-1.5">No clusters — add one in Cluster Management</div>
+        ) : (
+          <select
+            value={activeEnv}
+            onChange={(e) => setActiveEnv(e.target.value)}
+            className="w-full bg-white/10 rounded px-2 py-1.5 text-sm outline-none"
+          >
+            {environments.map((env) => (
+              <option key={env.id} value={env.id} className="bg-brand-sidebar">{env.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       <nav className="flex-1 py-2">
@@ -106,6 +110,17 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
         {role === 'admin' && (
           <>
             <div className="mx-4 my-2 border-t border-white/10" />
+            <NavLink
+              to="/admin/clusters"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+                  isActive ? 'bg-white/10 text-brand-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
+                }`
+              }
+            >
+              <Server className="w-4 h-4" />
+              Cluster Management
+            </NavLink>
             <NavLink
               to="/admin/users"
               className={({ isActive }) =>

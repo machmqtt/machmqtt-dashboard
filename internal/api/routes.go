@@ -66,6 +66,11 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	admin.HandleFunc("GET /api/admin/users", a.HandleListUsers)
 	admin.HandleFunc("POST /api/admin/users", a.HandleCreateUser)
 	admin.HandleFunc("DELETE /api/admin/users/{id}", a.HandleDeleteUser)
+	// Cluster management (create/update/delete are admin-only).
+	admin.HandleFunc("GET /api/admin/clusters", s.handleListClusters)
+	admin.HandleFunc("POST /api/admin/clusters", s.handleCreateCluster)
+	admin.HandleFunc("PUT /api/admin/clusters/{id}", s.handleUpdateCluster)
+	admin.HandleFunc("DELETE /api/admin/clusters/{id}", s.handleDeleteCluster)
 	protected.Handle("/api/admin/", auth.AdminMiddleware(admin))
 
 	mux.Handle("/api/", a.Middleware(protected))

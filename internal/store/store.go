@@ -92,6 +92,26 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE users ADD COLUMN last_failed_at DATETIME`)
 	s.db.Exec(`ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`)
 
+	// Cluster configuration (persisted, managed via admin UI).
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS clusters (
+			id             TEXT PRIMARY KEY,
+			name           TEXT NOT NULL,
+			servers        TEXT NOT NULL DEFAULT '[]',
+			mqtt_bridges   TEXT NOT NULL DEFAULT '[]',
+			mqtt_discovery TEXT,
+			tls            TEXT,
+			admin_token    TEXT NOT NULL DEFAULT '',
+			nats_conn      TEXT,
+			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	// Migration: add nats_conn for existing databases (silently ignored if already present).
+	s.db.Exec(`ALTER TABLE clusters ADD COLUMN nats_conn TEXT`)
+
 	// MQTT bridge discovery persistence.
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS mqtt_bridges (

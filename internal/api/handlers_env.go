@@ -19,8 +19,20 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
-	envs := s.manager.Environments()
-	writeJSON(w, map[string]any{"environments": envs})
+	clusters, err := s.store.ListClusters()
+	if err != nil {
+		http.Error(w, `{"error":"failed to list clusters"}`, http.StatusInternalServerError)
+		return
+	}
+	type clusterInfo struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	list := make([]clusterInfo, len(clusters))
+	for i, c := range clusters {
+		list[i] = clusterInfo{ID: c.ID, Name: c.Name}
+	}
+	writeJSON(w, map[string]any{"environments": list})
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {

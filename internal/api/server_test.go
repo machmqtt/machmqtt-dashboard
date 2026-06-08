@@ -18,6 +18,12 @@ import (
 
 func setupTestServer(t *testing.T) (*Server, *auth.Auth, string) {
 	t.Helper()
+	srv, _, a, token := setupTestServerWithStore(t)
+	return srv, a, token
+}
+
+func setupTestServerWithStore(t *testing.T) (*Server, *store.Store, *auth.Auth, string) {
+	t.Helper()
 	s, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -31,15 +37,12 @@ func setupTestServer(t *testing.T) (*Server, *auth.Auth, string) {
 
 	cfg := &config.Config{
 		PollInterval: 5e9,
-		Environments: []config.Environment{
-			{Name: "test", Servers: []config.Server{{URL: "http://localhost:9999"}}},
-		},
 	}
 	hub := ws.NewHub(log)
 	mgr, _ := collector.NewManager(cfg, nil, log, s)
 
 	srv := NewServer(a, mgr, hub, log, "test", cfg, nil, s)
-	return srv, a, token
+	return srv, s, a, token
 }
 
 func authedReq(method, path, token string, body string) *http.Request {
@@ -93,7 +96,16 @@ func TestLoginBadCredentials(t *testing.T) {
 }
 
 func TestEnvironmentsEndpoint(t *testing.T) {
-	srv, _, token := setupTestServer(t)
+	srv, st, _, token := setupTestServerWithStore(t)
+
+	// Create a cluster so the list is non-empty.
+	cl := &store.Cluster{
+		Name:    "test",
+		Servers: []config.Server{{URL: "http://localhost:9999"}},
+	}
+	if err := st.CreateCluster(cl); err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
 
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, authedReq("GET", "/api/environments", token, ""))
@@ -102,11 +114,17 @@ func TestEnvironmentsEndpoint(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	var resp map[string][]string
+	var resp map[string][]map[string]string
 	json.NewDecoder(w.Body).Decode(&resp)
 	envs := resp["environments"]
-	if len(envs) != 1 || envs[0] != "test" {
-		t.Errorf("environments = %v, want [test]", envs)
+	if len(envs) != 1 {
+		t.Fatalf("environments count = %d, want 1", len(envs))
+	}
+	if envs[0]["name"] != "test" {
+		t.Errorf("environment name = %q, want test", envs[0]["name"])
+	}
+	if envs[0]["id"] == "" {
+		t.Errorf("environment id is empty, want a generated ID")
 	}
 }
 
@@ -281,9 +299,6 @@ func TestDefaultAdminMustChangePassword(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(nil, nil))
 	cfg := &config.Config{
 		PollInterval: 5e9,
-		Environments: []config.Environment{
-			{Name: "test", Servers: []config.Server{{URL: "http://localhost:9999"}}},
-		},
 	}
 	hub := ws.NewHub(log)
 	mgr, _ := collector.NewManager(cfg, nil, log, s)

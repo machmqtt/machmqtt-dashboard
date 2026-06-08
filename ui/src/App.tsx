@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { fetchWithTimeout } from './utils/fetchWithTimeout'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './hooks/useAuth'
 import type { User } from './hooks/useAuth'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useStore } from './store/store'
+import type { ClusterInfo } from './store/store'
 import { Shell } from './components/layout/Shell'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { LoginPage } from './pages/LoginPage'
@@ -17,6 +18,7 @@ import { JetStreamPage } from './pages/JetStreamPage'
 import { AccountsPage } from './pages/AccountsPage'
 import { ServerDetailPage } from './pages/ServerDetailPage'
 import { UsersPage } from './pages/UsersPage'
+import { ClustersPage } from './pages/ClustersPage'
 import { MQTTOverviewPage } from './pages/MQTTOverviewPage'
 import { MQTTConnectionsPage } from './pages/MQTTConnectionsPage'
 import { MQTTBridgeDetailPage } from './pages/MQTTBridgeDetailPage'
@@ -28,23 +30,32 @@ function AuthenticatedApp({ user, onLogout }: { user: User; onLogout: () => void
   const [version, setVersion] = useState('dev')
   useWebSocket()
 
-  useEffect(() => {
+  // Exported so ClustersPage can trigger a refetch after mutations.
+  const refreshEnvironments = useCallback(() => {
     fetchWithTimeout('/api/environments')
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (!data) return
-        const envs: string[] = data.environments || []
+        const envs: ClusterInfo[] = data.environments || []
         setEnvironments(envs)
-        if (envs.length > 0 && !activeEnv) {
-          setActiveEnv(envs[0])
+        // Auto-select first cluster if nothing is active, or if the active
+        // cluster was removed.
+        const activeStillExists = envs.some((e) => e.id === activeEnv)
+        if (!activeStillExists) {
+          setActiveEnv(envs.length > 0 ? envs[0].id : '')
         }
       })
       .catch(() => {})
+  }, [setEnvironments, setActiveEnv, activeEnv])
+
+  useEffect(() => {
+    refreshEnvironments()
     fetchWithTimeout('/api/version')
       .then((r) => r.ok ? r.json() : null)
       .then((d) => { if (d) setVersion(d.version || 'dev') })
       .catch(() => {})
-  }, [setEnvironments, setActiveEnv, activeEnv])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <Routes>
@@ -62,6 +73,9 @@ function AuthenticatedApp({ user, onLogout }: { user: User; onLogout: () => void
         <Route path="/mqtt/:bridge/detail" element={<MQTTBridgeDetailPage role={user.role} />} />
         {user.role === 'admin' && (
           <Route path="/admin/users" element={<UsersPage />} />
+        )}
+        {user.role === 'admin' && (
+          <Route path="/admin/clusters" element={<ClustersPage onClustersChanged={refreshEnvironments} />} />
         )}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

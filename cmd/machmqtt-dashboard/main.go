@@ -24,10 +24,16 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	exampleConfig := flag.Bool("example-config", false, "print an example config.yaml to stdout and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("machmqtt-dashboard", version)
+		os.Exit(0)
+	}
+
+	if *exampleConfig {
+		fmt.Print(config.ExampleYAML())
 		os.Exit(0)
 	}
 
@@ -67,17 +73,17 @@ func main() {
 	go metricsWriter.Run(ctx)
 
 	var manager *collector.Manager
-	manager, err = collector.NewManager(cfg, func(envName string) {
-		overview := manager.Overview(envName)
-		hub.Broadcast(envName, "overview", overview)
-		hub.Broadcast(envName, "topology", manager.Topology(envName))
-		hub.Broadcast(envName, "health", manager.Health(envName))
+	manager, err = collector.NewManager(cfg, func(clusterID string) {
+		overview := manager.Overview(clusterID)
+		hub.Broadcast(clusterID, "overview", overview)
+		hub.Broadcast(clusterID, "topology", manager.Topology(clusterID))
+		hub.Broadcast(clusterID, "health", manager.Health(clusterID))
 
 		// Submit metrics sample for time-series storage.
 		if overview != nil {
 			sample := store.MetricSample{
 				Timestamp:       time.Now(),
-				Env:             envName,
+				Env:             clusterID,
 				ServerCount:     overview.ServerCount,
 				HealthyCount:    overview.HealthyCount,
 				ConnectionCount: overview.ConnectionCount,
@@ -89,7 +95,7 @@ func main() {
 			}
 
 			// Per-server metrics from the snapshot.
-			snap := manager.Snapshot(envName)
+			snap := manager.Snapshot(clusterID)
 			if snap != nil {
 				for id, v := range snap.Varz {
 					sm := store.ServerMetricSample{
@@ -121,7 +127,7 @@ func main() {
 			}
 
 			// Per-MQTT bridge metrics.
-			bridges := manager.MQTTBridges(envName)
+			bridges := manager.MQTTBridges(clusterID)
 			for _, b := range bridges {
 				bm := store.MQTTBridgeMetricSample{
 					BridgeID:     b.ConfiguredName,

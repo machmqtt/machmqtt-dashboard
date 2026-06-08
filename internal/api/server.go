@@ -43,7 +43,6 @@ type Server struct {
 	hub     *ws.Hub
 	log     *slog.Logger
 	version string
-	cfg     *config.Config
 	metrics *store.MetricsWriter
 	store   *store.Store
 }
@@ -55,7 +54,6 @@ func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.
 		hub:     hub,
 		log:     log,
 		version: version,
-		cfg:     cfg,
 		metrics: metrics,
 		store:   st,
 	}

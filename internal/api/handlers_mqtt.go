@@ -24,12 +24,7 @@ var mqttAdminActions = map[string]string{
 }
 
 func (s *Server) envConfig(env string) *config.Environment {
-	for i := range s.cfg.Environments {
-		if s.cfg.Environments[i].Name == env {
-			return &s.cfg.Environments[i]
-		}
-	}
-	return nil
+	return s.manager.ClusterConfig(env)
 }
 
 func (s *Server) mqttBridges(env string) []config.MQTTBridge {

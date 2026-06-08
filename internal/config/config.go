@@ -1,6 +1,7 @@
 package config
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"time"
@@ -8,13 +9,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+//go:embed config.example.yaml
+var exampleYAML string
+
+// ExampleYAML returns the fully commented example configuration file.
+func ExampleYAML() string { return exampleYAML }
+
 type Config struct {
 	Listen        string        `yaml:"listen"`
 	PollInterval  time.Duration `yaml:"poll_interval"`
 	SessionSecret string        `yaml:"session_secret"`
 	SecureCookies bool          `yaml:"secure_cookies"`
 	DataDir       string        `yaml:"data_dir"`
-	Environments  []Environment `yaml:"environments"`
 }
 
 type Environment struct {
@@ -27,8 +33,35 @@ type Environment struct {
 	// both auto-discovered instances and configured bridges without their own
 	// token. A per-bridge MQTTBridge.BearerToken overrides it. Empty = send no
 	// token (works against bridges whose admin API has no token configured).
-	AdminToken string     `yaml:"admin_token,omitempty"`
-	TLS        *TLSConfig `yaml:"tls,omitempty"`
+	AdminToken string          `yaml:"admin_token,omitempty"`
+	TLS        *TLSConfig      `yaml:"tls,omitempty"`
+	NATSConn   *NATSConnConfig `yaml:"nats_conn,omitempty"`
+}
+
+// NATSConnConfig holds the NATS client connection parameters for push-based
+// collection (2a MachMQTT metrics subject, 2b $SYS server collection).
+// Nil means HTTP polling only. Exactly one auth field should be set when used.
+type NATSConnConfig struct {
+	// URLs are one or more nats:// seed server URLs.
+	URLs []string `yaml:"urls" json:"urls"`
+	// Auth fields — set exactly one.
+	Username  string `yaml:"username,omitempty"   json:"username,omitempty"`
+	Password  string `yaml:"password,omitempty"   json:"password,omitempty"`
+	Token     string `yaml:"token,omitempty"      json:"token,omitempty"`
+	NKey      string `yaml:"nkey,omitempty"       json:"nkey,omitempty"`
+	CredsFile string `yaml:"creds_file,omitempty" json:"creds_file,omitempty"`
+	// SubjectPrefix is the MachMQTT subject namespace. Must match the prefix
+	// configured in MachMQTT for this cluster. Default is "$MQTT5".
+	SubjectPrefix string     `yaml:"subject_prefix,omitempty" json:"subject_prefix,omitempty"`
+	TLS           *TLSConfig `yaml:"tls,omitempty"            json:"tls,omitempty"`
+}
+
+// SubjectPrefixOrDefault returns the configured prefix or the "$MQTT5" default.
+func (n *NATSConnConfig) SubjectPrefixOrDefault() string {
+	if n == nil || n.SubjectPrefix == "" {
+		return "$MQTT5"
+	}
+	return n.SubjectPrefix
 }
 
 type MQTTBridge struct {
@@ -84,7 +117,7 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		Listen:       ":8080",
-		PollInterval: 5 * time.Second,
+		PollInterval: 30 * time.Second,
 		DataDir:      "./data",
 	}
 
@@ -103,17 +136,6 @@ func Load(path string) (*Config, error) {
 	}
 	if len(cfg.SessionSecret) < 32 {
 		return nil, fmt.Errorf("session_secret must be at least 32 characters (got %d) — the shipped placeholder is intentionally too short so the app refuses to start until you set a real one; generate one with: openssl rand -hex 32", len(cfg.SessionSecret))
-	}
-	if len(cfg.Environments) == 0 {
-		return nil, fmt.Errorf("at least one environment is required")
-	}
-	for i, env := range cfg.Environments {
-		if env.Name == "" {
-			return nil, fmt.Errorf("environment %d: name is required", i)
-		}
-		if len(env.Servers) == 0 {
-			return nil, fmt.Errorf("environment %q: at least one server is required", env.Name)
-		}
 	}
 
 	return cfg, nil

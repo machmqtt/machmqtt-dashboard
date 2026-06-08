@@ -14,10 +14,6 @@ listen: ":9090"
 poll_interval: 10s
 session_secret: "test-secret-that-is-at-least-32-characters-long"
 data_dir: "./testdata"
-environments:
-  - name: dev
-    servers:
-      - url: "http://localhost:8222"
 `), 0o644)
 
 	cfg, err := Load(p)
@@ -30,12 +26,6 @@ environments:
 	if cfg.PollInterval.Seconds() != 10 {
 		t.Errorf("poll_interval = %v, want 10s", cfg.PollInterval)
 	}
-	if len(cfg.Environments) != 1 {
-		t.Fatalf("environments = %d, want 1", len(cfg.Environments))
-	}
-	if cfg.Environments[0].Name != "dev" {
-		t.Errorf("env name = %q, want dev", cfg.Environments[0].Name)
-	}
 }
 
 func TestLoadMissingSecret(t *testing.T) {
@@ -43,10 +33,7 @@ func TestLoadMissingSecret(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.yaml")
 	os.WriteFile(p, []byte(`
-environments:
-  - name: dev
-    servers:
-      - url: "http://localhost:8222"
+listen: ":8080"
 `), 0o644)
 
 	_, err := Load(p)
@@ -61,10 +48,6 @@ func TestLoadShortSecretRejected(t *testing.T) {
 	p := filepath.Join(dir, "config.yaml")
 	os.WriteFile(p, []byte(`
 session_secret: "change-me"
-environments:
-  - name: dev
-    servers:
-      - url: "http://localhost:8222"
 `), 0o644)
 
 	if _, err := Load(p); err == nil {
@@ -80,10 +63,6 @@ func TestLoadSessionSecretEnvOverride(t *testing.T) {
 	// File ships a deliberately too-short placeholder; the env var overrides it.
 	os.WriteFile(p, []byte(`
 session_secret: "change-me"
-environments:
-  - name: dev
-    servers:
-      - url: "http://localhost:8222"
 `), 0o644)
 
 	cfg, err := Load(p)
@@ -95,7 +74,8 @@ environments:
 	}
 }
 
-func TestLoadNoEnvironments(t *testing.T) {
+func TestLoadNoEnvironmentsIsNowValid(t *testing.T) {
+	// Clusters are now managed via the admin UI; an empty config is valid.
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.yaml")
 	os.WriteFile(p, []byte(`
@@ -103,8 +83,8 @@ session_secret: "test-secret-that-is-at-least-32-characters-long"
 `), 0o644)
 
 	_, err := Load(p)
-	if err == nil {
-		t.Fatal("expected error for no environments")
+	if err != nil {
+		t.Fatalf("expected empty config to be valid: %v", err)
 	}
 }
 
@@ -113,10 +93,6 @@ func TestLoadDefaults(t *testing.T) {
 	p := filepath.Join(dir, "config.yaml")
 	os.WriteFile(p, []byte(`
 session_secret: "test-secret-that-is-at-least-32-characters-long"
-environments:
-  - name: dev
-    servers:
-      - url: "http://localhost:8222"
 `), 0o644)
 
 	cfg, err := Load(p)

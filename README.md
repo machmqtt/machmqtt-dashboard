@@ -18,17 +18,17 @@ A real-time monitoring dashboard for [NATS](https://nats.io) clusters. Built wit
 ## Architecture
 
 ```
-┌─────────────┐     HTTP polling      ┌──────────────────┐
+┌──────────────┐     HTTP polling     ┌───────────────────┐
 │ NATS Server  │◄────────────────────►│  Go Backend       │
 │ :8222 (mon)  │  /varz /connz /jsz   │  Collector        │
-└─────────────┘                       │  ↓ Snapshot cache  │
-                                      │  ↓ SQLite metrics  │
-                                      │  ↓ WebSocket hub   │
+└──────────────┘                      │  ↓ Snapshot cache │
+                                      │  ↓ SQLite metrics │
+                                      │  ↓ WebSocket hub  │
                                       └────────┬──────────┘
                                                │ WS push
                                       ┌────────▼──────────┐
-                                      │  React Frontend    │
-                                      │  Zustand store     │
+                                      │  React Frontend   │
+                                      │  Zustand store    │
                                       └───────────────────┘
 ```
 
@@ -56,7 +56,7 @@ Prerequisites: Go 1.22+, Node.js 20+
 
 ```bash
 # Clone
-git clone https://github.com/noodlebit/machmqtt-dashboard.git
+git clone https://github.com/machmqtt/machmqtt-dashboard.git
 cd machmqtt-dashboard
 
 # Create config

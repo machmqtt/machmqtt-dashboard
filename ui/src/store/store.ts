@@ -63,9 +63,16 @@ export interface Toast {
   type: 'info' | 'error' | 'success'
 }
 
+// ClusterInfo is the minimal shape returned by GET /api/environments.
+// activeEnv holds the cluster ID (stable); name is the display label.
+export interface ClusterInfo {
+  id: string
+  name: string
+}
+
 interface DashboardState {
   activeEnv: string
-  environments: string[]
+  environments: ClusterInfo[]
   overview: Overview | null
   topology: TopologyGraph | null
   health: HealthStatus | null
@@ -73,7 +80,7 @@ interface DashboardState {
   sidebarOpen: boolean
   toasts: Toast[]
   setActiveEnv: (env: string) => void
-  setEnvironments: (envs: string[]) => void
+  setEnvironments: (envs: ClusterInfo[]) => void
   setOverview: (o: Overview) => void
   setTopology: (t: TopologyGraph) => void
   setHealth: (h: HealthStatus) => void
@@ -87,7 +94,7 @@ let toastId = 0
 
 export const useStore = create<DashboardState>((set) => ({
   activeEnv: '',
-  environments: [],
+  environments: [] as ClusterInfo[],
   overview: null,
   topology: null,
   health: null,
