@@ -24,7 +24,7 @@ func TestMQTTSubscriberReceivesBridgeMetrics(t *testing.T) {
 	defer cancel()
 
 	go sub.run(ctx, cfg)
-	time.Sleep(100 * time.Millisecond) // allow subscriber to connect
+	time.Sleep(100 * time.Millisecond)
 
 	nc, err := nats.Connect(s.ClientURL())
 	if err != nil {
@@ -33,12 +33,11 @@ func TestMQTTSubscriberReceivesBridgeMetrics(t *testing.T) {
 	defer nc.Close()
 
 	msg := BridgeMetricsMsg{
-		V:                       1,
-		InstanceID:              "bridge-abc",
-		Name:                    "my-bridge",
-		PublishedAt:             time.Now(),
-		NATSConnected:           true,
-		ConnectionsActive:       3,
+		V:            1,
+		InstanceID:   "bridge-abc",
+		InstanceName: "my-bridge",
+		NATS:         BridgeMsgNATS{Connected: true},
+		Connections:  BridgeMsgConns{Active: 3},
 		ConsumerPendingMessages: -1,
 		Pool: BridgePool{
 			Size: 2,
@@ -52,11 +51,11 @@ func TestMQTTSubscriberReceivesBridgeMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := nc.Publish("$MQTT5.metrics.bridge-abc", data); err != nil {
+	if err := nc.Publish("$MQTT5.metrics.my-bridge", data); err != nil {
 		t.Fatal(err)
 	}
 	nc.Flush()
-	time.Sleep(100 * time.Millisecond) // allow message delivery
+	time.Sleep(100 * time.Millisecond)
 
 	bridges := sub.Bridges()
 	if len(bridges) != 1 {
@@ -116,10 +115,15 @@ func TestMQTTSubscriberMultipleBridges(t *testing.T) {
 	}
 	defer nc.Close()
 
-	for i, id := range []string{"bridge-1", "bridge-2", "bridge-3"} {
-		msg := BridgeMetricsMsg{V: 1, InstanceID: id, ConnectionsActive: int64(i + 1)}
+	for i, name := range []string{"bridge-1", "bridge-2", "bridge-3"} {
+		msg := BridgeMetricsMsg{
+			V:            1,
+			InstanceID:   name,
+			InstanceName: name,
+			Connections:  BridgeMsgConns{Active: int64(i + 1)},
+		}
 		data, _ := json.Marshal(msg)
-		nc.Publish("$MQTT5.metrics."+id, data)
+		nc.Publish("$MQTT5.metrics."+name, data)
 	}
 	nc.Flush()
 	time.Sleep(100 * time.Millisecond)
@@ -152,7 +156,7 @@ func TestMQTTSubscriberIgnoresInvalidMessages(t *testing.T) {
 	defer nc.Close()
 
 	nc.Publish("test.metrics.bad", []byte("not json"))
-	nc.Publish("test.metrics.noinstance", []byte(`{"v":1,"name":"x"}`)) // missing instance_id
+	nc.Publish("test.metrics.noname", []byte(`{"v":1,"instance_id":"x"}`)) // missing instance_name
 	nc.Flush()
 	time.Sleep(100 * time.Millisecond)
 
@@ -183,12 +187,12 @@ func TestMQTTSubscriberCustomPrefix(t *testing.T) {
 	defer nc.Close()
 
 	// Publish on default prefix — should NOT be received.
-	wrongMsg := BridgeMetricsMsg{V: 1, InstanceID: "wrong"}
+	wrongMsg := BridgeMetricsMsg{V: 1, InstanceID: "wrong", InstanceName: "wrong"}
 	wrongData, _ := json.Marshal(wrongMsg)
 	nc.Publish("$MQTT5.metrics.wrong", wrongData)
 
 	// Publish on configured prefix — should be received.
-	rightMsg := BridgeMetricsMsg{V: 1, InstanceID: "right"}
+	rightMsg := BridgeMetricsMsg{V: 1, InstanceID: "right", InstanceName: "right"}
 	rightData, _ := json.Marshal(rightMsg)
 	nc.Publish("acme.metrics.right", rightData)
 
@@ -202,7 +206,67 @@ func TestMQTTSubscriberCustomPrefix(t *testing.T) {
 	if bridges[0].Status == nil || bridges[0].Status.Metrics == nil {
 		t.Fatal("bridge status/metrics nil")
 	}
+	// InstanceID in Metrics is the ephemeral instance_id from the payload.
 	if bridges[0].Status.Metrics.InstanceID != "right" {
 		t.Errorf("got instance_id %q, want right", bridges[0].Status.Metrics.InstanceID)
+	}
+}
+
+func TestMQTTSubscriberAccountMapped(t *testing.T) {
+	s := natstest.New(t)
+
+	cfg := &config.NATSConnConfig{
+		URLs:          []string{s.ClientURL()},
+		SubjectPrefix: "$MQTT5",
+	}
+
+	sub := newMQTTSubscriber()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go sub.run(ctx, cfg)
+	time.Sleep(100 * time.Millisecond)
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	msg := BridgeMetricsMsg{
+		V:            1,
+		InstanceID:   "js-bridge",
+		InstanceName: "js-bridge",
+		Connections:  BridgeMsgConns{Active: 1},
+		Account: &BridgeMsgAccount{
+			Domain:    "hub",
+			Memory:    1024,
+			Store:     4096,
+			Streams:   3,
+			Consumers: 5,
+		},
+	}
+	data, _ := json.Marshal(msg)
+	nc.Publish("$MQTT5.metrics.js-bridge", data)
+	nc.Flush()
+	time.Sleep(100 * time.Millisecond)
+
+	bridges := sub.Bridges()
+	if len(bridges) != 1 {
+		t.Fatalf("got %d bridges, want 1", len(bridges))
+	}
+	b := bridges[0]
+	if b.Status == nil || b.Status.NATS == nil {
+		t.Fatal("Status.NATS is nil")
+	}
+	acct := b.Status.NATS.Account
+	if acct == nil {
+		t.Fatal("NATS.Account is nil — JetStream account not mapped")
+	}
+	if acct.Streams != 3 {
+		t.Errorf("Account.Streams = %d, want 3", acct.Streams)
+	}
+	if acct.Memory != 1024 {
+		t.Errorf("Account.Memory = %d, want 1024", acct.Memory)
 	}
 }

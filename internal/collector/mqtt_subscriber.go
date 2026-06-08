@@ -17,49 +17,62 @@ import (
 // publish before it is considered gone. Set to 3× the expected publish interval.
 const bridgeTTL = 45 * time.Second
 
-// BridgeMetricsMsg is the wire format published by MachMQTT bridges to
-// <prefix>.metrics.<instance_id>. Schema version v=1.
-// This is the canonical contract between MachMQTT (publisher) and the
-// dashboard subscribe-collector (consumer). Both sides must match field-for-field.
+// BridgeMetricsMsg is the JSON object published by MachMQTT bridges to
+// <prefix>.metrics.<instance_name>. Schema version v=1.
+// Field names and nesting match the publisher exactly; both sides must agree.
 type BridgeMetricsMsg struct {
-	V           int       `json:"v"`                     // schema version, currently 1
-	InstanceID  string    `json:"instance_id"`           // stable per-instance identity
-	Version     string    `json:"version,omitempty"`     // MachMQTT app version
-	Name        string    `json:"name,omitempty"`        // configured bridge name
-	PublishedAt time.Time `json:"published_at"`
-	Drained     bool      `json:"drained,omitempty"` // graceful-shutdown marker
+	V            int              `json:"v"`
+	PublishedAt  int64            `json:"published_at"` // unix seconds
+	InstanceID   string           `json:"instance_id"`   // ephemeral, matches cluster heartbeat id
+	InstanceName string           `json:"instance_name"` // stable across restarts — dashboard's historical key
+	Version      string           `json:"version,omitempty"`
+	Drained      bool             `json:"drained,omitempty"`
+	Connections  BridgeMsgConns   `json:"connections"`
+	Messages     BridgeMsgMsgs    `json:"messages"`
+	NATS         BridgeMsgNATS    `json:"nats"`
+	Pool         BridgePool       `json:"pool"`
 
-	// Connection counters (cumulative).
-	ConnectionsActive   int64 `json:"connections_active"`
-	ConnectionsTotal    int64 `json:"connections_total"`
-	ConnectionsRejected int64 `json:"connections_rejected"`
+	ConsumerPendingMessages int64            `json:"consumer_pending_messages"`
+	StalledConsumers        int64            `json:"stalled_consumers"`
+	SessionWriteBehindDepth int64            `json:"session_write_behind_depth"`
+	Account                 *BridgeMsgAccount `json:"account,omitempty"`
+}
 
-	// MQTT message counters (cumulative), broken out by QoS direction.
-	MsgsRecvQoS0    int64 `json:"msgs_recv_qos0"`
-	MsgsRecvQoS1    int64 `json:"msgs_recv_qos1"`
-	MsgsRecvQoS2    int64 `json:"msgs_recv_qos2"`
-	MsgsSentQoS0    int64 `json:"msgs_sent_qos0"`
-	MsgsSentQoS1    int64 `json:"msgs_sent_qos1"`
-	MsgsSentQoS2    int64 `json:"msgs_sent_qos2"`
-	MsgsRedelivered int64 `json:"msgs_redelivered"`
+type BridgeMsgConns struct {
+	Active   int64 `json:"active"`
+	Total    int64 `json:"total"`
+	Rejected int64 `json:"rejected"`
+}
 
-	// NATS link health.
-	NATSConnected    bool   `json:"nats_connected"`
-	NATSServerID     string `json:"nats_server_id,omitempty"`
-	NATSServerName   string `json:"nats_server_name,omitempty"`
-	NATSURL          string `json:"nats_url,omitempty"`
-	NATSRTT          string `json:"nats_rtt,omitempty"`
-	NATSReconnects   uint64 `json:"nats_reconnects"`
-	NATSDisconnects  int64  `json:"nats_disconnects"`
-	NATSSlowConsumer int64  `json:"nats_slow_consumer"`
+type BridgeMsgMsgs struct {
+	RecvQoS0    int64 `json:"recv_qos0"`
+	RecvQoS1    int64 `json:"recv_qos1"`
+	RecvQoS2    int64 `json:"recv_qos2"`
+	SentQoS0    int64 `json:"sent_qos0"`
+	SentQoS1    int64 `json:"sent_qos1"`
+	SentQoS2    int64 `json:"sent_qos2"`
+	Redelivered int64 `json:"redelivered"`
+}
 
-	// NATS connection pool.
-	Pool BridgePool `json:"pool"`
+type BridgeMsgNATS struct {
+	Connected    bool     `json:"connected"`
+	ServerID     string   `json:"server_id"`
+	ServerName   string   `json:"server_name"`
+	URL          string   `json:"url"`
+	Servers      []string `json:"servers,omitempty"`
+	RTT          string   `json:"rtt,omitempty"`
+	Reconnects   uint64   `json:"reconnects"`
+	Disconnects  int64    `json:"disconnects"`
+	SlowConsumer int64    `json:"slow_consumer"`
+}
 
-	// JetStream gauges. -1 means JetStream is absent/disabled (metric not emitted).
-	ConsumerPendingMessages int64 `json:"consumer_pending_messages"`
-	StalledConsumers        int64 `json:"stalled_consumers"`
-	SessionWriteBehindDepth int64 `json:"session_write_behind_depth"`
+// BridgeMsgAccount carries JetStream account info. Absent when JetStream is disabled.
+type BridgeMsgAccount struct {
+	Domain    string `json:"domain,omitempty"`
+	Memory    uint64 `json:"memory_bytes"`
+	Store     uint64 `json:"store_bytes"`
+	Streams   int    `json:"streams"`
+	Consumers int    `json:"consumers"`
 }
 
 // BridgePool is the wire representation of the NATS connection pool.
@@ -84,9 +97,10 @@ type cachedBridge struct {
 
 // MQTTSubscriber maintains a live TTL-keyed cache of bridge metrics received
 // via NATS pub/sub. It is the push-based replacement for connz-scan discovery.
+// Cache is keyed by instance_name (stable across restarts), not instance_id.
 type MQTTSubscriber struct {
 	mu      sync.RWMutex
-	bridges map[string]*cachedBridge // keyed by instance_id
+	bridges map[string]*cachedBridge // keyed by instance_name
 }
 
 func newMQTTSubscriber() *MQTTSubscriber {
@@ -95,8 +109,6 @@ func newMQTTSubscriber() *MQTTSubscriber {
 
 // run connects to NATS, subscribes to <prefix>.metrics.>, and maintains the
 // bridge cache until ctx is cancelled. Intended to be started as a goroutine.
-// Connection failures are retried silently; the cache simply stays empty until
-// a server is reachable, degrading gracefully to the HTTP-poll path.
 func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	nc, err := connectNATS(cfg)
 	if err != nil {
@@ -107,11 +119,11 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	prefix := cfg.SubjectPrefixOrDefault()
 	_, err = nc.Subscribe(prefix+".metrics.>", func(msg *nats.Msg) {
 		var m BridgeMetricsMsg
-		if json.Unmarshal(msg.Data, &m) != nil || m.InstanceID == "" {
+		if json.Unmarshal(msg.Data, &m) != nil || m.InstanceName == "" {
 			return
 		}
 		s.mu.Lock()
-		s.bridges[m.InstanceID] = &cachedBridge{msg: &m, receivedAt: time.Now()}
+		s.bridges[m.InstanceName] = &cachedBridge{msg: &m, receivedAt: time.Now()}
 		s.mu.Unlock()
 	})
 	if err != nil {
@@ -135,9 +147,9 @@ func (s *MQTTSubscriber) sweepExpired() {
 	deadline := time.Now().Add(-bridgeTTL)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, cb := range s.bridges {
+	for name, cb := range s.bridges {
 		if cb.receivedAt.Before(deadline) {
-			delete(s.bridges, id)
+			delete(s.bridges, name)
 		}
 	}
 }
@@ -147,15 +159,15 @@ func (s *MQTTSubscriber) Bridges() []MQTTBridgeInstance {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]MQTTBridgeInstance, 0, len(s.bridges))
-	for id, cb := range s.bridges {
-		out = append(out, bridgeMsgToInstance(id, cb.msg))
+	for name, cb := range s.bridges {
+		out = append(out, bridgeMsgToInstance(name, cb.msg))
 	}
 	return out
 }
 
-// bridgeMsgToInstance converts a wire message into the existing MQTTBridgeInstance
-// shape so that the overview/topology/WS broadcast code requires no changes.
-func bridgeMsgToInstance(id string, m *BridgeMetricsMsg) MQTTBridgeInstance {
+// bridgeMsgToInstance converts a wire message into the MQTTBridgeInstance shape.
+// name is instance_name (the stable cache key and store BridgeID).
+func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 	pool := &MQTTPool{
 		Size:  m.Pool.Size,
 		Slots: make([]MQTTPoolSlot, 0, len(m.Pool.Slots)),
@@ -171,50 +183,62 @@ func bridgeMsgToInstance(id string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 	}
 
 	metrics := &MQTTMetrics{
-		ConnectionsActive:       m.ConnectionsActive,
-		ConnectionsTotal:        m.ConnectionsTotal,
-		ConnectionsRejected:     m.ConnectionsRejected,
-		MsgsRecvQoS0:            m.MsgsRecvQoS0,
-		MsgsRecvQoS1:            m.MsgsRecvQoS1,
-		MsgsRecvQoS2:            m.MsgsRecvQoS2,
-		MsgsSentQoS0:            m.MsgsSentQoS0,
-		MsgsSentQoS1:            m.MsgsSentQoS1,
-		MsgsSentQoS2:            m.MsgsSentQoS2,
-		MsgsRedelivered:         m.MsgsRedelivered,
-		NATSDisconnects:         m.NATSDisconnects,
-		NATSReconnects:          int64(m.NATSReconnects),
-		NATSSlowConsumer:        m.NATSSlowConsumer,
+		ConnectionsActive:       m.Connections.Active,
+		ConnectionsTotal:        m.Connections.Total,
+		ConnectionsRejected:     m.Connections.Rejected,
+		MsgsRecvQoS0:            m.Messages.RecvQoS0,
+		MsgsRecvQoS1:            m.Messages.RecvQoS1,
+		MsgsRecvQoS2:            m.Messages.RecvQoS2,
+		MsgsSentQoS0:            m.Messages.SentQoS0,
+		MsgsSentQoS1:            m.Messages.SentQoS1,
+		MsgsSentQoS2:            m.Messages.SentQoS2,
+		MsgsRedelivered:         m.Messages.Redelivered,
+		NATSDisconnects:         m.NATS.Disconnects,
+		NATSReconnects:          int64(m.NATS.Reconnects),
+		NATSSlowConsumer:        m.NATS.SlowConsumer,
 		ConsumerPendingMessages: m.ConsumerPendingMessages,
 		StalledConsumers:        m.StalledConsumers,
 		SessionWriteBehindDepth: m.SessionWriteBehindDepth,
-		InstanceID:              id,
+		InstanceID:              m.InstanceID,
 		Drained:                 boolToInt64(m.Drained),
 	}
 
 	natsConn := MQTTNATSConnection{
-		Connected:  m.NATSConnected,
-		URL:        m.NATSURL,
-		ServerID:   m.NATSServerID,
-		ServerName: m.NATSServerName,
-		RTT:        m.NATSRTT,
-		Reconnects: m.NATSReconnects,
+		Connected:  m.NATS.Connected,
+		URL:        m.NATS.URL,
+		Servers:    m.NATS.Servers,
+		ServerID:   m.NATS.ServerID,
+		ServerName: m.NATS.ServerName,
+		RTT:        m.NATS.RTT,
+		Reconnects: m.NATS.Reconnects,
+	}
+
+	natsDiag := &MQTTNATSDiag{Connection: natsConn}
+	if m.Account != nil {
+		natsDiag.Account = &MQTTNATSAccount{
+			Domain:    m.Account.Domain,
+			Memory:    m.Account.Memory,
+			Store:     m.Account.Store,
+			Streams:   m.Account.Streams,
+			Consumers: m.Account.Consumers,
+		}
 	}
 
 	status := &MQTTBridgeStatus{
-		Name:          m.Name,
-		Ready:         m.NATSConnected && !m.Drained,
+		Name:          name,
+		Ready:         m.NATS.Connected && !m.Drained,
 		Draining:      m.Drained,
-		Connections:   int(m.ConnectionsActive),
-		NATSConnected: m.NATSConnected,
+		Connections:   int(m.Connections.Active),
+		NATSConnected: m.NATS.Connected,
 		Pool:          pool,
 		Metrics:       metrics,
-		NATS:          &MQTTNATSDiag{Connection: natsConn},
+		NATS:          natsDiag,
 	}
 
 	return MQTTBridgeInstance{
-		ServerID:       m.NATSServerID,
-		ServerName:     m.NATSServerName,
-		ConfiguredName: m.Name,
+		ServerID:       m.NATS.ServerID,
+		ServerName:     m.NATS.ServerName,
+		ConfiguredName: name, // instance_name is the stable BridgeID for the store
 		Reachable:      true,
 		Status:         status,
 	}
