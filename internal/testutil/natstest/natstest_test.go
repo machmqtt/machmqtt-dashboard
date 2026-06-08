@@ -125,6 +125,25 @@ func TestNewClusterWithSysAccountSTATSZ(t *testing.T) {
 	}
 }
 
+func TestShutdownDoesNotPanic(t *testing.T) {
+	s := natstest.New(t)
+	// Explicit Shutdown before t.Cleanup runs — the subsequent cleanup call is a no-op.
+	s.Shutdown()
+}
+
+func TestNewClusterSingleNode(t *testing.T) {
+	// n=1 exercises the waitClusterFormed early-return (expected==0) path.
+	servers := natstest.NewCluster(t, 1, "solo")
+	if len(servers) != 1 {
+		t.Fatalf("got %d servers, want 1", len(servers))
+	}
+	nc, err := nats.Connect(servers[0].ClientURL())
+	if err != nil {
+		t.Fatalf("connect to single-node cluster: %v", err)
+	}
+	nc.Close()
+}
+
 func TestCorePubSubAcrossCluster(t *testing.T) {
 	servers := natstest.NewCluster(t, 2, "pubsub-cluster")
 

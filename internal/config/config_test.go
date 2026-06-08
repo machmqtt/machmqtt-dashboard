@@ -107,6 +107,82 @@ session_secret: "test-secret-that-is-at-least-32-characters-long"
 	}
 }
 
+func TestExampleYAML(t *testing.T) {
+	yaml := ExampleYAML()
+	if yaml == "" {
+		t.Error("ExampleYAML returned empty string")
+	}
+}
+
+func TestSubjectPrefixOrDefault(t *testing.T) {
+	// nil receiver
+	var n *NATSConnConfig
+	if got := n.SubjectPrefixOrDefault(); got != "$MQTT5" {
+		t.Errorf("nil.SubjectPrefixOrDefault() = %q, want $MQTT5", got)
+	}
+	// empty prefix
+	n = &NATSConnConfig{}
+	if got := n.SubjectPrefixOrDefault(); got != "$MQTT5" {
+		t.Errorf("empty SubjectPrefix = %q, want $MQTT5", got)
+	}
+	// configured prefix
+	n = &NATSConnConfig{SubjectPrefix: "mymqtt"}
+	if got := n.SubjectPrefixOrDefault(); got != "mymqtt" {
+		t.Errorf("configured SubjectPrefix = %q, want mymqtt", got)
+	}
+}
+
+func TestMQTTDiscoveryEnabled(t *testing.T) {
+	// nil MQTTDiscovery → default true
+	e := &Environment{}
+	if !e.MQTTDiscoveryEnabled() {
+		t.Error("nil MQTTDiscovery should default to enabled")
+	}
+	// nil Enabled field → default true
+	e.MQTTDiscovery = &MQTTDiscoveryConfig{}
+	if !e.MQTTDiscoveryEnabled() {
+		t.Error("nil Enabled field should default to true")
+	}
+	// explicitly true
+	enabled := true
+	e.MQTTDiscovery.Enabled = &enabled
+	if !e.MQTTDiscoveryEnabled() {
+		t.Error("Enabled=true should return true")
+	}
+	// explicitly false
+	disabled := false
+	e.MQTTDiscovery.Enabled = &disabled
+	if e.MQTTDiscoveryEnabled() {
+		t.Error("Enabled=false should return false")
+	}
+}
+
+func TestMQTTDiscoveryPorts(t *testing.T) {
+	// nil MQTTDiscovery → default [8080]
+	e := &Environment{}
+	if ports := e.MQTTDiscoveryPorts(); len(ports) != 1 || ports[0] != 8080 {
+		t.Errorf("nil discovery ports = %v, want [8080]", ports)
+	}
+	// nil AdminPorts slice → default [8080]
+	e.MQTTDiscovery = &MQTTDiscoveryConfig{}
+	if ports := e.MQTTDiscoveryPorts(); len(ports) != 1 || ports[0] != 8080 {
+		t.Errorf("nil AdminPorts = %v, want [8080]", ports)
+	}
+	// configured ports
+	e.MQTTDiscovery.AdminPorts = []int{9090, 9091}
+	ports := e.MQTTDiscoveryPorts()
+	if len(ports) != 2 || ports[0] != 9090 || ports[1] != 9091 {
+		t.Errorf("configured ports = %v, want [9090, 9091]", ports)
+	}
+}
+
+func TestLoadFileNotFound(t *testing.T) {
+	_, err := Load("/nonexistent/path/config.yaml")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
 func TestResolveBridgeToken(t *testing.T) {
 	cases := []struct {
 		name       string

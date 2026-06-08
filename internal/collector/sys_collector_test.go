@@ -253,6 +253,36 @@ func TestSYSCollectorCarriesForwardSlowData(t *testing.T) {
 	}
 }
 
+func TestFormatUptime(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{5 * time.Second, "5s"},
+		{90 * time.Second, "1m30s"},
+		{2*time.Hour + 3*time.Minute + 4*time.Second, "2h3m4s"},
+		{25*time.Hour + 6*time.Minute + 7*time.Second, "1d1h6m7s"},
+	}
+	for _, tc := range cases {
+		if got := formatUptime(tc.d); got != tc.want {
+			t.Errorf("formatUptime(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+func TestSYSCollectorSweepExpired(t *testing.T) {
+	sc := newSYSCollector()
+	sc.statsz["live"] = &statszEntry{when: time.Now()}
+	sc.statsz["stale"] = &statszEntry{when: time.Now().Add(-2 * statszTTL)}
+	sc.sweepExpired()
+	if _, ok := sc.statsz["live"]; !ok {
+		t.Error("live entry was unexpectedly removed")
+	}
+	if _, ok := sc.statsz["stale"]; ok {
+		t.Error("stale entry was not removed")
+	}
+}
+
 func TestSYSCollectorNilWhenNotConnected(t *testing.T) {
 	// Use a URL that will not connect so nc stays nil.
 	cfg := &config.NATSConnConfig{

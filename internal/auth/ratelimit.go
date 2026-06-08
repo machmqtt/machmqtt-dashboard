@@ -57,6 +57,25 @@ func (rl *LoginRateLimiter) Allow(ip string) bool {
 	return true
 }
 
+// sweepOnce removes all per-IP attempt lists that have fully expired.
+// IPs with at least one recent attempt are trimmed to drop only the stale prefix.
+func (rl *LoginRateLimiter) sweepOnce() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	cutoff := time.Now().Add(-rl.window)
+	for ip, attempts := range rl.attempts {
+		start := 0
+		for start < len(attempts) && attempts[start].Before(cutoff) {
+			start++
+		}
+		if start == len(attempts) {
+			delete(rl.attempts, ip)
+		} else {
+			rl.attempts[ip] = attempts[start:]
+		}
+	}
+}
+
 // cleanup periodically removes stale entries to prevent unbounded memory growth.
 func (rl *LoginRateLimiter) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -66,20 +85,7 @@ func (rl *LoginRateLimiter) cleanup() {
 		case <-rl.stop:
 			return
 		case <-ticker.C:
-			rl.mu.Lock()
-			cutoff := time.Now().Add(-rl.window)
-			for ip, attempts := range rl.attempts {
-				start := 0
-				for start < len(attempts) && attempts[start].Before(cutoff) {
-					start++
-				}
-				if start == len(attempts) {
-					delete(rl.attempts, ip)
-				} else {
-					rl.attempts[ip] = attempts[start:]
-				}
-			}
-			rl.mu.Unlock()
+			rl.sweepOnce()
 		}
 	}
 }

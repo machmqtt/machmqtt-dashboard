@@ -270,3 +270,25 @@ func TestMQTTSubscriberAccountMapped(t *testing.T) {
 		t.Errorf("Account.Memory = %d, want 1024", acct.Memory)
 	}
 }
+
+func TestMQTTSubscriberSweepExpired(t *testing.T) {
+	sub := newMQTTSubscriber()
+	sub.bridges["live"] = &cachedBridge{receivedAt: time.Now()}
+	sub.bridges["stale"] = &cachedBridge{receivedAt: time.Now().Add(-2 * bridgeTTL)}
+	sub.sweepExpired()
+	if _, ok := sub.bridges["live"]; !ok {
+		t.Error("live bridge was unexpectedly removed")
+	}
+	if _, ok := sub.bridges["stale"]; ok {
+		t.Error("stale bridge was not removed")
+	}
+}
+
+func TestBoolToInt64(t *testing.T) {
+	if boolToInt64(true) != 1 {
+		t.Error("boolToInt64(true) should be 1")
+	}
+	if boolToInt64(false) != 0 {
+		t.Error("boolToInt64(false) should be 0")
+	}
+}
