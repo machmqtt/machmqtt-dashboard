@@ -36,6 +36,10 @@ type Collector struct {
 	// subscriber is non-nil when NATS push-based collection is configured.
 	// When set it supersedes the connz-scan HTTP discovery path.
 	subscriber *MQTTSubscriber
+
+	// sys is non-nil when $SYS-based server collection is enabled (Tier 2b).
+	// When set, poll() uses STATSZ cache + PING fan-in instead of HTTP.
+	sys *SYSCollector
 }
 
 func newCollector(env config.Environment, fetcher *Fetcher, interval time.Duration, log *slog.Logger, db *store.Store) *Collector {
@@ -128,6 +132,11 @@ func (c *Collector) buildServerURLMap(snap *Snapshot) map[string]string {
 }
 
 func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
+	if c.sys != nil {
+		c.pollSYS(ctx, clusterID, slow)
+		return
+	}
+
 	snap := &Snapshot{
 		Timestamp: time.Now(),
 		Varz:      make(map[string]*Varz),
@@ -177,6 +186,33 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 	c.snapMu.Unlock()
 
 	// Run MQTT bridge discovery on slow polls when no push subscriber is active.
+	if slow && env.MQTTDiscoveryEnabled() && c.subscriber == nil && c.mqttDiscovering.CompareAndSwap(false, true) {
+		go func() {
+			defer c.mqttDiscovering.Store(false)
+			c.discoverMQTTBridges(ctx, clusterID)
+		}()
+	}
+}
+
+func (c *Collector) pollSYS(ctx context.Context, clusterID string, slow bool) {
+	// Read the current snapshot outside the write lock so sys.poll can use it
+	// for carry-forward of slow-polled data on fast polls.
+	c.snapMu.RLock()
+	cur := c.snapshot
+	c.snapMu.RUnlock()
+
+	snap := c.sys.poll(ctx, cur, slow)
+	if snap == nil {
+		return // NATS not yet connected or cache not yet populated
+	}
+
+	c.snapMu.Lock()
+	c.prev = c.snapshot
+	snap.Rates = computeRates(c.prev, snap)
+	c.snapshot = snap
+	c.snapMu.Unlock()
+
+	env := c.getEnv()
 	if slow && env.MQTTDiscoveryEnabled() && c.subscriber == nil && c.mqttDiscovering.CompareAndSwap(false, true) {
 		go func() {
 			defer c.mqttDiscovering.Store(false)
@@ -346,6 +382,10 @@ func (m *Manager) Start(ctx context.Context) {
 		if env.NATSConn != nil {
 			c.subscriber = newMQTTSubscriber()
 			go c.subscriber.run(cctx, env.NATSConn)
+			if env.NATSConn.SYSCollection {
+				c.sys = newSYSCollector()
+				go c.sys.run(cctx, env.NATSConn)
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -377,6 +417,10 @@ func (m *Manager) AddCluster(cl store.Cluster) error {
 		if env.NATSConn != nil {
 			c.subscriber = newMQTTSubscriber()
 			go c.subscriber.run(cctx, env.NATSConn)
+			if env.NATSConn.SYSCollection {
+				c.sys = newSYSCollector()
+				go c.sys.run(cctx, env.NATSConn)
+			}
 		}
 	}
 
@@ -449,6 +493,10 @@ func (m *Manager) UpdateCluster(cl store.Cluster) error {
 		if newEnv.NATSConn != nil {
 			c.subscriber = newMQTTSubscriber()
 			go c.subscriber.run(cctx, newEnv.NATSConn)
+			if newEnv.NATSConn.SYSCollection {
+				c.sys = newSYSCollector()
+				go c.sys.run(cctx, newEnv.NATSConn)
+			}
 		}
 	}
 
@@ -627,5 +675,6 @@ func natsConnEqual(a, b *config.NATSConnConfig) bool {
 		a.Token == b.Token &&
 		a.NKey == b.NKey &&
 		a.CredsFile == b.CredsFile &&
-		a.SubjectPrefix == b.SubjectPrefix
+		a.SubjectPrefix == b.SubjectPrefix &&
+		a.SYSCollection == b.SYSCollection
 }

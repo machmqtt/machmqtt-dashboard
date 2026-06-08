@@ -52,7 +52,11 @@ type NATSConnConfig struct {
 	CredsFile string `yaml:"creds_file,omitempty" json:"creds_file,omitempty"`
 	// SubjectPrefix is the MachMQTT subject namespace. Must match the prefix
 	// configured in MachMQTT for this cluster. Default is "$MQTT5".
-	SubjectPrefix string     `yaml:"subject_prefix,omitempty" json:"subject_prefix,omitempty"`
+	SubjectPrefix string `yaml:"subject_prefix,omitempty" json:"subject_prefix,omitempty"`
+	// SYSCollection enables $SYS-based server collection (Tier 2b). Requires
+	// system-account access on the NATS connection. When false, HTTP polling is
+	// used for server stats regardless of whether NATS push (2a) is configured.
+	SYSCollection bool       `yaml:"sys_collection,omitempty" json:"sys_collection,omitempty"`
 	TLS           *TLSConfig `yaml:"tls,omitempty"            json:"tls,omitempty"`
 }
 
