@@ -10,7 +10,7 @@ import (
 )
 
 func TestConnectNATSEmptyURLs(t *testing.T) {
-	_, err := connectNATS(&config.NATSConnConfig{})
+	_, err := connectNATS(&config.NATSConnConfig{}, nil)
 	if err == nil {
 		t.Error("expected error for empty URLs")
 	}
@@ -20,7 +20,7 @@ func TestConnectNATSBadNKey(t *testing.T) {
 	_, err := connectNATS(&config.NATSConnConfig{
 		URLs: []string{"nats://127.0.0.1:14299"},
 		NKey: "not-a-valid-nkey-seed",
-	})
+	}, nil)
 	if err == nil {
 		t.Error("expected error for invalid NKey seed")
 	}
@@ -32,7 +32,7 @@ func TestConnectNATSWithUsernamePassword(t *testing.T) {
 		URLs:     []string{s.ClientURL()},
 		Username: "user",
 		Password: "pass",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestConnectNATSWithToken(t *testing.T) {
 	nc, err := connectNATS(&config.NATSConnConfig{
 		URLs:  []string{s.ClientURL()},
 		Token: "mytoken",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestConnectNATSWithInsecureTLS(t *testing.T) {
 	nc, err := connectNATS(&config.NATSConnConfig{
 		URLs: []string{s.ClientURL()},
 		TLS:  &config.TLSConfig{Insecure: true},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestConnectNATSWithCredsFile(t *testing.T) {
 	nc, err := connectNATS(&config.NATSConnConfig{
 		URLs:      []string{s.ClientURL()},
 		CredsFile: credsFile,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestConnectNATSWithTLSCAFile(t *testing.T) {
 	nc, err := connectNATS(&config.NATSConnConfig{
 		URLs: []string{"nats://127.0.0.1:14299"},
 		TLS:  &config.TLSConfig{CAFile: caFile},
-	})
+	}, nil)
 	if err == nil && nc != nil {
 		nc.Close()
 	}

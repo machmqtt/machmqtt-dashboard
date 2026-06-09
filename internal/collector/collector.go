@@ -40,6 +40,15 @@ type Collector struct {
 	// sys is non-nil when $SYS-based server collection is enabled (Tier 2b).
 	// When set, poll() uses STATSZ cache + PING fan-in instead of HTTP.
 	sys *SYSCollector
+
+	// $SYS→HTTP fallback state. Accessed only from the single poll goroutine.
+	// sysFirstFail is when $SYS first started returning no data (zero when
+	// healthy); sysFellBack is true while the HTTP fallback is engaged;
+	// sysEverHealthy records whether $SYS has ever produced data (so cold start
+	// can fall back immediately while a post-healthy outage waits out the grace).
+	sysFirstFail   time.Time
+	sysFellBack    bool
+	sysEverHealthy bool
 }
 
 func newCollector(env config.Environment, fetcher *Fetcher, interval time.Duration, log *slog.Logger, db *store.Store) *Collector {
@@ -131,10 +140,81 @@ func (c *Collector) buildServerURLMap(snap *Snapshot) map[string]string {
 	return m
 }
 
+// sysFallbackGrace is how long $SYS collection may produce no server data
+// before the collector falls back to HTTP polling. With a 30s poll interval
+// this is ~2 empty polls.
+const sysFallbackGrace = 60 * time.Second
+
+// shouldConnzScan reports whether to run connz-scan MQTT bridge discovery this
+// poll. The push subscriber is preferred, but while it has no live bridges yet
+// — none configured, still waiting for the first metrics publish, or $SYS has
+// fallen back to HTTP — the dashboard actively queries NATS connz + the MachMQTT
+// admin API so the fleet has data immediately on startup instead of sitting
+// blank until a publish arrives.
+func (c *Collector) shouldConnzScan() bool {
+	env := c.getEnv()
+	if !env.MQTTDiscoveryEnabled() {
+		return false
+	}
+	if c.subscriber != nil && len(c.subscriber.Bridges()) > 0 {
+		return false // push metrics are flowing — prefer them
+	}
+	return true
+}
+
+// maybeDiscoverBridges launches connz-scan discovery in the background when
+// appropriate. Safe to call from every poll path; the atomic guard keeps at
+// most one discovery running at a time.
+func (c *Collector) maybeDiscoverBridges(ctx context.Context, clusterID string) {
+	if c.shouldConnzScan() && c.mqttDiscovering.CompareAndSwap(false, true) {
+		go func() {
+			defer c.mqttDiscovering.Store(false)
+			c.discoverMQTTBridges(ctx, clusterID)
+		}()
+	}
+}
+
 func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 	if c.sys != nil {
-		c.pollSYS(ctx, clusterID, slow)
-		return
+		// While in fallback, skip the $SYS poll (a 2s PING fan-in that times out
+		// when there is no $SYS access) unless the STATSZ cache shows the server
+		// is emitting events again. That keeps a permanent fallback cheap.
+		trySys := !c.sysFellBack || c.sys.cacheLen() > 0
+		if trySys && c.pollSYS(ctx, clusterID, slow) {
+			// $SYS is healthy. If we were on the HTTP fallback, resume $SYS and
+			// drop any connz-scanned bridges so the push subscriber is the sole
+			// source again.
+			if c.sysFellBack {
+				c.log.Info("$SYS collection recovered — disengaging HTTP fallback, resuming $SYS-based collection")
+				c.sysFellBack = false
+				c.mqttMu.Lock()
+				c.mqttBridges = nil
+				c.mqttMu.Unlock()
+			}
+			c.sysEverHealthy = true
+			c.sysFirstFail = time.Time{}
+			// Even with $SYS serving server data, query MachMQTT until the push
+			// subscriber has bridges, so the fleet isn't blank while it warms up.
+			c.maybeDiscoverBridges(ctx, clusterID)
+			return
+		}
+		// $SYS produced no server data this poll.
+		if trySys && c.sysFirstFail.IsZero() {
+			c.sysFirstFail = time.Now()
+		}
+		// Cold start (never any $SYS data — commonly a misconfig like missing
+		// system-account credentials) falls back immediately so the user isn't
+		// left staring at a blank page. A post-healthy outage waits out the
+		// grace period first, to ride through a transient drop without flapping.
+		if c.sysEverHealthy && !c.sysFellBack && time.Since(c.sysFirstFail) < sysFallbackGrace {
+			c.maybeDiscoverBridges(ctx, clusterID)
+			return // within grace period — keep the prior snapshot, wait for $SYS
+		}
+		if !c.sysFellBack {
+			c.log.Warn("$SYS collection produced no data — falling back to HTTP monitoring; $SYS will resume automatically when events return", "servers", len(c.getEnv().Servers), "ever_healthy", c.sysEverHealthy)
+			c.sysFellBack = true
+		}
+		// Fall through to the HTTP polling path below.
 	}
 
 	snap := &Snapshot{
@@ -146,8 +226,8 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 		Health:    make(map[string]*HealthStatus),
 	}
 
+	snap.Connz = make(map[string]*Connz)
 	if slow {
-		snap.Connz = make(map[string]*Connz)
 		snap.Subsz = make(map[string]*SubszResp)
 		snap.JSInfo = make(map[string]*JSInfo)
 		snap.Accountz = make(map[string]*Accountz)
@@ -176,7 +256,6 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 	c.prev = c.snapshot
 	snap.Rates = computeRates(c.prev, snap)
 	if !slow {
-		snap.Connz = c.snapshot.Connz
 		snap.Subsz = c.snapshot.Subsz
 		snap.JSInfo = c.snapshot.JSInfo
 		snap.Accountz = c.snapshot.Accountz
@@ -185,16 +264,17 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 	c.snapshot = snap
 	c.snapMu.Unlock()
 
-	// Run MQTT bridge discovery on slow polls when no push subscriber is active.
-	if slow && env.MQTTDiscoveryEnabled() && c.subscriber == nil && c.mqttDiscovering.CompareAndSwap(false, true) {
-		go func() {
-			defer c.mqttDiscovering.Store(false)
-			c.discoverMQTTBridges(ctx, clusterID)
-		}()
-	}
+	// Query MachMQTT via connz-scan whenever the push subscriber has no bridges
+	// yet (covers HTTP-only, push-still-warming-up, and $SYS-fallback).
+	c.maybeDiscoverBridges(ctx, clusterID)
 }
 
-func (c *Collector) pollSYS(ctx context.Context, clusterID string, slow bool) {
+// pollSYS runs one $SYS-based poll. It returns true if it produced and stored a
+// snapshot containing at least one server, and false when $SYS yielded no data
+// (NATS not connected, or no STATSZ/PING replies) so the caller can fall back to
+// HTTP polling. clusterID is unused here because $SYS bridge discovery is handled
+// by the push subscriber, not connz-scan.
+func (c *Collector) pollSYS(ctx context.Context, _ string, slow bool) bool {
 	// Read the current snapshot outside the write lock so sys.poll can use it
 	// for carry-forward of slow-polled data on fast polls.
 	c.snapMu.RLock()
@@ -202,8 +282,20 @@ func (c *Collector) pollSYS(ctx context.Context, clusterID string, slow bool) {
 	c.snapMu.RUnlock()
 
 	snap := c.sys.poll(ctx, cur, slow)
-	if snap == nil {
-		return // NATS not yet connected or cache not yet populated
+	if snap == nil || len(snap.Varz) == 0 {
+		// No server data: NATS isn't connected, or the STATSZ cache is empty and
+		// the bootstrap PING returned nothing (commonly: the connection lacks
+		// system-account access). Surface it on slow polls.
+		if slow {
+			c.log.Warn("$SYS poll produced no server data — NATS not connected or no $SYS.SERVER.*.STATSZ replies (check system-account credentials and that the servers emit system events)")
+		}
+		return false
+	}
+
+	// Heartbeat so the Server Logs page shows the $SYS collector is alive and
+	// how many servers it currently sees.
+	if slow {
+		c.log.Info("$SYS poll", "servers", len(snap.Varz), "statsz_cached", c.sys.cacheLen())
 	}
 
 	c.snapMu.Lock()
@@ -211,14 +303,7 @@ func (c *Collector) pollSYS(ctx context.Context, clusterID string, slow bool) {
 	snap.Rates = computeRates(c.prev, snap)
 	c.snapshot = snap
 	c.snapMu.Unlock()
-
-	env := c.getEnv()
-	if slow && env.MQTTDiscoveryEnabled() && c.subscriber == nil && c.mqttDiscovering.CompareAndSwap(false, true) {
-		go func() {
-			defer c.mqttDiscovering.Store(false)
-			c.discoverMQTTBridges(ctx, clusterID)
-		}()
-	}
+	return true
 }
 
 func (c *Collector) fetchServer(ctx context.Context, cfgURL string, snap *Snapshot, mu *sync.Mutex, slow bool, serverURLMap map[string]string) {
@@ -257,19 +342,22 @@ func (c *Collector) fetchServer(ctx context.Context, cfgURL string, snap *Snapsh
 	}
 	mu.Unlock()
 
+	connz, _ := c.fetcher.FetchConnz(ctx, cfgURL, 1024, 0, "", "", "", "")
+	mu.Lock()
+	if connz != nil {
+		snap.Connz[id] = connz
+	}
+	mu.Unlock()
+
 	if !slow {
 		return
 	}
 
-	connz, _ := c.fetcher.FetchConnz(ctx, cfgURL, 1024, 0, "", "", "", "")
 	subsz, _ := c.fetcher.FetchSubsz(ctx, cfgURL)
 	jsInfo, _ := c.fetcher.FetchJSInfo(ctx, cfgURL)
 	accountz, _ := c.fetcher.FetchAccountz(ctx, cfgURL)
 
 	mu.Lock()
-	if connz != nil {
-		snap.Connz[id] = connz
-	}
 	if subsz != nil {
 		snap.Subsz[id] = subsz
 	}
@@ -289,8 +377,32 @@ func (c *Collector) discoverMQTTBridges(ctx context.Context, clusterID string) {
 		return
 	}
 
+	// Count connections in Connz that match the bridge name filter so
+	// operators can tell from logs whether NATS is reporting MachMQTT
+	// connections at all.
+	matchingConns := 0
+	for _, connz := range snap.Connz {
+		for _, conn := range connz.Conns {
+			if isMQTTBridgeConn(conn.Name) {
+				matchingConns++
+			}
+		}
+	}
+	c.log.Info("mqtt discovery starting", "connz_servers", len(snap.Connz), "matching_conns", matchingConns)
+
 	env := c.getEnv()
 	bridges := DiscoverMQTTBridges(ctx, snap, prev, env.MQTTDiscoveryPorts(), env.ResolveBridgeToken(""))
+
+	for _, b := range bridges {
+		if b.Reachable {
+			c.log.Info("mqtt bridge discovered", "ip", b.IP, "admin_url", b.AdminURL, "reachable", true)
+		} else {
+			c.log.Warn("mqtt bridge found in connz but admin api unreachable", "ip", b.IP, "ports", env.MQTTDiscoveryPorts())
+		}
+	}
+	if len(bridges) == 0 && matchingConns == 0 {
+		c.log.Warn("mqtt discovery found no bridge connections in connz — verify MachMQTT is connected and NATS monitoring URL is correct")
+	}
 
 	// Persist discovered bridges keyed by cluster ID (stable identity).
 	if c.store != nil {
@@ -319,8 +431,14 @@ func (c *Collector) PrevSnapshot() *Snapshot {
 }
 
 func (c *Collector) MQTTBridges() []MQTTBridgeInstance {
+	// Prefer push-subscriber bridges when present. When a subscriber is
+	// configured but reports no bridges (e.g. MachMQTT isn't publishing
+	// metrics, or $SYS has fallen back to HTTP), use the connz-scan results so
+	// the fleet isn't blank.
 	if c.subscriber != nil {
-		return c.subscriber.Bridges()
+		if b := c.subscriber.Bridges(); len(b) > 0 {
+			return b
+		}
 	}
 	c.mqttMu.RLock()
 	defer c.mqttMu.RUnlock()
@@ -377,16 +495,7 @@ func (m *Manager) Start(ctx context.Context) {
 	for id, c := range m.collectors {
 		cctx, cancel := context.WithCancel(ctx)
 		m.cancels[id] = cancel
-		go c.run(cctx, id, m.onChange)
-		env := c.getEnv()
-		if env.NATSConn != nil {
-			c.subscriber = newMQTTSubscriber()
-			go c.subscriber.run(cctx, env.NATSConn)
-			if env.NATSConn.SYSCollection {
-				c.sys = newSYSCollector()
-				go c.sys.run(cctx, env.NATSConn)
-			}
-		}
+		m.startCollector(cctx, c, id, c.getEnv())
 	}
 	m.mu.Unlock()
 }
@@ -413,15 +522,7 @@ func (m *Manager) AddCluster(cl store.Cluster) error {
 	if m.rootCtx != nil {
 		cctx, cancel := context.WithCancel(m.rootCtx)
 		m.cancels[cl.ID] = cancel
-		go c.run(cctx, cl.ID, m.onChange)
-		if env.NATSConn != nil {
-			c.subscriber = newMQTTSubscriber()
-			go c.subscriber.run(cctx, env.NATSConn)
-			if env.NATSConn.SYSCollection {
-				c.sys = newSYSCollector()
-				go c.sys.run(cctx, env.NATSConn)
-			}
-		}
+		m.startCollector(cctx, c, cl.ID, env)
 	}
 
 	return nil
@@ -489,18 +590,46 @@ func (m *Manager) UpdateCluster(cl store.Cluster) error {
 	if m.rootCtx != nil {
 		cctx, cancel := context.WithCancel(m.rootCtx)
 		m.cancels[cl.ID] = cancel
-		go c.run(cctx, cl.ID, m.onChange)
-		if newEnv.NATSConn != nil {
-			c.subscriber = newMQTTSubscriber()
-			go c.subscriber.run(cctx, newEnv.NATSConn)
-			if newEnv.NATSConn.SYSCollection {
-				c.sys = newSYSCollector()
-				go c.sys.run(cctx, newEnv.NATSConn)
+		m.startCollector(cctx, c, cl.ID, newEnv)
+	}
+
+	return nil
+}
+
+// startCollector launches the poll loop plus any NATS push goroutines for c.
+// The NATS push fields (subscriber/sys) are assigned BEFORE the poll loop
+// goroutine starts so that poll() observes a stable collection mode from its
+// very first tick — assigning them after `go c.run` would be a data race and
+// could make the first poll silently take the HTTP path. Must be called with
+// m.mu held.
+func (m *Manager) startCollector(cctx context.Context, c *Collector, id string, env config.Environment) {
+	if env.NATSConn != nil {
+		c.subscriber = newMQTTSubscriber()
+		c.subscriber.log = c.log
+		if env.NATSConn.SYSCollection {
+			c.sys = newSYSCollector()
+			c.sys.log = c.log
+			if !natsConnHasAuth(env.NATSConn) {
+				c.log.Warn("sys_collection is enabled but no NATS credentials are configured — $SYS server collection requires system-account credentials (username/password, token, nkey, or creds file); topology and server stats will stay empty until they are provided")
 			}
 		}
 	}
 
-	return nil
+	go c.run(cctx, id, m.onChange)
+	if c.subscriber != nil {
+		go c.subscriber.run(cctx, env.NATSConn)
+	}
+	if c.sys != nil {
+		go c.sys.run(cctx, env.NATSConn)
+	}
+}
+
+// natsConnHasAuth reports whether any authentication field is set on the NATS
+// connection config. A connection with no auth can only reach the default
+// account and will never receive $SYS events.
+func natsConnHasAuth(n *config.NATSConnConfig) bool {
+	return n.Username != "" || n.Password != "" || n.Token != "" ||
+		n.NKey != "" || n.CredsFile != ""
 }
 
 // ClusterConfig returns a copy of the live environment config for a cluster ID,

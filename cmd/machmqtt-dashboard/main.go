@@ -15,6 +15,7 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/logbuf"
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
@@ -37,7 +38,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	lb := logbuf.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}), logbuf.DefaultSize)
+	log := slog.New(lb)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -167,7 +169,13 @@ func main() {
 	}
 	manager.Start(ctx)
 
-	srv := api.NewServer(a, manager, hub, log, version, cfg, metricsWriter, db)
+	hub.SetOnSubscribe(func(c *ws.Client, env string) {
+		hub.SendTo(c, env, "overview", manager.Overview(env))
+		hub.SendTo(c, env, "topology", manager.Topology(env))
+		hub.SendTo(c, env, "health", manager.Health(env))
+	})
+
+	srv := api.NewServer(a, manager, hub, log, version, cfg, metricsWriter, db, lb)
 
 	httpServer := &http.Server{
 		Addr:           cfg.Listen,

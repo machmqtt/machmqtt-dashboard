@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
@@ -101,26 +103,43 @@ type cachedBridge struct {
 type MQTTSubscriber struct {
 	mu      sync.RWMutex
 	bridges map[string]*cachedBridge // keyed by instance_name
+	log     *slog.Logger             // optional; nil falls back to slog.Default()
 }
 
 func newMQTTSubscriber() *MQTTSubscriber {
 	return &MQTTSubscriber{bridges: make(map[string]*cachedBridge)}
 }
 
+func (s *MQTTSubscriber) logger() *slog.Logger {
+	if s.log != nil {
+		return s.log
+	}
+	return slog.Default()
+}
+
 // run connects to NATS, subscribes to <prefix>.metrics.>, and maintains the
 // bridge cache until ctx is cancelled. Intended to be started as a goroutine.
 func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
-	nc, err := connectNATS(cfg)
+	log := s.logger()
+	prefix := cfg.SubjectPrefixOrDefault()
+	subject := prefix + ".metrics.>"
+	log.Info("mqtt metrics subscriber starting", "urls", cfg.URLs, "subject", subject)
+
+	nc, err := connectNATS(cfg, log.With("conn", "mqtt-metrics"))
 	if err != nil {
+		log.Error("mqtt metrics subscriber: NATS connect failed", "err", err)
 		return
 	}
 	defer nc.Close()
 
-	prefix := cfg.SubjectPrefixOrDefault()
-	_, err = nc.Subscribe(prefix+".metrics.>", func(msg *nats.Msg) {
+	var received atomic.Int64
+	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
 		var m BridgeMetricsMsg
 		if json.Unmarshal(msg.Data, &m) != nil || m.InstanceName == "" {
 			return
+		}
+		if received.Add(1) == 1 {
+			log.Info("mqtt metrics subscriber: receiving bridge metrics", "instance", m.InstanceName)
 		}
 		s.mu.Lock()
 		if m.Drained {
@@ -131,8 +150,24 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 		s.mu.Unlock()
 	})
 	if err != nil {
+		log.Error("mqtt metrics subscriber: subscribe failed", "subject", subject, "err", err)
 		return
 	}
+
+	// Diagnostic: if no bridge metrics arrive shortly after connecting, the
+	// MachMQTT bridges are not publishing to this subject. The MachMQTT Fleet
+	// pages stay empty until they do.
+	go func() {
+		t := time.NewTimer(20 * time.Second)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+		case <-t.C:
+			if received.Load() == 0 {
+				log.Warn("mqtt metrics subscriber: no bridge metrics received within 20s — no MachMQTT bridge is publishing to "+subject+"; the MachMQTT Fleet pages will stay empty until bridges publish metrics (or disable the NATS connection to use connz-scan discovery instead)")
+			}
+		}
+	}()
 
 	sweeper := time.NewTicker(bridgeTTL / 3)
 	defer sweeper.Stop()
@@ -258,14 +293,39 @@ func boolToInt64(b bool) int64 {
 // connectNATS builds a NATS connection from the cluster's NATSConnConfig.
 // RetryOnFailedConnect and MaxReconnects(-1) ensure the call returns immediately
 // even when the server is temporarily unavailable, and retries indefinitely.
-func connectNATS(cfg *config.NATSConnConfig) (*nats.Conn, error) {
+// log, when non-nil, receives connection lifecycle events (connect, disconnect,
+// reconnect, async errors) so the Server Logs page reflects NATS link health.
+func connectNATS(cfg *config.NATSConnConfig, log *slog.Logger) (*nats.Conn, error) {
 	if len(cfg.URLs) == 0 {
 		return nil, fmt.Errorf("nats_conn: at least one URL is required")
+	}
+	if log == nil {
+		log = slog.Default()
 	}
 
 	opts := []nats.Option{
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
+		nats.ConnectHandler(func(nc *nats.Conn) {
+			log.Info("nats connected", "url", nc.ConnectedUrl())
+		}),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil {
+				log.Warn("nats disconnected", "err", err)
+			} else {
+				log.Info("nats disconnected")
+			}
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			log.Info("nats reconnected", "url", nc.ConnectedUrl())
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, sub *nats.Subscription, err error) {
+			subject := ""
+			if sub != nil {
+				subject = sub.Subject
+			}
+			log.Warn("nats async error", "subject", subject, "err", err)
+		}),
 	}
 
 	switch {

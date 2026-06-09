@@ -3,6 +3,7 @@ import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton'
 import { Link } from 'react-router-dom'
+import { Radio } from 'lucide-react'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
@@ -83,16 +84,22 @@ interface BridgeInstance {
   reachable: boolean
 }
 
-const REFRESH_INTERVAL = 10_000
+// Served from the collector's cached bridge list (no upstream fetch), so a
+// snappy refresh is cheap and surfaces newly discovered bridges quickly.
+const REFRESH_INTERVAL = 3_000
 
 export function MQTTOverviewPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const [bridges, setBridges] = useState<BridgeInstance[] | null>(null)
   const [loading, setLoading] = useState(true)
   const mqttMetrics = useMetrics(activeEnv, 'metrics/mqtt')
 
   const fetchData = useCallback(async () => {
-    if (!activeEnv) return
+    if (!activeEnv) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const res = await fetchWithTimeout(`/api/environments/${activeEnv}/mqtt/bridges`)
@@ -113,10 +120,32 @@ export function MQTTOverviewPage() {
     return () => clearInterval(id)
   }, [activeEnv, fetchData])
 
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-12 text-center">
+          <Radio className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+          <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-200 mb-2">No clusters configured</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">
+            Add a NATS cluster to start monitoring MachMQTT bridge instances.
+          </p>
+          <Link
+            to="/admin/clusters"
+            className="inline-flex items-center gap-2 bg-brand-blue text-white rounded-lg px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            <Radio className="w-4 h-4" />
+            Go to Cluster Management
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
       <div>
-        <h1 className="text-2xl font-semibold mb-6">MachMQTT Bridges</h1>
+        <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[1,2,3].map(i => <CardSkeleton key={i} />)}
         </div>
@@ -128,9 +157,13 @@ export function MQTTOverviewPage() {
   if (!bridges || bridges.length === 0) {
     return (
       <div>
-        <h1 className="text-2xl font-semibold mb-6">MachMQTT Bridges</h1>
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-8 text-center text-gray-500 dark:text-gray-400">
-          No MQTT bridges configured. Add <code className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs">mqtt_bridges</code> to your environment config.
+        <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-10 text-center">
+          <Radio className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <p className="text-gray-500 dark:text-gray-400 text-sm">
+            No MachMQTT bridges discovered yet. Configure MachMQTT discovery or add bridges manually in{' '}
+            <Link to="/admin/clusters" className="text-brand-blue hover:underline">Cluster Management</Link>.
+          </p>
         </div>
       </div>
     )
@@ -142,7 +175,7 @@ export function MQTTOverviewPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">MachMQTT Bridges</h1>
+        <h1 className="text-2xl font-semibold">MachMQTT Fleet</h1>
         <span className="text-xs text-gray-400">Auto-refreshes every {REFRESH_INTERVAL / 1000}s</span>
       </div>
 

@@ -1,3 +1,28 @@
+import { Link } from 'react-router-dom'
+import { Server } from 'lucide-react'
+
+export function NoClusterEmptyState({ title, description }: { title: string; description?: string }) {
+  return (
+    <div>
+      <h1 className="text-2xl font-semibold mb-6">{title}</h1>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-12 text-center">
+        <Server className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+        <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-200 mb-2">No clusters configured</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">
+          {description ?? 'Add a NATS cluster to start monitoring your infrastructure.'}
+        </p>
+        <Link
+          to="/admin/clusters"
+          className="inline-flex items-center gap-2 bg-brand-blue text-white rounded-lg px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
+        >
+          <Server className="w-4 h-4" />
+          Go to Cluster Management
+        </Link>
+      </div>
+    </div>
+  )
+}
+
 export function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`} />
 }

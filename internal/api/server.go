@@ -12,6 +12,7 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/logbuf"
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
@@ -45,9 +46,10 @@ type Server struct {
 	version string
 	metrics *store.MetricsWriter
 	store   *store.Store
+	logBuf  *logbuf.Handler
 }
 
-func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.Logger, version string, cfg *config.Config, metrics *store.MetricsWriter, st *store.Store) *Server {
+func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.Logger, version string, cfg *config.Config, metrics *store.MetricsWriter, st *store.Store, lb *logbuf.Handler) *Server {
 	s := &Server{
 		mux:     http.NewServeMux(),
 		manager: manager,
@@ -56,6 +58,7 @@ func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.
 		version: version,
 		metrics: metrics,
 		store:   st,
+		logBuf:  lb,
 	}
 
 	s.registerRoutes(a)

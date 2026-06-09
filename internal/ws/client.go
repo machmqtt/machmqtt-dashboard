@@ -88,6 +88,7 @@ func (c *Client) readPump() {
 		var sub subscribeMsg
 		if json.Unmarshal(msg, &sub) == nil && sub.Subscribe != "" {
 			c.setEnv(sub.Subscribe)
+			c.hub.notifySubscribe(c, sub.Subscribe)
 		}
 	}
 }

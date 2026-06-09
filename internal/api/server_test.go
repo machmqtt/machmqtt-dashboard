@@ -41,7 +41,7 @@ func setupTestServerWithStore(t *testing.T) (*Server, *store.Store, *auth.Auth, 
 	hub := ws.NewHub(log)
 	mgr, _ := collector.NewManager(cfg, nil, log, s)
 
-	srv := NewServer(a, mgr, hub, log, "test", cfg, nil, s)
+	srv := NewServer(a, mgr, hub, log, "test", cfg, nil, s, nil)
 	return srv, s, a, token
 }
 
@@ -302,7 +302,7 @@ func TestDefaultAdminMustChangePassword(t *testing.T) {
 	}
 	hub := ws.NewHub(log)
 	mgr, _ := collector.NewManager(cfg, nil, log, s)
-	srv := NewServer(a, mgr, hub, log, "test", cfg, nil, s)
+	srv := NewServer(a, mgr, hub, log, "test", cfg, nil, s, nil)
 
 	// Login as default admin.
 	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"admin"}`))

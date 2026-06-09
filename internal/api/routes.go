@@ -71,6 +71,8 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	admin.HandleFunc("POST /api/admin/clusters", s.handleCreateCluster)
 	admin.HandleFunc("PUT /api/admin/clusters/{id}", s.handleUpdateCluster)
 	admin.HandleFunc("DELETE /api/admin/clusters/{id}", s.handleDeleteCluster)
+	// Server logs.
+	admin.HandleFunc("GET /api/admin/logs", s.handleAdminLogs)
 	protected.Handle("/api/admin/", auth.AdminMiddleware(admin))
 
 	mux.Handle("/api/", a.Middleware(protected))

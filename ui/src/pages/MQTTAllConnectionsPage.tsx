@@ -13,7 +13,7 @@ import {
   type ColumnFiltersState,
 } from '@tanstack/react-table'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown, ArrowLeft } from 'lucide-react'
 import { ColumnFilter } from '../components/ColumnFilter'
 
@@ -69,11 +69,13 @@ interface BridgeInstance {
 }
 
 const col = createColumnHelper<MQTTClientRow>()
-const REFRESH_INTERVAL = 10_000
+// Each refresh issues one live admin-API fetch per bridge, so keep it moderate.
+const REFRESH_INTERVAL = 5_000
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
 
 export function MQTTAllConnectionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const [rows, setRows] = useState<MQTTClientRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([])
@@ -187,6 +189,15 @@ export function MQTTAllConnectionsPage() {
     getPaginationRowModel: getPaginationRowModel(),
     initialState: { pagination: { pageSize: 50 } },
   })
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="All MQTT Connections"
+        description="Add a NATS cluster to see MQTT client connections across all bridges."
+      />
+    )
+  }
 
   return (
     <div>

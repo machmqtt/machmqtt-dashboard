@@ -69,14 +69,14 @@ func (n *NATSConnConfig) SubjectPrefixOrDefault() string {
 }
 
 type MQTTBridge struct {
-	Name        string `yaml:"name"`
-	URL         string `yaml:"url"`
-	BearerToken string `yaml:"bearer_token,omitempty"`
+	Name        string `yaml:"name"                   json:"name"`
+	URL         string `yaml:"url"                    json:"url"`
+	BearerToken string `yaml:"bearer_token,omitempty" json:"bearer_token,omitempty"`
 }
 
 type MQTTDiscoveryConfig struct {
-	Enabled    *bool `yaml:"enabled,omitempty"`     // nil = true (default on)
-	AdminPorts []int `yaml:"admin_ports,omitempty"` // default [8080]
+	Enabled    *bool `yaml:"enabled,omitempty"      json:"enabled,omitempty"`     // nil = true (default on)
+	AdminPorts []int `yaml:"admin_ports,omitempty"  json:"admin_ports,omitempty"` // default [8080]
 }
 
 // MQTTDiscoveryEnabled returns whether auto-discovery is enabled for this environment.
@@ -105,12 +105,12 @@ func (e *Environment) ResolveBridgeToken(perBridge string) string {
 }
 
 type Server struct {
-	URL string `yaml:"url"`
+	URL string `yaml:"url" json:"url"`
 }
 
 type TLSConfig struct {
-	CAFile   string `yaml:"ca_file,omitempty"`
-	Insecure bool   `yaml:"insecure"`
+	CAFile   string `yaml:"ca_file,omitempty" json:"ca_file,omitempty"`
+	Insecure bool   `yaml:"insecure"          json:"insecure"`
 }
 
 func Load(path string) (*Config, error) {

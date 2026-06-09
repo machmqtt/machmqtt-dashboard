@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useStore } from '../store/store'
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton'
 import { Activity, Cable, ArrowDownToLine, ArrowUpFromLine, Database, GitBranch, Server } from 'lucide-react'
@@ -8,7 +9,30 @@ import { useMetrics } from '../hooks/useMetrics'
 export function OverviewPage() {
   const overview = useStore((s) => s.overview)
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const metrics = useMetrics(activeEnv, 'metrics/overview')
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold mb-6">Overview</h1>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-12 text-center">
+          <Server className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+          <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-200 mb-2">No clusters configured</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">
+            Add a NATS cluster to start monitoring servers, connections, and message rates.
+          </p>
+          <Link
+            to="/admin/clusters"
+            className="inline-flex items-center gap-2 bg-brand-blue text-white rounded-lg px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            <Server className="w-4 h-4" />
+            Go to Cluster Management
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   if (!overview) {
     return (

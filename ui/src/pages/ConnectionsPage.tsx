@@ -12,7 +12,7 @@ import {
 } from '@tanstack/react-table'
 import { ColumnFilter } from '../components/ColumnFilter'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 
 interface Connection {
@@ -50,6 +50,7 @@ const REFRESH_INTERVAL = 10_000
 
 export function ConnectionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const addToast = useStore((s) => s.addToast)
   const [data, setData] = useState<ConnzResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -197,6 +198,15 @@ export function ConnectionsPage() {
   const currentPage = Math.floor(offset / pageSize) + 1
   const hasNext = offset + pageSize < total
   const hasPrev = offset > 0
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="Connections"
+        description="Add a NATS cluster to inspect active client connections."
+      />
+    )
+  }
 
   return (
     <div>

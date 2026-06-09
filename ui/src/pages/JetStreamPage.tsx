@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
-import { TableSkeleton, CardSkeleton } from '../components/Skeleton'
+import { TableSkeleton, CardSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
 interface ConsumerInfo {
@@ -41,6 +41,7 @@ interface JSData {
 
 export function JetStreamPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const [data, setData] = useState<Record<string, JSData> | null>(null)
   const [loading, setLoading] = useState(true)
   const [expandedStream, setExpandedStream] = useState<string | null>(null)
@@ -81,6 +82,15 @@ export function JetStreamPage() {
       totalStreams += js.streams; totalConsumers += js.consumers
       totalMsgs += js.messages; totalBytes += js.bytes
     }
+  }
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="JetStream"
+        description="Add a NATS cluster to monitor JetStream streams, consumers, and storage."
+      />
+    )
   }
 
   return (

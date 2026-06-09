@@ -12,7 +12,7 @@ import {
 } from '@tanstack/react-table'
 import { ColumnFilter } from '../components/ColumnFilter'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, Search, X } from 'lucide-react'
 
 // --- Types ---
@@ -69,6 +69,7 @@ function useDebounce<T>(value: T, delay: number): T {
 
 export function SubscriptionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const overview = useStore((s) => s.overview)
   const addToast = useStore((s) => s.addToast)
 
@@ -219,6 +220,15 @@ export function SubscriptionsPage() {
   const hasNext = offset + pageSize < total
   const hasPrev = offset > 0
   const totalSubs = overview?.subscriptions ?? 0
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="Subscriptions"
+        description="Add a NATS cluster to browse and search active subscriptions."
+      />
+    )
+  }
 
   return (
     <div>

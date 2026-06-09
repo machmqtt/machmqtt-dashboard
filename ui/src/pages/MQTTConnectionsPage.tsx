@@ -56,7 +56,8 @@ interface ConnzResponse {
 
 const col = createColumnHelper<MQTTClient>()
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
-const REFRESH_INTERVAL = 10_000
+// Each refresh issues a live admin-API fetch to the bridge, so keep it moderate.
+const REFRESH_INTERVAL = 5_000
 
 export function MQTTConnectionsPage() {
   const { bridge } = useParams<{ bridge: string }>()

@@ -10,7 +10,8 @@ import { useMetrics } from '../hooks/useMetrics'
 
 type Tab = 'nats' | 'metrics' | 'pool' | 'cluster' | 'license' | 'config' | 'admin'
 
-const REFRESH_INTERVAL = 10_000
+// Each refresh issues live admin-API fetches to the bridge, so keep it moderate.
+const REFRESH_INTERVAL = 5_000
 
 export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const { bridge } = useParams<{ bridge: string }>()

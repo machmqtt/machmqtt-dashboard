@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { TableSkeleton } from '../components/Skeleton'
-import { Trash2, Pencil, Plus, X } from 'lucide-react'
+import { Trash2, Pencil, Plus, X, Lock, Radio, Cable, Server, ChevronDown } from 'lucide-react'
+
+// ─── Types ──────────────────────────────────────────────────────────────────
 
 interface ServerEntry {
   url: string
@@ -14,23 +16,40 @@ interface MQTTBridgeEntry {
   bearer_token: string
 }
 
-interface MQTTDiscovery {
+interface TLSForm {
   enabled: boolean
-  admin_ports: string // comma-separated
-}
-
-interface TLSEntry {
   ca_file: string
   insecure: boolean
+}
+
+interface DiscoveryForm {
+  enabled: boolean
+  admin_ports: string
+}
+
+type AuthType = 'none' | 'username_password' | 'token' | 'nkey' | 'creds_file'
+
+interface NATSConnForm {
+  enabled: boolean
+  urls: string[]
+  auth_type: AuthType
+  username: string
+  password: string
+  token: string
+  nkey: string
+  creds_file: string
+  subject_prefix: string
+  sys_collection: boolean
 }
 
 interface ClusterForm {
   name: string
   servers: ServerEntry[]
   mqtt_bridges: MQTTBridgeEntry[]
-  mqtt_discovery: MQTTDiscovery | null
-  tls: TLSEntry | null
+  discovery: DiscoveryForm
+  tls: TLSForm
   admin_token: string
+  nats_conn: NATSConnForm
 }
 
 interface ManagedCluster {
@@ -41,79 +60,245 @@ interface ManagedCluster {
   mqtt_discovery: { enabled?: boolean; admin_ports?: number[] } | null
   tls: { ca_file?: string; insecure?: boolean } | null
   admin_token: string
+  nats_conn: {
+    urls?: string[]
+    username?: string
+    password?: string
+    token?: string
+    nkey?: string
+    creds_file?: string
+    subject_prefix?: string
+    sys_collection?: boolean
+  } | null
   created_at: string
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function parseAdminPorts(s: string): number[] {
+  return s.split(',').map((p) => parseInt(p.trim(), 10)).filter((p) => !isNaN(p) && p > 0)
 }
 
 const emptyForm = (): ClusterForm => ({
   name: '',
   servers: [{ url: '' }],
   mqtt_bridges: [],
-  mqtt_discovery: null,
-  tls: null,
+  discovery: { enabled: true, admin_ports: '8080' },
+  tls: { enabled: false, ca_file: '', insecure: false },
   admin_token: '',
+  nats_conn: {
+    enabled: false,
+    urls: [''],
+    auth_type: 'none',
+    username: '',
+    password: '',
+    token: '',
+    nkey: '',
+    creds_file: '',
+    subject_prefix: '',
+    sys_collection: false,
+  },
 })
 
 function formToRequest(f: ClusterForm) {
+  const ports = parseAdminPorts(f.discovery.admin_ports)
+  const natsEnabled = f.nats_conn.enabled && f.nats_conn.urls.some((u) => u.trim())
   return {
     name: f.name,
     servers: f.servers.filter((s) => s.url.trim()),
     mqtt_bridges: f.mqtt_bridges.filter((b) => b.url.trim()),
-    mqtt_discovery: f.mqtt_discovery
-      ? {
-          enabled: f.mqtt_discovery.enabled,
-          admin_ports: f.mqtt_discovery.admin_ports
-            .split(',')
-            .map((p) => parseInt(p.trim(), 10))
-            .filter((p) => !isNaN(p) && p > 0),
-        }
-      : null,
-    tls: f.tls && (f.tls.ca_file.trim() || f.tls.insecure)
+    mqtt_discovery: {
+      enabled: f.discovery.enabled,
+      admin_ports: ports.length ? ports : [8080],
+    },
+    tls: f.tls.enabled
       ? { ca_file: f.tls.ca_file.trim() || undefined, insecure: f.tls.insecure }
       : null,
     admin_token: f.admin_token,
+    nats_conn: natsEnabled
+      ? {
+          urls: f.nats_conn.urls.filter((u) => u.trim()),
+          ...(f.nats_conn.auth_type === 'username_password'
+            ? { username: f.nats_conn.username, password: f.nats_conn.password }
+            : {}),
+          ...(f.nats_conn.auth_type === 'token' ? { token: f.nats_conn.token } : {}),
+          ...(f.nats_conn.auth_type === 'nkey' ? { nkey: f.nats_conn.nkey } : {}),
+          ...(f.nats_conn.auth_type === 'creds_file' ? { creds_file: f.nats_conn.creds_file } : {}),
+          subject_prefix: f.nats_conn.subject_prefix.trim() || undefined,
+          sys_collection: f.nats_conn.sys_collection || undefined,
+        }
+      : null,
   }
 }
 
 function clusterToForm(c: ManagedCluster): ClusterForm {
+  const nc = c.nats_conn
+  let auth_type: AuthType = 'none'
+  if (nc?.username) auth_type = 'username_password'
+  else if (nc?.token) auth_type = 'token'
+  else if (nc?.nkey) auth_type = 'nkey'
+  else if (nc?.creds_file) auth_type = 'creds_file'
   return {
     name: c.name,
     servers: c.servers.length ? c.servers : [{ url: '' }],
     mqtt_bridges: c.mqtt_bridges || [],
-    mqtt_discovery: c.mqtt_discovery
-      ? {
-          enabled: c.mqtt_discovery.enabled ?? true,
-          admin_ports: (c.mqtt_discovery.admin_ports || [8080]).join(', '),
-        }
-      : null,
-    tls: c.tls ? { ca_file: c.tls.ca_file || '', insecure: c.tls.insecure ?? false } : null,
+    discovery: {
+      enabled: c.mqtt_discovery?.enabled !== false,
+      admin_ports: (c.mqtt_discovery?.admin_ports || [8080]).join(', '),
+    },
+    tls: {
+      enabled: !!c.tls,
+      ca_file: c.tls?.ca_file || '',
+      insecure: c.tls?.insecure ?? false,
+    },
     admin_token: c.admin_token || '',
+    nats_conn: {
+      enabled: !!nc,
+      urls: nc?.urls?.length ? nc.urls : [''],
+      auth_type,
+      username: nc?.username || '',
+      password: nc?.password || '',
+      token: nc?.token || '',
+      nkey: nc?.nkey || '',
+      creds_file: nc?.creds_file || '',
+      subject_prefix: nc?.subject_prefix || '',
+      sys_collection: nc?.sys_collection ?? false,
+    },
   }
 }
+
+// ─── UI primitives ───────────────────────────────────────────────────────────
+
+function ToggleSwitch({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      role="switch"
+      aria-checked={enabled}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-blue focus-visible:ring-offset-2 ${
+        enabled ? 'bg-brand-blue' : 'bg-gray-300 dark:bg-gray-600'
+      }`}
+    >
+      <span
+        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+          enabled ? 'translate-x-4' : 'translate-x-0'
+        }`}
+      />
+    </button>
+  )
+}
+
+function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
+  return (
+    <div className="mb-1.5">
+      <span className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+        {children}
+      </span>
+      {hint && <span className="block text-xs text-gray-400 dark:text-gray-500 mt-0.5 normal-case font-normal">{hint}</span>}
+    </div>
+  )
+}
+
+const inputCls =
+  'w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 shadow-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-blue focus:outline-none focus:ring-1 focus:ring-brand-blue transition-colors'
+
+const monoInputCls = inputCls + ' font-mono'
+
+interface SectionCardProps {
+  icon: React.ReactNode
+  title: string
+  description: string
+  enabled: boolean
+  onToggle: () => void
+  children: React.ReactNode
+  defaultExpanded?: boolean
+}
+
+function SectionCard({ icon, title, description, enabled, onToggle, children, defaultExpanded = true }: SectionCardProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+
+  return (
+    <div
+      className={`rounded-lg border overflow-hidden transition-colors ${
+        enabled
+          ? 'border-brand-blue/40 dark:border-brand-blue/50'
+          : 'border-gray-200 dark:border-gray-700'
+      }`}
+    >
+      {/* header — click to expand/collapse */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => e.key === 'Enter' || e.key === ' ' ? setExpanded((v) => !v) : undefined}
+        className="flex items-center justify-between px-4 py-3 cursor-pointer select-none bg-gray-50 dark:bg-gray-800/60"
+      >
+        <div className="flex items-start gap-3 min-w-0">
+          <div className={`mt-0.5 flex-shrink-0 ${enabled ? 'text-brand-blue' : 'text-gray-400 dark:text-gray-500'}`}>
+            {icon}
+          </div>
+          <div className="min-w-0">
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</span>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">{description}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+          {/* Stop propagation so the toggle doesn't also expand/collapse the card */}
+          <div onClick={(e) => e.stopPropagation()}>
+            <ToggleSwitch enabled={enabled} onToggle={onToggle} />
+          </div>
+          <ChevronDown
+            className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+          />
+        </div>
+      </div>
+      {/* body — shown when expanded, grayed when disabled */}
+      {expanded && (
+        <div
+          className={`px-4 py-4 space-y-4 border-t transition-opacity ${
+            enabled
+              ? 'border-brand-blue/20 dark:border-brand-blue/30 opacity-100'
+              : 'border-gray-100 dark:border-gray-700/50 opacity-40 pointer-events-none select-none'
+          }`}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Form editor ─────────────────────────────────────────────────────────────
 
 interface ClusterFormEditorProps {
   form: ClusterForm
   onChange: (f: ClusterForm) => void
+  collapseOptional?: boolean
 }
 
-function ClusterFormEditor({ form, onChange }: ClusterFormEditorProps) {
+function ClusterFormEditor({ form, onChange, collapseOptional = false }: ClusterFormEditorProps) {
   const set = (patch: Partial<ClusterForm>) => onChange({ ...form, ...patch })
 
   return (
-    <div className="space-y-4">
-      {/* Name */}
+    <div className="space-y-5">
+
+      {/* ── Cluster name ── */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Cluster Name *</label>
+        <FieldLabel>Cluster Name <span className="text-red-500 normal-case font-normal ml-0.5">*</span></FieldLabel>
         <input
           value={form.name}
           onChange={(e) => set({ name: e.target.value })}
-          className="w-full border dark:border-gray-600 dark:bg-gray-700 rounded px-3 py-1.5 text-sm"
+          className={inputCls}
           placeholder="production"
         />
       </div>
 
-      {/* Servers */}
+      {/* ── NATS Monitoring URLs ── */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">NATS Server URLs *</label>
+        <FieldLabel hint="HTTP monitoring endpoints for metrics polling — e.g. http://nats-1:8222">
+          NATS Monitoring URLs <span className="text-red-500 normal-case font-normal ml-0.5">*</span>
+        </FieldLabel>
         <div className="space-y-2">
           {form.servers.map((srv, i) => (
             <div key={i} className="flex gap-2">
@@ -124,127 +309,355 @@ function ClusterFormEditor({ form, onChange }: ClusterFormEditorProps) {
                   servers[i] = { url: e.target.value }
                   set({ servers })
                 }}
-                className="flex-1 border dark:border-gray-600 dark:bg-gray-700 rounded px-3 py-1.5 text-sm font-mono"
+                className={monoInputCls}
                 placeholder="http://nats-1:8222"
               />
               {form.servers.length > 1 && (
-                <button onClick={() => set({ servers: form.servers.filter((_, j) => j !== i) })}
-                  className="text-gray-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+                <button
+                  type="button"
+                  onClick={() => set({ servers: form.servers.filter((_, j) => j !== i) })}
+                  className="text-gray-400 hover:text-red-500 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               )}
             </div>
           ))}
-          <button onClick={() => set({ servers: [...form.servers, { url: '' }] })}
-            className="text-sm text-brand-blue hover:opacity-80 flex items-center gap-1">
-            <Plus className="w-3 h-3" /> Add server
+          <button
+            type="button"
+            onClick={() => set({ servers: [...form.servers, { url: '' }] })}
+            className="flex items-center gap-1.5 text-xs text-brand-blue hover:opacity-80 transition-opacity"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add server
           </button>
         </div>
       </div>
 
-      {/* Admin token */}
+      {/* ── Admin token ── */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Admin Token (bearer token for MachMQTT bridge admin API)</label>
+        <FieldLabel hint="Bearer token for the MachMQTT bridge admin API. Leave blank if the admin API has no auth.">
+          Admin Token
+        </FieldLabel>
         <input
           value={form.admin_token}
           onChange={(e) => set({ admin_token: e.target.value })}
-          className="w-full border dark:border-gray-600 dark:bg-gray-700 rounded px-3 py-1.5 text-sm font-mono"
+          className={monoInputCls}
           placeholder="optional"
+          type="password"
+          autoComplete="new-password"
         />
       </div>
 
-      {/* TLS */}
-      <div>
-        <div className="flex items-center gap-2 mb-2">
-          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">TLS</label>
-          <button
-            onClick={() => set({ tls: form.tls ? null : { ca_file: '', insecure: false } })}
-            className={`text-xs rounded px-2 py-0.5 ${form.tls ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}`}
-          >
-            {form.tls ? 'Enabled' : 'Disabled'}
-          </button>
+      {/* ── TLS ── */}
+      <SectionCard
+        defaultExpanded={!collapseOptional}
+        icon={<Lock className="w-4 h-4" />}
+        title="TLS"
+        description="Configure TLS for connections to NATS monitoring endpoints. Required when your NATS servers use HTTPS."
+        enabled={form.tls.enabled}
+        onToggle={() =>
+          set({ tls: { ...form.tls, enabled: !form.tls.enabled } })
+        }
+      >
+        <div>
+          <FieldLabel hint="Path to the CA certificate file on the dashboard server's filesystem.">CA File Path</FieldLabel>
+          <input
+            value={form.tls.ca_file}
+            onChange={(e) => set({ tls: { ...form.tls, ca_file: e.target.value } })}
+            className={monoInputCls}
+            placeholder="/etc/ssl/certs/ca.pem"
+          />
         </div>
-        {form.tls && (
-          <div className="space-y-2 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
+        <label className="flex items-center gap-2.5 cursor-pointer group">
+          <input
+            type="checkbox"
+            checked={form.tls.insecure}
+            onChange={(e) => set({ tls: { ...form.tls, insecure: e.target.checked } })}
+            className="rounded border-gray-300 dark:border-gray-600 text-brand-blue focus:ring-brand-blue"
+          />
+          <span className="text-sm text-gray-700 dark:text-gray-300">
+            Skip TLS verification{' '}
+            <span className="text-xs text-amber-600 dark:text-amber-400">(insecure — use only in development)</span>
+          </span>
+        </label>
+      </SectionCard>
+
+      {/* ── MachMQTT Discovery ── */}
+      <SectionCard
+        defaultExpanded={!collapseOptional}
+        icon={<Radio className="w-4 h-4" />}
+        title="MachMQTT Discovery"
+        description="Automatically discovers MachMQTT bridge instances by scanning active NATS connections and probing their admin HTTP endpoints. The dashboard reads each server's connection list, identifies bridge pool connections by name, and probes their admin port to fetch real-time status and metrics. Discovery runs on every slow poll cycle."
+        enabled={form.discovery.enabled}
+        onToggle={() =>
+          set({ discovery: { ...form.discovery, enabled: !form.discovery.enabled } })
+        }
+      >
+        <div>
+          <FieldLabel hint="Comma-separated list of admin HTTP ports to probe. MachMQTT default is 8080.">
+            Admin Ports
+          </FieldLabel>
+          <input
+            value={form.discovery.admin_ports}
+            onChange={(e) =>
+              set({ discovery: { ...form.discovery, admin_ports: e.target.value } })
+            }
+            className={monoInputCls}
+            placeholder="8080"
+          />
+        </div>
+      </SectionCard>
+
+      {/* ── NATS Push Connection ── */}
+      <SectionCard
+        defaultExpanded={!collapseOptional}
+        icon={<Cable className="w-4 h-4" />}
+        title="NATS Push Collection"
+        description="Connect directly to NATS using the native nats:// protocol to receive real-time bridge metrics and server stats via push subscription. Enables $SYS-based server collection and eliminates polling overhead. Uses nats:// seed URLs (port 4222 by default)."
+        enabled={form.nats_conn.enabled}
+        onToggle={() =>
+          set({ nats_conn: { ...form.nats_conn, enabled: !form.nats_conn.enabled } })
+        }
+      >
+        {/* NATS seed URLs */}
+        <div>
+          <FieldLabel hint="NATS client connection URLs — nats:// protocol, port 4222 by default.">
+            NATS Seed URLs
+          </FieldLabel>
+          <div className="space-y-2">
+            {form.nats_conn.urls.map((url, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  value={url}
+                  onChange={(e) => {
+                    const urls = [...form.nats_conn.urls]
+                    urls[i] = e.target.value
+                    set({ nats_conn: { ...form.nats_conn, urls } })
+                  }}
+                  className={monoInputCls}
+                  placeholder="nats://nats-1:4222"
+                />
+                {form.nats_conn.urls.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      set({
+                        nats_conn: {
+                          ...form.nats_conn,
+                          urls: form.nats_conn.urls.filter((_, j) => j !== i),
+                        },
+                      })
+                    }
+                    className="text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() =>
+                set({ nats_conn: { ...form.nats_conn, urls: [...form.nats_conn.urls, ''] } })
+              }
+              className="flex items-center gap-1.5 text-xs text-brand-blue hover:opacity-80 transition-opacity"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add URL
+            </button>
+          </div>
+        </div>
+
+        {/* Auth type */}
+        <div>
+          <FieldLabel>Authentication</FieldLabel>
+          <select
+            value={form.nats_conn.auth_type}
+            onChange={(e) =>
+              set({ nats_conn: { ...form.nats_conn, auth_type: e.target.value as AuthType } })
+            }
+            className={inputCls}
+          >
+            <option value="none">None</option>
+            <option value="username_password">Username / Password</option>
+            <option value="token">Token</option>
+            <option value="nkey">NKey</option>
+            <option value="creds_file">Credentials File (.creds)</option>
+          </select>
+        </div>
+
+        {form.nats_conn.auth_type === 'username_password' && (
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">CA File path (optional)</label>
+              <FieldLabel>Username</FieldLabel>
               <input
-                value={form.tls.ca_file}
-                onChange={(e) => set({ tls: { ...form.tls!, ca_file: e.target.value } })}
-                className="w-full border dark:border-gray-600 dark:bg-gray-700 rounded px-3 py-1.5 text-sm font-mono"
-                placeholder="/path/to/ca.pem"
+                value={form.nats_conn.username}
+                onChange={(e) => set({ nats_conn: { ...form.nats_conn, username: e.target.value } })}
+                className={inputCls}
+                placeholder="user"
+                autoComplete="off"
               />
             </div>
-            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-              <input type="checkbox" checked={form.tls.insecure}
-                onChange={(e) => set({ tls: { ...form.tls!, insecure: e.target.checked } })}
-                className="rounded"
-              />
-              Skip TLS verification (insecure)
-            </label>
-          </div>
-        )}
-      </div>
-
-      {/* MQTT Discovery */}
-      <div>
-        <div className="flex items-center gap-2 mb-2">
-          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">MQTT Bridge Discovery</label>
-          <button
-            onClick={() => set({ mqtt_discovery: form.mqtt_discovery ? null : { enabled: true, admin_ports: '8080' } })}
-            className={`text-xs rounded px-2 py-0.5 ${form.mqtt_discovery !== null ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}`}
-          >
-            {form.mqtt_discovery !== null ? 'Configured' : 'Default (auto-on)'}
-          </button>
-        </div>
-        {form.mqtt_discovery !== null && (
-          <div className="space-y-2 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
-            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-              <input type="checkbox" checked={form.mqtt_discovery.enabled}
-                onChange={(e) => set({ mqtt_discovery: { ...form.mqtt_discovery!, enabled: e.target.checked } })}
-                className="rounded"
-              />
-              Enable auto-discovery
-            </label>
             <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Admin ports (comma-separated)</label>
+              <FieldLabel>Password</FieldLabel>
               <input
-                value={form.mqtt_discovery.admin_ports}
-                onChange={(e) => set({ mqtt_discovery: { ...form.mqtt_discovery!, admin_ports: e.target.value } })}
-                className="w-full border dark:border-gray-600 dark:bg-gray-700 rounded px-3 py-1.5 text-sm font-mono"
-                placeholder="8080"
+                value={form.nats_conn.password}
+                onChange={(e) => set({ nats_conn: { ...form.nats_conn, password: e.target.value } })}
+                className={monoInputCls}
+                placeholder="••••••••"
+                type="password"
+                autoComplete="new-password"
               />
             </div>
           </div>
         )}
-      </div>
 
-      {/* MQTT Bridges (manual) */}
+        {form.nats_conn.auth_type === 'token' && (
+          <div>
+            <FieldLabel>Token</FieldLabel>
+            <input
+              value={form.nats_conn.token}
+              onChange={(e) => set({ nats_conn: { ...form.nats_conn, token: e.target.value } })}
+              className={monoInputCls}
+              placeholder="secret-token"
+              type="password"
+              autoComplete="new-password"
+            />
+          </div>
+        )}
+
+        {form.nats_conn.auth_type === 'nkey' && (
+          <div>
+            <FieldLabel hint="NKey seed string starting with S.">NKey Seed</FieldLabel>
+            <input
+              value={form.nats_conn.nkey}
+              onChange={(e) => set({ nats_conn: { ...form.nats_conn, nkey: e.target.value } })}
+              className={monoInputCls}
+              placeholder="SUAM…"
+            />
+          </div>
+        )}
+
+        {form.nats_conn.auth_type === 'creds_file' && (
+          <div>
+            <FieldLabel hint="Path to the .creds file on the dashboard server's filesystem.">
+              Credentials File Path
+            </FieldLabel>
+            <input
+              value={form.nats_conn.creds_file}
+              onChange={(e) => set({ nats_conn: { ...form.nats_conn, creds_file: e.target.value } })}
+              className={monoInputCls}
+              placeholder="/etc/nats/user.creds"
+            />
+          </div>
+        )}
+
+        {/* Subject prefix */}
+        <div>
+          <FieldLabel hint="Must match the subject_prefix configured in MachMQTT for this cluster. Default is $MQTT5.">
+            Subject Prefix
+          </FieldLabel>
+          <input
+            value={form.nats_conn.subject_prefix}
+            onChange={(e) => set({ nats_conn: { ...form.nats_conn, subject_prefix: e.target.value } })}
+            className={monoInputCls}
+            placeholder="$MQTT5"
+          />
+        </div>
+
+        {/* $SYS collection */}
+        <label className="flex items-center gap-2.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.nats_conn.sys_collection}
+            onChange={(e) =>
+              set({ nats_conn: { ...form.nats_conn, sys_collection: e.target.checked } })
+            }
+            className="rounded border-gray-300 dark:border-gray-600 text-brand-blue focus:ring-brand-blue"
+          />
+          <div>
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Enable $SYS collection
+            </span>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Requires system-account credentials. Replaces HTTP polling for server stats with push-based $SYS.SERVER.*.STATSZ subscriptions.
+            </p>
+          </div>
+        </label>
+      </SectionCard>
+
+      {/* ── Manual MQTT Bridges ── */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Manual MQTT Bridges</label>
+        <div className="flex items-center gap-2 mb-3">
+          <Server className="w-4 h-4 text-gray-400" />
+          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Manual Bridges</span>
+          <span className="text-xs text-gray-400 dark:text-gray-500">Optional — add bridges that aren't auto-discovered</span>
+        </div>
         <div className="space-y-2">
+          {form.mqtt_bridges.length > 0 && (
+            <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 mb-1">
+              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-1">Name</span>
+              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-1">Admin URL</span>
+              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide px-1">Bearer Token</span>
+              <span />
+            </div>
+          )}
           {form.mqtt_bridges.map((b, i) => (
-            <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
-              <input value={b.name} onChange={(e) => {
-                const mb = [...form.mqtt_bridges]; mb[i] = { ...mb[i], name: e.target.value }; set({ mqtt_bridges: mb })
-              }} className="border dark:border-gray-600 dark:bg-gray-700 rounded px-2 py-1.5 text-sm" placeholder="Bridge name" />
-              <input value={b.url} onChange={(e) => {
-                const mb = [...form.mqtt_bridges]; mb[i] = { ...mb[i], url: e.target.value }; set({ mqtt_bridges: mb })
-              }} className="border dark:border-gray-600 dark:bg-gray-700 rounded px-2 py-1.5 text-sm font-mono" placeholder="http://bridge:8080" />
-              <input value={b.bearer_token} onChange={(e) => {
-                const mb = [...form.mqtt_bridges]; mb[i] = { ...mb[i], bearer_token: e.target.value }; set({ mqtt_bridges: mb })
-              }} className="border dark:border-gray-600 dark:bg-gray-700 rounded px-2 py-1.5 text-sm font-mono" placeholder="bearer token (optional)" />
-              <button onClick={() => set({ mqtt_bridges: form.mqtt_bridges.filter((_, j) => j !== i) })}
-                className="text-gray-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+            <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
+              <input
+                value={b.name}
+                onChange={(e) => {
+                  const mb = [...form.mqtt_bridges]
+                  mb[i] = { ...mb[i], name: e.target.value }
+                  set({ mqtt_bridges: mb })
+                }}
+                className={inputCls}
+                placeholder="my-bridge"
+              />
+              <input
+                value={b.url}
+                onChange={(e) => {
+                  const mb = [...form.mqtt_bridges]
+                  mb[i] = { ...mb[i], url: e.target.value }
+                  set({ mqtt_bridges: mb })
+                }}
+                className={monoInputCls}
+                placeholder="http://bridge:8080"
+              />
+              <input
+                value={b.bearer_token}
+                onChange={(e) => {
+                  const mb = [...form.mqtt_bridges]
+                  mb[i] = { ...mb[i], bearer_token: e.target.value }
+                  set({ mqtt_bridges: mb })
+                }}
+                className={monoInputCls}
+                placeholder="token (optional)"
+              />
+              <button
+                type="button"
+                onClick={() => set({ mqtt_bridges: form.mqtt_bridges.filter((_, j) => j !== i) })}
+                className="text-gray-400 hover:text-red-500 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           ))}
-          <button onClick={() => set({ mqtt_bridges: [...form.mqtt_bridges, { name: '', url: '', bearer_token: '' }] })}
-            className="text-sm text-brand-blue hover:opacity-80 flex items-center gap-1">
-            <Plus className="w-3 h-3" /> Add bridge
+          <button
+            type="button"
+            onClick={() =>
+              set({ mqtt_bridges: [...form.mqtt_bridges, { name: '', url: '', bearer_token: '' }] })
+            }
+            className="flex items-center gap-1.5 text-xs text-brand-blue hover:opacity-80 transition-opacity"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add bridge
           </button>
         </div>
       </div>
     </div>
   )
 }
+
+// ─── Page ────────────────────────────────────────────────────────────────────
 
 interface ClustersPageProps {
   onClustersChanged: () => void
@@ -283,7 +696,7 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
       return
     }
     if (!createForm.servers.some((s) => s.url.trim())) {
-      addToast('At least one server URL is required', 'error')
+      addToast('At least one monitoring URL is required', 'error')
       return
     }
     setCreating(true)
@@ -303,7 +716,9 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
         const err = await res.json().catch(() => ({ error: 'Failed to create cluster' }))
         addToast(err.error || 'Failed to create cluster', 'error')
       }
-    } catch { addToast('Network error', 'error') }
+    } catch {
+      addToast('Network error', 'error')
+    }
     setCreating(false)
   }
 
@@ -315,7 +730,7 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
   const handleSave = async () => {
     if (!editCluster) return
     if (!editForm.name.trim()) { addToast('Cluster name is required', 'error'); return }
-    if (!editForm.servers.some((s) => s.url.trim())) { addToast('At least one server URL is required', 'error'); return }
+    if (!editForm.servers.some((s) => s.url.trim())) { addToast('At least one monitoring URL is required', 'error'); return }
     setSaving(true)
     try {
       const res = await fetchWithTimeout(`/api/admin/clusters/${editCluster.id}`, {
@@ -332,7 +747,9 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
         const err = await res.json().catch(() => ({ error: 'Failed to update cluster' }))
         addToast(err.error || 'Failed to update cluster', 'error')
       }
-    } catch { addToast('Network error', 'error') }
+    } catch {
+      addToast('Network error', 'error')
+    }
     setSaving(false)
   }
 
@@ -348,12 +765,15 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
         const err = await res.json().catch(() => ({ error: 'Failed to delete cluster' }))
         addToast(err.error || 'Failed to delete cluster', 'error')
       }
-    } catch { addToast('Network error', 'error') }
+    } catch {
+      addToast('Network error', 'error')
+    }
   }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      {/* ── Page header ── */}
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold">Cluster Management</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
@@ -361,67 +781,107 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
           </p>
         </div>
         <button
-          onClick={() => { setShowCreate(!showCreate); setCreateForm(emptyForm()) }}
-          className="bg-brand-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
+          onClick={() => {
+            setShowCreate(!showCreate)
+            setCreateForm(emptyForm())
+          }}
+          className="inline-flex items-center gap-2 bg-brand-blue text-white rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity shadow-sm"
         >
+          <Plus className="w-4 h-4" />
           {showCreate ? 'Cancel' : 'Add Cluster'}
         </button>
       </div>
 
+      {/* ── Create form ── */}
       {showCreate && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-5 mb-4">
-          <h2 className="text-base font-medium mb-4">New Cluster</h2>
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-md border border-gray-200 dark:border-gray-700 p-6 mb-6">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-5">New Cluster</h2>
           <ClusterFormEditor form={createForm} onChange={setCreateForm} />
-          <div className="mt-4 flex gap-2">
-            <button onClick={handleCreate} disabled={creating}
-              className="bg-green-600 text-white rounded px-5 py-1.5 text-sm hover:opacity-90 disabled:opacity-50">
-              {creating ? 'Creating...' : 'Create Cluster'}
+          <div className="mt-6 flex gap-3 pt-5 border-t border-gray-100 dark:border-gray-700">
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white rounded-lg px-5 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {creating ? 'Creating…' : 'Create Cluster'}
             </button>
-            <button onClick={() => setShowCreate(false)}
-              className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded px-5 py-1.5 text-sm">
+            <button
+              onClick={() => setShowCreate(false)}
+              className="inline-flex items-center gap-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg px-5 py-2 text-sm font-medium transition-colors"
+            >
               Cancel
             </button>
           </div>
         </div>
       )}
 
+      {/* ── Cluster list ── */}
       {loading ? (
         <TableSkeleton rows={2} cols={4} />
       ) : clusters?.length === 0 ? (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-10 text-center text-gray-400">
-          No clusters configured. Click <strong>Add Cluster</strong> to get started.
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow border border-gray-200 dark:border-gray-700 p-12 text-center">
+          <Server className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <p className="text-gray-500 dark:text-gray-400 text-sm">
+            No clusters configured yet. Click <strong>Add Cluster</strong> to get started.
+          </p>
         </div>
       ) : (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow border border-gray-200 dark:border-gray-700 overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 dark:bg-gray-700 text-left text-gray-500 dark:text-gray-400">
+            <thead className="bg-gray-50 dark:bg-gray-700/50 text-left">
               <tr>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">ID</th>
-                <th className="px-4 py-3">Servers</th>
-                <th className="px-4 py-3">Created</th>
-                <th className="px-4 py-3 w-20"></th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Name</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">ID</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Monitoring Servers</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Features</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Created</th>
+                <th className="px-4 py-3 w-20" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {clusters?.map((c) => (
-                <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                  <td className="px-4 py-3 font-medium">{c.name}</td>
+                <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                  <td className="px-4 py-3 font-semibold text-gray-900 dark:text-gray-100">{c.name}</td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-400">{c.id}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">
+                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">
                     {c.servers?.map((s) => s.url).join(', ') || '—'}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">
+                  <td className="px-4 py-3">
+                    <div className="flex gap-1.5 flex-wrap">
+                      {c.tls && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded px-1.5 py-0.5">
+                          <Lock className="w-2.5 h-2.5" /> TLS
+                        </span>
+                      )}
+                      {c.mqtt_discovery?.enabled !== false && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded px-1.5 py-0.5">
+                          <Radio className="w-2.5 h-2.5" /> Discovery
+                        </span>
+                      )}
+                      {c.nats_conn && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded px-1.5 py-0.5">
+                          <Cable className="w-2.5 h-2.5" /> NATS Push
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-sm">
                     {new Date(c.created_at).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
-                      <button onClick={() => handleEdit(c)}
-                        className="text-gray-400 hover:text-brand-blue" title="Edit cluster">
+                      <button
+                        onClick={() => handleEdit(c)}
+                        className="text-gray-400 hover:text-brand-blue transition-colors"
+                        title="Edit cluster"
+                      >
                         <Pencil className="w-4 h-4" />
                       </button>
-                      <button onClick={() => handleDelete(c)}
-                        className="text-gray-400 hover:text-red-500" title="Delete cluster">
+                      <button
+                        onClick={() => handleDelete(c)}
+                        className="text-gray-400 hover:text-red-500 transition-colors"
+                        title="Delete cluster"
+                      >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -433,21 +893,40 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
         </div>
       )}
 
-      {/* Edit modal */}
+      {/* ── Edit modal ── */}
       {editCluster && (
-        <div className="fixed inset-0 bg-black/30 flex items-start justify-center z-50 overflow-y-auto py-8"
-          onClick={() => setEditCluster(null)}>
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4"
-            onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold mb-4">Edit Cluster: {editCluster.name}</h2>
-            <ClusterFormEditor form={editForm} onChange={setEditForm} />
-            <div className="mt-5 flex gap-2">
-              <button onClick={handleSave} disabled={saving}
-                className="bg-brand-blue text-white rounded px-5 py-1.5 text-sm hover:opacity-90 disabled:opacity-50">
-                {saving ? 'Saving...' : 'Save Changes'}
+        <div
+          className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-start justify-center z-50 overflow-y-auto py-8"
+          onClick={() => setEditCluster(null)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 p-6 w-full max-w-2xl mx-4 my-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Edit Cluster: <span className="text-brand-blue">{editCluster.name}</span>
+              </h2>
+              <button
+                onClick={() => setEditCluster(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+              >
+                <X className="w-5 h-5" />
               </button>
-              <button onClick={() => setEditCluster(null)}
-                className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded px-5 py-1.5 text-sm">
+            </div>
+            <ClusterFormEditor form={editForm} onChange={setEditForm} collapseOptional />
+            <div className="mt-6 flex gap-3 pt-5 border-t border-gray-100 dark:border-gray-700">
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="inline-flex items-center gap-2 bg-brand-blue hover:opacity-90 text-white rounded-lg px-5 py-2 text-sm font-medium transition-opacity disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Save Changes'}
+              </button>
+              <button
+                onClick={() => setEditCluster(null)}
+                className="inline-flex items-center gap-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg px-5 py-2 text-sm font-medium transition-colors"
+              >
                 Cancel
               </button>
             </div>

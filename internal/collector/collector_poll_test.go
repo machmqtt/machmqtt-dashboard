@@ -436,6 +436,124 @@ func TestCollectorPollSYSFastPath(t *testing.T) {
 	}
 }
 
+// --- $SYS → HTTP fallback ---
+
+// TestCollectorSYSFallbackToHTTP verifies that when $SYS collection produces no
+// data past the grace period, poll() falls back to the HTTP path and populates
+// the snapshot from the configured monitoring URL, then resumes $SYS when it
+// recovers.
+func TestCollectorSYSFallbackToHTTP(t *testing.T) {
+	s := testStore(t)
+	// A live HTTP monitoring endpoint to fall back to.
+	cl := newLiveCluster(t, s, "sys-fallback", mockNATSServer("http-srv", "http-nats"))
+
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	// Attach a $SYS collector with NO NATS connection so sys.poll() returns nil
+	// (no data). subscriber non-nil mirrors how Start() wires a NATSConn cluster.
+	c.sys = newSYSCollector()
+	c.subscriber = newMQTTSubscriber()
+
+	// Cold start: $SYS has never produced data, so the first poll must fall back
+	// to HTTP immediately (no grace period) and populate Varz from the mock
+	// monitoring server.
+	c.poll(context.Background(), cl.ID, false)
+	if !c.sysFellBack {
+		t.Fatal("expected immediate HTTP fallback on cold start (no $SYS data ever)")
+	}
+	if _, ok := c.Snapshot().Varz["http-srv"]; !ok {
+		t.Error("expected http-srv in Varz after cold-start HTTP fallback")
+	}
+
+	// $SYS recovers: seed the STATSZ cache so sys.poll() returns a server. A real
+	// NATS connection is needed for sys.poll's nc != nil check.
+	natsS := natstest.New(t)
+	nc, err := nats.Connect(natsS.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	c.sys.mu.Lock()
+	c.sys.nc = nc
+	c.sys.statsz["sys-srv"] = &statszEntry{
+		server: sysServerInfo{ID: "sys-srv", Name: "sys-nats", Time: time.Now()},
+		stats:  sysServerStats{Start: time.Now().Add(-time.Hour)},
+		when:   time.Now(),
+	}
+	c.sys.mu.Unlock()
+
+	c.poll(context.Background(), cl.ID, false)
+	if c.sysFellBack {
+		t.Error("expected $SYS to resume and fallback to disengage")
+	}
+	if !c.sysEverHealthy {
+		t.Error("expected sysEverHealthy to be set after recovery")
+	}
+	if _, ok := c.Snapshot().Varz["sys-srv"]; !ok {
+		t.Error("expected sys-srv in Varz after $SYS recovery")
+	}
+
+	// Post-healthy outage: clear the STATSZ cache so $SYS yields nothing again.
+	// Because $SYS was healthy, the grace period now applies — the collector must
+	// NOT immediately fall back; it keeps serving the last $SYS snapshot.
+	c.sys.mu.Lock()
+	delete(c.sys.statsz, "sys-srv")
+	c.sys.mu.Unlock()
+
+	c.poll(context.Background(), cl.ID, false)
+	if c.sysFellBack {
+		t.Error("expected grace period to hold off fallback after a healthy period")
+	}
+
+	// Once the outage exceeds the grace period, fall back to HTTP again.
+	c.sysFirstFail = time.Now().Add(-2 * sysFallbackGrace)
+	c.poll(context.Background(), cl.ID, false)
+	if !c.sysFellBack {
+		t.Error("expected HTTP fallback after the grace period elapses")
+	}
+}
+
+// TestShouldConnzScan verifies the "prefer push, else query connz-scan" gate:
+// connz-scan runs while the push subscriber has no live bridges (HTTP-only or
+// waiting for the first publish) and stops once push bridges arrive.
+func TestShouldConnzScan(t *testing.T) {
+	s := testStore(t)
+	cl := addClusterToStore(t, s, "scan-gate", "http://scan:8222")
+	m, err := NewManager(testCfg(), nil, testLog(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.RLock()
+	c := m.collectors[cl.ID]
+	m.mu.RUnlock()
+
+	// HTTP only (no subscriber), discovery enabled by default → scan.
+	if !c.shouldConnzScan() {
+		t.Error("expected connz-scan when no push subscriber is configured")
+	}
+
+	// Subscriber configured but still empty (waiting for first publish) → scan.
+	c.subscriber = newMQTTSubscriber()
+	if !c.shouldConnzScan() {
+		t.Error("expected connz-scan while the push subscriber has no bridges")
+	}
+
+	// Push bridge arrives → prefer push, stop connz-scan.
+	c.subscriber.bridges["b1"] = &cachedBridge{
+		msg:        &BridgeMetricsMsg{V: 1, InstanceName: "b1"},
+		receivedAt: time.Now(),
+	}
+	if c.shouldConnzScan() {
+		t.Error("expected no connz-scan once push bridges are present")
+	}
+}
+
 // --- discoverMQTTBridges with store (exercises UpsertMQTTBridge / DeleteStaleMQTTBridges) ---
 
 func TestDiscoverMQTTBridgesWithStore(t *testing.T) {

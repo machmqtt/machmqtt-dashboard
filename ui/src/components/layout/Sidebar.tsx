@@ -3,7 +3,7 @@ import { useStore } from '../../store/store'
 import {
   LayoutDashboard, Network, Cable, GitBranch,
   Database, Users, UserCog, Server, LogOut, Moon, Sun, PanelLeftClose, PanelLeft,
-  Radio, Plug,
+  Radio, Plug, ScrollText,
 } from 'lucide-react'
 
 const navItems = [
@@ -82,7 +82,7 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
         ))}
 
         <div className="mx-4 my-2 border-t border-white/10" />
-        <div className="px-4 py-1 text-[10px] text-white/40 uppercase tracking-wider">Bridge Fleet</div>
+        <div className="px-4 py-1 text-[10px] text-white/40 uppercase tracking-wider">MachMQTT Fleet</div>
         <NavLink
           to="/mqtt"
           end
@@ -131,6 +131,17 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
             >
               <UserCog className="w-4 h-4" />
               User Management
+            </NavLink>
+            <NavLink
+              to="/admin/logs"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+                  isActive ? 'bg-white/10 text-brand-blue' : 'text-white/70 hover:text-white hover:bg-white/5'
+                }`
+              }
+            >
+              <ScrollText className="w-4 h-4" />
+              Server Logs
             </NavLink>
           </>
         )}

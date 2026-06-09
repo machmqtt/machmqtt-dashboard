@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
@@ -99,17 +101,36 @@ type SYSCollector struct {
 	mu     sync.RWMutex
 	nc     *nats.Conn
 	statsz map[string]*statszEntry // keyed by server ID
+	log    *slog.Logger            // optional; nil falls back to slog.Default()
 }
 
 func newSYSCollector() *SYSCollector {
 	return &SYSCollector{statsz: make(map[string]*statszEntry)}
 }
 
+// cacheLen returns the number of servers currently in the STATSZ cache.
+func (sc *SYSCollector) cacheLen() int {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return len(sc.statsz)
+}
+
+func (sc *SYSCollector) logger() *slog.Logger {
+	if sc.log != nil {
+		return sc.log
+	}
+	return slog.Default()
+}
+
 // run connects to NATS, subscribes to $SYS.SERVER.*.STATSZ, and maintains the
 // server cache until ctx is cancelled. Intended to be started as a goroutine.
 func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
-	nc, err := connectNATS(cfg)
+	log := sc.logger()
+	log.Info("$SYS collector starting", "urls", cfg.URLs, "subject", "$SYS.SERVER.*.STATSZ")
+
+	nc, err := connectNATS(cfg, log.With("conn", "sys"))
 	if err != nil {
+		log.Error("$SYS collector: NATS connect failed", "err", err)
 		return
 	}
 	defer nc.Close()
@@ -124,10 +145,14 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 		sc.mu.Unlock()
 	}()
 
+	var received atomic.Int64
 	_, err = nc.Subscribe("$SYS.SERVER.*.STATSZ", func(msg *nats.Msg) {
 		var m sysStatsMsg
 		if json.Unmarshal(msg.Data, &m) != nil || m.Server.ID == "" {
 			return
+		}
+		if received.Add(1) == 1 {
+			log.Info("$SYS collector: receiving STATSZ events", "server", m.Server.Name)
 		}
 		sc.mu.Lock()
 		sc.statsz[m.Server.ID] = &statszEntry{
@@ -138,8 +163,23 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 		sc.mu.Unlock()
 	})
 	if err != nil {
+		log.Error("$SYS collector: subscribe failed", "subject", "$SYS.SERVER.*.STATSZ", "err", err)
 		return
 	}
+
+	// Diagnostic: if no $SYS events arrive shortly after connecting, the
+	// connection almost certainly lacks system-account access. Say so plainly.
+	go func() {
+		t := time.NewTimer(20 * time.Second)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+		case <-t.C:
+			if received.Load() == 0 {
+				log.Warn("$SYS collector: no $SYS.SERVER.*.STATSZ events received within 20s — the NATS connection cannot see system events; grant system-account credentials or disable $SYS collection and use HTTP monitoring instead")
+			}
+		}
+	}()
 
 	sweeper := time.NewTicker(statszTTL / 3)
 	defer sweeper.Stop()

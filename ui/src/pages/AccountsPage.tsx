@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
 interface AccountzData {
@@ -50,6 +50,7 @@ interface LeafInfo {
 
 export function AccountsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const [data, setData] = useState<AccountzData | null>(null)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -124,6 +125,15 @@ export function AccountsPage() {
       }
     } catch { /* */ }
     setDrillLoading(false)
+  }
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="Accounts"
+        description="Add a NATS cluster to view account details, connections, and subscriptions."
+      />
+    )
   }
 
   return (

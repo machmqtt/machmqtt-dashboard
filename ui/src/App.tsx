@@ -23,6 +23,7 @@ import { MQTTOverviewPage } from './pages/MQTTOverviewPage'
 import { MQTTConnectionsPage } from './pages/MQTTConnectionsPage'
 import { MQTTBridgeDetailPage } from './pages/MQTTBridgeDetailPage'
 import { MQTTAllConnectionsPage } from './pages/MQTTAllConnectionsPage'
+import { LogsPage } from './pages/LogsPage'
 import './index.css'
 
 function AuthenticatedApp({ user, onLogout }: { user: User; onLogout: () => void }) {
@@ -76,6 +77,9 @@ function AuthenticatedApp({ user, onLogout }: { user: User; onLogout: () => void
         )}
         {user.role === 'admin' && (
           <Route path="/admin/clusters" element={<ClustersPage onClustersChanged={refreshEnvironments} />} />
+        )}
+        {user.role === 'admin' && (
+          <Route path="/admin/logs" element={<LogsPage />} />
         )}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
