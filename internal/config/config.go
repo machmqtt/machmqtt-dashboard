@@ -21,6 +21,14 @@ type Config struct {
 	SessionSecret string        `yaml:"session_secret"`
 	SecureCookies bool          `yaml:"secure_cookies"`
 	DataDir       string        `yaml:"data_dir"`
+	// MetricsRetention is how long time-series samples are kept before the
+	// cleanup pass deletes them. Defaults to 24h.
+	MetricsRetention time.Duration `yaml:"metrics_retention"`
+	// TrustProxyHeaders enables honoring X-Forwarded-For for client-IP
+	// identification (login rate limiting). Leave false unless the dashboard
+	// sits behind a trusted reverse proxy that sets the header — otherwise a
+	// client can spoof it to evade the login rate limiter.
+	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
 }
 
 type Environment struct {
@@ -120,13 +128,18 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Listen:       ":8080",
-		PollInterval: 30 * time.Second,
-		DataDir:      "./data",
+		Listen:           ":8080",
+		PollInterval:     30 * time.Second,
+		DataDir:          "./data",
+		MetricsRetention: 24 * time.Hour,
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	if cfg.MetricsRetention <= 0 {
+		cfg.MetricsRetention = 24 * time.Hour
 	}
 
 	// SESSION_SECRET overrides the config file so the secret can be injected

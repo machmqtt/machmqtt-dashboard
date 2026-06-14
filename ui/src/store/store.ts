@@ -48,7 +48,7 @@ export interface TopologyLink {
   out_msgs_rate: number
 }
 
-export interface TopologyGraph {
+export interface TopologyData {
   nodes: TopologyNode[]
   links: TopologyLink[]
 }
@@ -74,7 +74,7 @@ interface DashboardState {
   activeEnv: string
   environments: ClusterInfo[]
   overview: Overview | null
-  topology: TopologyGraph | null
+  topology: TopologyData | null
   health: HealthStatus | null
   darkMode: boolean
   sidebarOpen: boolean
@@ -82,7 +82,7 @@ interface DashboardState {
   setActiveEnv: (env: string) => void
   setEnvironments: (envs: ClusterInfo[]) => void
   setOverview: (o: Overview) => void
-  setTopology: (t: TopologyGraph) => void
+  setTopology: (t: TopologyData) => void
   setHealth: (h: HealthStatus) => void
   toggleDarkMode: () => void
   toggleSidebar: () => void

@@ -32,7 +32,7 @@ A real-time monitoring dashboard for [NATS](https://nats.io) clusters. Built wit
                                       └───────────────────┘
 ```
 
-The backend polls each NATS server's HTTP monitoring endpoints on a configurable interval (default 5s). All dashboard users share the same cached snapshot — multiple people viewing the dashboard generates zero additional load on your NATS cluster.
+The backend polls each NATS server's HTTP monitoring endpoints on a configurable interval (default 30s). All dashboard users share the same cached snapshot — multiple people viewing the dashboard generates zero additional load on your NATS cluster.
 
 Time-series metrics are stored in SQLite for trend charts (configurable retention, default 24h).
 
@@ -86,23 +86,20 @@ docker run -p 8080:8080 \
 
 ```yaml
 listen: ":8080"
-poll_interval: 5s
-session_secret: "change-me"   # required, >= 32 chars; or set the SESSION_SECRET env var
+poll_interval: 30s              # HTTP monitoring poll interval (default 30s)
+session_secret: "change-me"     # required, >= 32 chars; or set the SESSION_SECRET env var
 data_dir: "./data"
-
-environments:
-  - name: production
-    servers:
-      - url: "http://nats-1:8222"
-      - url: "http://nats-2:8222"
-      - url: "http://nats-3:8222"
-    tls:
-      ca_file: "/path/to/ca.pem"
+metrics_retention: 24h          # how long time-series samples are kept (default 24h)
+# secure_cookies: true          # set when serving over HTTPS
+# trust_proxy_headers: true     # honor X-Forwarded-For (only behind a trusted reverse proxy)
 ```
 
-A default admin user (`admin`/`admin`) is created on first startup. Change the password after first login.
+Clusters are **not** configured in YAML — they're added and managed at runtime via the
+admin UI (Cluster Management), including servers, TLS, MQTT bridge discovery, and the
+optional NATS push-collection modes. A default admin user (`admin`/`admin`) is created on
+first startup; you'll be required to change the password on first login.
 
-See [config.example.yaml](config.example.yaml) for all options including MQTT bridge discovery and TLS configuration.
+See [config.example.yaml](config.example.yaml) for the fully commented configuration.
 
 ## Development
 

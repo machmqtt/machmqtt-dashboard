@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -90,24 +92,30 @@ func (rl *LoginRateLimiter) cleanup() {
 	}
 }
 
-// clientIP extracts the client IP from the request, preferring X-Forwarded-For
-// for deployments behind a reverse proxy.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (the original client).
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
+// clientIP extracts the client IP used to key the login rate limiter.
+//
+// X-Forwarded-For is only honored when trustProxy is true (the dashboard is
+// behind a reverse proxy known to set the header). When it's false, the header
+// is ignored entirely and RemoteAddr is used — otherwise any client could send
+// a different X-Forwarded-For per request to mint a fresh rate-limit bucket and
+// defeat the limiter.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Take the LAST entry. A trusted reverse proxy appends the client IP
+			// it actually observed (e.g. nginx's $proxy_add_x_forwarded_for), so
+			// the rightmost hop is the one the proxy vouches for. Earlier entries
+			// are whatever the client sent and remain spoofable.
+			if i := strings.LastIndexByte(xff, ','); i >= 0 {
+				return strings.TrimSpace(xff[i+1:])
 			}
-		}
-		return xff
-	}
-	// Strip port from RemoteAddr.
-	addr := r.RemoteAddr
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
+			return strings.TrimSpace(xff)
 		}
 	}
-	return addr
+	// Strip the port from RemoteAddr (host:port). Falls back to the raw value
+	// for inputs without a port.
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }

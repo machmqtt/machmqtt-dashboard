@@ -5,10 +5,51 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 )
+
+// bridgeStatusCache memoizes live MachMQTT bridge admin-API status lookups for
+// configured-but-undiscovered bridges, so repeated fleet-listing requests don't
+// each pay the bridge round-trip. Auto-discovered bridges are served from the
+// collector's poll cache and never reach this path. Keys are configured bridge
+// URLs (a small, bounded set), so the map does not grow unbounded.
+type bridgeStatusCache struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	entries map[string]bridgeStatusEntry
+}
+
+type bridgeStatusEntry struct {
+	status    *collector.MQTTBridgeStatus
+	fetchedAt time.Time
+}
+
+func newBridgeStatusCache(ttl time.Duration) *bridgeStatusCache {
+	return &bridgeStatusCache{ttl: ttl, entries: make(map[string]bridgeStatusEntry)}
+}
+
+// get returns a fresh cached status, or calls fetch (without the lock held, so
+// requests for different bridges don't serialize) and stores the result.
+func (c *bridgeStatusCache) get(key string, fetch func() *collector.MQTTBridgeStatus) *collector.MQTTBridgeStatus {
+	now := time.Now()
+	c.mu.Lock()
+	if e, ok := c.entries[key]; ok && now.Sub(e.fetchedAt) < c.ttl {
+		c.mu.Unlock()
+		return e.status
+	}
+	c.mu.Unlock()
+
+	status := fetch()
+
+	c.mu.Lock()
+	c.entries[key] = bridgeStatusEntry{status: status, fetchedAt: now}
+	c.mu.Unlock()
+	return status
+}
 
 // mqttAdminActions maps a dashboard action name to the MachMQTT bridge admin
 // endpoint path. The allowlist is the only way to reach a bridge admin POST,
@@ -62,8 +103,13 @@ func (s *Server) handleMQTTBridges(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			f := collector.NewMQTTBridgeFetcher(b.URL, b.Name, envCfg.ResolveBridgeToken(b.BearerToken))
-			status := f.FetchStatus(r.Context())
+			// Memoized live probe: only configured bridges that NATS connz never
+			// reported reach here, and the result is cached so the UI's frequent
+			// fleet polls don't each pay the bridge round-trip.
+			status := s.bridgeStatus.get(b.URL, func() *collector.MQTTBridgeStatus {
+				f := collector.NewMQTTBridgeFetcher(b.URL, b.Name, envCfg.ResolveBridgeToken(b.BearerToken))
+				return f.FetchStatus(r.Context())
+			})
 			discovered = append(discovered, collector.MQTTBridgeInstance{
 				IP:             b.URL,
 				AdminURL:       b.URL,

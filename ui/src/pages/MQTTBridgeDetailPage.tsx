@@ -4,14 +4,36 @@ import { useParams, Link } from 'react-router-dom'
 import { useStore } from '../store/store'
 import { TableSkeleton } from '../components/Skeleton'
 import { ArrowLeft } from 'lucide-react'
-import { TimeSeriesChart } from '../components/TimeSeriesChart'
+import { TimeSeriesChart, type LineDef } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatNumber as fmtNum, formatBytes as fmtBytes, formatRate as fmtRateAxis } from '../utils/format'
 
 type Tab = 'nats' | 'metrics' | 'pool' | 'cluster' | 'license' | 'config' | 'admin'
 
 // Each refresh issues live admin-API fetches to the bridge, so keep it moderate.
 const REFRESH_INTERVAL = 5_000
+
+// Hoisted so the array references are stable across renders — inline arrays would
+// defeat TimeSeriesChart's memo and re-render recharts on every 5s poll.
+const CONN_LINES: LineDef[] = [{ key: 'connections_active', color: '#a855f7', label: 'Active' }]
+const MSG_RATE_LINES: LineDef[] = [
+  { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
+  { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
+]
+const QOS_LINES: LineDef[] = [
+  { key: 'msgs_recv_qos0', color: '#22c55e', label: 'Recv QoS0' },
+  { key: 'msgs_recv_qos1', color: '#16a34a', label: 'Recv QoS1' },
+  { key: 'msgs_recv_qos2', color: '#15803d', label: 'Recv QoS2' },
+  { key: 'msgs_sent_qos0', color: '#f97316', label: 'Sent QoS0' },
+  { key: 'msgs_sent_qos1', color: '#ea580c', label: 'Sent QoS1' },
+  { key: 'msgs_sent_qos2', color: '#c2410c', label: 'Sent QoS2' },
+]
+const JS_HEALTH_LINES: LineDef[] = [
+  { key: 'consumer_pending_messages', color: '#f59e0b', label: 'Pending msgs' },
+  { key: 'session_write_behind_depth', color: '#6366f1', label: 'Write-behind depth' },
+  { key: 'stalled_consumers', color: '#ef4444', label: 'Stalled consumers' },
+]
 
 export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const { bridge } = useParams<{ bridge: string }>()
@@ -245,9 +267,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Connections</h3>
           <TimeSeriesChart
             data={tsMetrics.data}
-            lines={[
-              { key: 'connections_active', color: '#a855f7', label: 'Active' },
-            ]}
+            lines={CONN_LINES}
             yFormatter={(v) => v.toFixed(0)}
           />
         </div>
@@ -255,10 +275,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Message Rate</h3>
           <TimeSeriesChart
             data={tsMetrics.data}
-            lines={[
-              { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
-              { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
-            ]}
+            lines={MSG_RATE_LINES}
             yFormatter={fmtRateAxis}
           />
         </div>
@@ -266,14 +283,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">QoS Message Totals</h3>
           <TimeSeriesChart
             data={tsMetrics.data}
-            lines={[
-              { key: 'msgs_recv_qos0', color: '#22c55e', label: 'Recv QoS0' },
-              { key: 'msgs_recv_qos1', color: '#16a34a', label: 'Recv QoS1' },
-              { key: 'msgs_recv_qos2', color: '#15803d', label: 'Recv QoS2' },
-              { key: 'msgs_sent_qos0', color: '#f97316', label: 'Sent QoS0' },
-              { key: 'msgs_sent_qos1', color: '#ea580c', label: 'Sent QoS1' },
-              { key: 'msgs_sent_qos2', color: '#c2410c', label: 'Sent QoS2' },
-            ]}
+            lines={QOS_LINES}
             yFormatter={fmtRateAxis}
           />
         </div>
@@ -281,11 +291,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">JetStream Health</h3>
           <TimeSeriesChart
             data={tsMetrics.data}
-            lines={[
-              { key: 'consumer_pending_messages', color: '#f59e0b', label: 'Pending msgs' },
-              { key: 'session_write_behind_depth', color: '#6366f1', label: 'Write-behind depth' },
-              { key: 'stalled_consumers', color: '#ef4444', label: 'Stalled consumers' },
-            ]}
+            lines={JS_HEALTH_LINES}
             yFormatter={(v) => v.toFixed(0)}
           />
         </div>
@@ -853,26 +859,4 @@ function Table({ headers, rows }: { headers: string[]; rows: any[][] }) {
       </table>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
-}
-
-function fmtRateAxis(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
 }

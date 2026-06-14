@@ -392,73 +392,73 @@ func TestManagerEnvServersKnownID(t *testing.T) {
 	}
 }
 
-// --- Pure functions: tlsEqual, natsConnEqual, isMQTTBridgeConn ---
+// --- Pure functions: tlsSame, natsConnSame, isMQTTBridgeConn ---
 
 func TestTLSEqual(t *testing.T) {
-	if !tlsEqual(nil, nil) {
+	if !tlsSame(nil, nil) {
 		t.Error("both nil should be equal")
 	}
 	cfg := &config.TLSConfig{CAFile: "ca.pem", Insecure: false}
-	if tlsEqual(nil, cfg) {
+	if tlsSame(nil, cfg) {
 		t.Error("nil vs non-nil should not be equal")
 	}
-	if tlsEqual(cfg, nil) {
+	if tlsSame(cfg, nil) {
 		t.Error("non-nil vs nil should not be equal")
 	}
-	if !tlsEqual(cfg, &config.TLSConfig{CAFile: "ca.pem", Insecure: false}) {
+	if !tlsSame(cfg, &config.TLSConfig{CAFile: "ca.pem", Insecure: false}) {
 		t.Error("identical configs should be equal")
 	}
-	if tlsEqual(cfg, &config.TLSConfig{CAFile: "other.pem", Insecure: false}) {
+	if tlsSame(cfg, &config.TLSConfig{CAFile: "other.pem", Insecure: false}) {
 		t.Error("different CAFile should not be equal")
 	}
-	if tlsEqual(cfg, &config.TLSConfig{CAFile: "ca.pem", Insecure: true}) {
+	if tlsSame(cfg, &config.TLSConfig{CAFile: "ca.pem", Insecure: true}) {
 		t.Error("different Insecure should not be equal")
 	}
 }
 
 func TestNATSConnEqual(t *testing.T) {
-	if !natsConnEqual(nil, nil) {
+	if !natsConnSame(nil, nil) {
 		t.Error("both nil should be equal")
 	}
 	a := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "$MQTT5"}
-	if natsConnEqual(nil, a) {
+	if natsConnSame(nil, a) {
 		t.Error("nil vs non-nil should not be equal")
 	}
-	if natsConnEqual(a, nil) {
+	if natsConnSame(a, nil) {
 		t.Error("non-nil vs nil should not be equal")
 	}
 	b := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "$MQTT5"}
-	if !natsConnEqual(a, b) {
+	if !natsConnSame(a, b) {
 		t.Error("identical configs should be equal")
 	}
 	// Different URL count
 	c := &config.NATSConnConfig{URLs: []string{"nats://a:4222", "nats://b:4222"}}
-	if natsConnEqual(a, c) {
+	if natsConnSame(a, c) {
 		t.Error("different URL count should not be equal")
 	}
 	// Different URL value
 	d := &config.NATSConnConfig{URLs: []string{"nats://other:4222"}, SubjectPrefix: "$MQTT5"}
-	if natsConnEqual(a, d) {
+	if natsConnSame(a, d) {
 		t.Error("different URL value should not be equal")
 	}
 	// Different SubjectPrefix
 	e := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "acme"}
-	if natsConnEqual(a, e) {
+	if natsConnSame(a, e) {
 		t.Error("different SubjectPrefix should not be equal")
 	}
 	// Different SYSCollection
 	f := &config.NATSConnConfig{URLs: []string{"nats://host:4222"}, SubjectPrefix: "$MQTT5", SYSCollection: true}
-	if natsConnEqual(a, f) {
+	if natsConnSame(a, f) {
 		t.Error("different SYSCollection should not be equal")
 	}
 }
 
-// --- serversEqual ---
+// --- serversSame ---
 
 func TestServersEqualDifferentLength(t *testing.T) {
 	a := []config.Server{{URL: "http://a:8222"}}
 	b := []config.Server{{URL: "http://a:8222"}, {URL: "http://b:8222"}}
-	if serversEqual(a, b) {
+	if serversSame(a, b) {
 		t.Error("different-length slices should not be equal")
 	}
 }
@@ -466,14 +466,14 @@ func TestServersEqualDifferentLength(t *testing.T) {
 func TestServersEqualDifferentURL(t *testing.T) {
 	a := []config.Server{{URL: "http://a:8222"}}
 	b := []config.Server{{URL: "http://b:8222"}}
-	if serversEqual(a, b) {
+	if serversSame(a, b) {
 		t.Error("different URLs should not be equal")
 	}
 }
 
 func TestServersEqualIdentical(t *testing.T) {
 	a := []config.Server{{URL: "http://a:8222"}, {URL: "http://b:8222"}}
-	if !serversEqual(a, a) {
+	if !serversSame(a, a) {
 		t.Error("identical slices should be equal")
 	}
 }

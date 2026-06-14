@@ -5,6 +5,7 @@ import { Activity, Cable, ArrowDownToLine, ArrowUpFromLine, Database, GitBranch,
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatNumber as fmtNum, formatRate as fmtRate, formatBytes as fmtBytes } from '../utils/format'
 
 export function OverviewPage() {
   const overview = useStore((s) => s.overview)
@@ -180,25 +181,4 @@ function Card({ icon, label, value, sub }: { icon: React.ReactNode; label: strin
       {sub && <div className="text-xs text-gray-400">{sub}</div>}
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toString()
-}
-
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b.toFixed(0) + ' B'
 }

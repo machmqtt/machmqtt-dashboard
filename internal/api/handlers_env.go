@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -120,8 +121,14 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 
 	// If filtering by subject, build a CID set from the subs cache (15s TTL).
 	var subCIDs map[uint64]bool
+	subsAvailable := true
 	if filterSubject != "" {
 		rows := s.getSubsRows(r.Context(), env)
+		// No rows means either the subscription source is unavailable or the
+		// cluster genuinely has no subscriptions. Either way the subject filter
+		// matches nothing — surface subsAvailable=false so the client can tell
+		// this apart from "there are simply no connections".
+		subsAvailable = len(rows) > 0
 		subCIDs = make(map[uint64]bool, len(rows))
 		for _, row := range rows {
 			if strings.Contains(row.Subject, filterSubject) {
@@ -152,12 +159,16 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 		end = total
 	}
 
-	writeJSON(w, map[string]any{
+	resp := map[string]any{
 		"connections": allConns[offset:end],
 		"total":       total,
 		"limit":       limit,
 		"offset":      offset,
-	})
+	}
+	if filterSubject != "" {
+		resp["subs_available"] = subsAvailable
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {
@@ -612,7 +623,23 @@ func clampInt(s string, defaultVal, maxVal int) int {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// The status line is already committed, so we can't change it — but a
+		// silent encode failure is otherwise invisible. Log it once here, the
+		// single chokepoint every JSON handler funnels through.
+		slog.Warn("writeJSON encode failed", "err", err)
+	}
+}
+
+// writeError writes a JSON error body with the given status. It marshals the
+// message so error text containing quotes/newlines can't corrupt the response
+// (unlike hand-built `{"error":"..."}` string concatenation).
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		slog.Warn("writeError encode failed", "err", err)
+	}
 }
 
 var nonSystemPrefixes = []string{"$MQTT5"}

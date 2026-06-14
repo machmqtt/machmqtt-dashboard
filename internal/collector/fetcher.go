@@ -47,7 +47,14 @@ func NewFetcher(tlsCfg *config.TLSConfig) (*Fetcher, error) {
 }
 
 func (f *Fetcher) fetch(ctx context.Context, baseURL, path string, params url.Values, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	return f.fetchWithTimeout(ctx, fetchTimeout, baseURL, path, params, out)
+}
+
+// fetchWithTimeout performs a GET + JSON decode with a per-request timeout. Most
+// callers use fetch (the default 3s timeout); the heavier connz+subs detail
+// endpoints pass a longer timeout.
+func (f *Fetcher) fetchWithTimeout(ctx context.Context, timeout time.Duration, baseURL, path string, params url.Values, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	u := baseURL + path
@@ -137,9 +144,6 @@ func (f *Fetcher) FetchConnzSubsDetailFiltered(ctx context.Context, baseURL stri
 }
 
 func (f *Fetcher) fetchConnzSubs(ctx context.Context, baseURL, subsMode string, limit int, filterSubject string) (*Connz, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	params := url.Values{"subs": {subsMode}}
 	if limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", limit))
@@ -148,20 +152,9 @@ func (f *Fetcher) fetchConnzSubs(ctx context.Context, baseURL, subsMode string, 
 		params.Set("filter_subject", filterSubject)
 	}
 	var c Connz
-	u := baseURL + "/connz?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
+	// connz+subs detail is heavier than the other endpoints, so allow a longer
+	// timeout than the default fetch.
+	if err := f.fetchWithTimeout(ctx, 10*time.Second, baseURL, "/connz", params, &c); err != nil {
 		return nil, err
 	}
 	return &c, nil

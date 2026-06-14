@@ -9,7 +9,9 @@ import (
 )
 
 func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	if !a.loginLimiter.Allow(clientIP(r)) {
+	ip := clientIP(r, a.trustProxy)
+	if !a.loginLimiter.Allow(ip) {
+		a.log.Warn("login rate limited", "ip", ip)
 		http.Error(w, `{"error":"too many login attempts, try again later"}`, http.StatusTooManyRequests)
 		return
 	}
@@ -25,6 +27,8 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := a.store.Authenticate(req.Username, req.Password)
 	if err != nil {
+		// Audit trail for failed logins / brute-force attempts (never log the password).
+		a.log.Warn("login failed", "username", req.Username, "ip", ip)
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}

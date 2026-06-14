@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -75,17 +76,24 @@ type MetricPoint map[string]any
 
 // MetricsWriter buffers metric samples and writes them to SQLite in batches.
 type MetricsWriter struct {
-	db  *sql.DB
-	ch  chan MetricSample
-	log *slog.Logger
+	db        *sql.DB
+	ch        chan MetricSample
+	log       *slog.Logger
+	retention time.Duration
+	dropped   atomic.Uint64 // samples dropped because the buffer was full
 }
 
-// NewMetricsWriter creates a new metrics writer. Call Run() to start the background goroutine.
-func NewMetricsWriter(db *sql.DB, log *slog.Logger) *MetricsWriter {
+// NewMetricsWriter creates a new metrics writer that keeps samples for the given
+// retention (<=0 falls back to 24h). Call Run() to start the background goroutine.
+func NewMetricsWriter(db *sql.DB, log *slog.Logger, retention time.Duration) *MetricsWriter {
+	if retention <= 0 {
+		retention = 24 * time.Hour
+	}
 	return &MetricsWriter{
-		db:  db,
-		ch:  make(chan MetricSample, 32),
-		log: log,
+		db:        db,
+		ch:        make(chan MetricSample, 32),
+		log:       log,
+		retention: retention,
 	}
 }
 
@@ -94,7 +102,9 @@ func (w *MetricsWriter) Submit(s MetricSample) {
 	select {
 	case w.ch <- s:
 	default:
-		// Drop sample — monitoring is best-effort.
+		// Drop sample — monitoring is best-effort. Counted and reported
+		// periodically by Run so sustained loss isn't silent.
+		w.dropped.Add(1)
 	}
 }
 
@@ -111,6 +121,9 @@ func (w *MetricsWriter) Run(ctx context.Context) {
 			w.writeSample(s)
 		case <-cleanup.C:
 			w.deleteOld()
+			if n := w.dropped.Swap(0); n > 0 {
+				w.log.Warn("metrics samples dropped (writer buffer full)", "count", n, "window", "10m")
+			}
 		}
 	}
 }
@@ -180,12 +193,36 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 }
 
 func (w *MetricsWriter) deleteOld() {
-	cutoff := time.Now().Add(-24 * time.Hour).Unix()
+	cutoff := time.Now().Add(-w.retention).Unix()
 	for _, table := range []string{"server_metrics", "env_metrics", "mqtt_bridge_metrics"} {
 		if _, err := w.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ts < ?", table), cutoff); err != nil {
 			w.log.Warn("metrics cleanup", "table", table, "err", err)
 		}
 	}
+}
+
+// buildMetricsQuery assembles the bucketed-average query shared by all three
+// metric queries: a `(ts/step)*step` time bucket, an env+time-range predicate,
+// an optional id (server_id/bridge_id) predicate, and GROUP BY/ORDER BY. The
+// table, idCol, and aggCols fragments are constant literals supplied by the
+// caller (never user input); env and idVal are bound as parameters.
+func buildMetricsQuery(table, idCol, aggCols, env, idVal string, from, to, step int64) (string, []any) {
+	q := "SELECT (ts / ? ) * ? AS bucket"
+	if idCol != "" {
+		q += ", " + idCol
+	}
+	q += ", " + aggCols + " FROM " + table + " WHERE env = ? AND ts >= ? AND ts <= ?"
+	args := []any{step, step, env, from, to}
+	if idCol != "" && idVal != "" {
+		q += " AND " + idCol + " = ?"
+		args = append(args, idVal)
+	}
+	q += " GROUP BY bucket"
+	if idCol != "" {
+		q += ", " + idCol
+	}
+	q += " ORDER BY bucket"
+	return q, args
 }
 
 // autoStep calculates a step size to return approximately targetPoints data points.
@@ -206,16 +243,10 @@ func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, t
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
-	rows, err := w.db.QueryContext(ctx, `
-		SELECT (ts / ? ) * ? AS bucket,
-			AVG(server_count), AVG(healthy_count), AVG(connection_count),
-			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(subscriptions)
-		FROM env_metrics
-		WHERE env = ? AND ts >= ? AND ts <= ?
-		GROUP BY bucket
-		ORDER BY bucket`,
-		step, step, env, from, to)
+	q, args := buildMetricsQuery("env_metrics", "", `AVG(server_count), AVG(healthy_count), AVG(connection_count),
+		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
+		AVG(subscriptions)`, env, "", from, to, step)
+	rows, err := w.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -252,21 +283,9 @@ func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID st
 		step = autoStep(from, to, 200)
 	}
 
-	query := `
-		SELECT (ts / ? ) * ? AS bucket, server_id,
-			AVG(connections), AVG(cpu), AVG(mem),
-			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(subscriptions), AVG(slow_consumers)
-		FROM server_metrics
-		WHERE env = ? AND ts >= ? AND ts <= ?`
-	args := []any{step, step, env, from, to}
-
-	if serverID != "" {
-		query += " AND server_id = ?"
-		args = append(args, serverID)
-	}
-
-	query += " GROUP BY bucket, server_id ORDER BY bucket"
+	query, args := buildMetricsQuery("server_metrics", "server_id", `AVG(connections), AVG(cpu), AVG(mem),
+		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
+		AVG(subscriptions), AVG(slow_consumers)`, env, serverID, from, to, step)
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -308,23 +327,11 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 		step = autoStep(from, to, 200)
 	}
 
-	query := `
-		SELECT (ts / ? ) * ? AS bucket, bridge_id,
-			AVG(connections_active),
-			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1),
-			AVG(msgs_recv_qos2), AVG(msgs_sent_qos2),
-			AVG(session_write_behind_depth), AVG(consumer_pending_messages), AVG(stalled_consumers)
-		FROM mqtt_bridge_metrics
-		WHERE env = ? AND ts >= ? AND ts <= ?`
-	args := []any{step, step, env, from, to}
-
-	if bridgeID != "" {
-		query += " AND bridge_id = ?"
-		args = append(args, bridgeID)
-	}
-
-	query += " GROUP BY bucket, bridge_id ORDER BY bucket"
+	query, args := buildMetricsQuery("mqtt_bridge_metrics", "bridge_id", `AVG(connections_active),
+		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
+		AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1),
+		AVG(msgs_recv_qos2), AVG(msgs_sent_qos2),
+		AVG(session_write_behind_depth), AVG(consumer_pending_messages), AVG(stalled_consumers)`, env, bridgeID, from, to, step)
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {

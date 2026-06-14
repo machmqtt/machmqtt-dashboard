@@ -16,6 +16,7 @@ import { useStore } from '../store/store'
 import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown, ArrowLeft } from 'lucide-react'
 import { ColumnFilter } from '../components/ColumnFilter'
+import { formatNumber as fmtNum, formatBytes as fmtBytes } from '../utils/format'
 
 interface MQTTClient {
   cid: number
@@ -365,17 +366,4 @@ function DI({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
 }

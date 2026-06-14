@@ -38,8 +38,6 @@ type sysDataStats struct {
 	sysMsgBytes
 }
 
-type sysRouteStat struct{} // only need the count; discard content
-
 type sysServerStats struct {
 	Start            time.Time      `json:"start"`
 	Mem              int64          `json:"mem"`
@@ -252,8 +250,17 @@ func (sc *SYSCollector) poll(ctx context.Context, carry *Snapshot, slow bool) *S
 		return nil
 	}
 
-	// Carry forward slow-polled data from the previous snapshot.
+	// Carry forward data that the fast path doesn't refetch. Under $SYS
+	// collection these are only populated by fillFromPing on bootstrap/slow
+	// polls, so without carry-forward they'd be empty on the 2-of-3 fast polls —
+	// which makes buildOverview default every server to Healthy and buildTopology
+	// drop all route/gateway/leaf edges. Carry the previous values so fast polls
+	// stay consistent with the last slow poll.
 	if carry != nil {
+		snap.Routez = carry.Routez
+		snap.Gatewayz = carry.Gatewayz
+		snap.Leafz = carry.Leafz
+		snap.Health = carry.Health
 		snap.Connz = carry.Connz
 		snap.Subsz = carry.Subsz
 		snap.JSInfo = carry.JSInfo
@@ -352,7 +359,14 @@ func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *S
 			replies := fanIn(nc, subject, 2*time.Second, ep.body)
 			mu.Lock()
 			for _, r := range replies {
-				if r.Error != nil || len(r.Data) == 0 {
+				if r.Error != nil {
+					// A server may legitimately error some endpoints (e.g. JSZ
+					// when JetStream is disabled), so keep this at Debug to avoid
+					// per-poll spam while still leaving a trace.
+					sc.log.Debug("$SYS ping reply error", "endpoint", ep.name, "server", r.Server.ID, "err", r.Error)
+					continue
+				}
+				if len(r.Data) == 0 {
 					continue
 				}
 				ep.fill(r.Server.ID, r.Data)

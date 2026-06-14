@@ -40,6 +40,10 @@ func main() {
 
 	lb := logbuf.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}), logbuf.DefaultSize)
 	log := slog.New(lb)
+	// Make the buffered handler the process default so packages that log via the
+	// slog package functions (store, auth, api helpers) also land in the in-UI
+	// Server Logs buffer instead of bypassing it.
+	slog.SetDefault(log)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -64,10 +68,10 @@ func main() {
 		log.Info("created default admin user", "username", defaultUser.Username)
 	}
 
-	a := auth.New(db, cfg.SessionSecret, cfg.SecureCookies)
+	a := auth.New(db, cfg.SessionSecret, cfg.SecureCookies, cfg.TrustProxyHeaders, log)
 	hub := ws.NewHub(log)
 
-	metricsWriter := store.NewMetricsWriter(db.DB(), log)
+	metricsWriter := store.NewMetricsWriter(db.DB(), log, cfg.MetricsRetention)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -81,86 +85,9 @@ func main() {
 		hub.Broadcast(clusterID, "topology", manager.Topology(clusterID))
 		hub.Broadcast(clusterID, "health", manager.Health(clusterID))
 
-		// Submit metrics sample for time-series storage.
-		if overview != nil {
-			sample := store.MetricSample{
-				Timestamp:       time.Now(),
-				Env:             clusterID,
-				ServerCount:     overview.ServerCount,
-				HealthyCount:    overview.HealthyCount,
-				ConnectionCount: overview.ConnectionCount,
-				InMsgsRate:      overview.InMsgsRate,
-				OutMsgsRate:     overview.OutMsgsRate,
-				InBytesRate:     overview.InBytesRate,
-				OutBytesRate:    overview.OutBytesRate,
-				Subscriptions:   overview.Subscriptions,
-			}
-
-			// Per-server metrics from the snapshot.
-			snap := manager.Snapshot(clusterID)
-			if snap != nil {
-				for id, v := range snap.Varz {
-					sm := store.ServerMetricSample{
-						ServerID:      id,
-						Connections:   v.Connections,
-						InMsgs:        v.InMsgs,
-						OutMsgs:       v.OutMsgs,
-						InBytes:       v.InBytes,
-						OutBytes:      v.OutBytes,
-						CPU:           v.CPU,
-						Mem:           v.Mem,
-						Subscriptions: v.Subscriptions,
-						SlowConsumers: v.SlowConsumers,
-						Routes:        v.Routes,
-						LeafNodes:     v.Leafs,
-						Healthy:       true,
-					}
-					if h, ok := snap.Health[id]; ok {
-						sm.Healthy = h.Status == "ok"
-					}
-					if r, ok := snap.Rates[id]; ok {
-						sm.InMsgsRate = r.InMsgsRate
-						sm.OutMsgsRate = r.OutMsgsRate
-						sm.InBytesRate = r.InBytesRate
-						sm.OutBytesRate = r.OutBytesRate
-					}
-					sample.Servers = append(sample.Servers, sm)
-				}
-			}
-
-			// Per-MQTT bridge metrics.
-			bridges := manager.MQTTBridges(clusterID)
-			for _, b := range bridges {
-				bm := store.MQTTBridgeMetricSample{
-					BridgeID:     b.ConfiguredName,
-					InMsgsRate:   b.InMsgsRate,
-					OutMsgsRate:  b.OutMsgsRate,
-					InBytesRate:  b.InBytesRate,
-					OutBytesRate: b.OutBytesRate,
-				}
-				if bm.BridgeID == "" {
-					bm.BridgeID = b.IP
-				}
-				if b.Status != nil && b.Status.Metrics != nil {
-					mx := b.Status.Metrics
-					bm.ConnectionsActive = mx.ConnectionsActive
-					bm.MsgsRecvQoS0 = mx.MsgsRecvQoS0
-					bm.MsgsRecvQoS1 = mx.MsgsRecvQoS1
-					bm.MsgsSentQoS0 = mx.MsgsSentQoS0
-					bm.MsgsSentQoS1 = mx.MsgsSentQoS1
-					bm.MsgsRecvQoS2 = mx.MsgsRecvQoS2
-					bm.MsgsSentQoS2 = mx.MsgsSentQoS2
-					bm.SessionWriteBehindDepth = mx.SessionWriteBehindDepth
-					bm.StalledConsumers = mx.StalledConsumers
-					if mx.ConsumerPendingMessages >= 0 {
-						v := mx.ConsumerPendingMessages
-						bm.ConsumerPendingMessages = &v
-					}
-				}
-				sample.MQTTBridges = append(sample.MQTTBridges, bm)
-			}
-
-			metricsWriter.Submit(sample)
+		// Submit a metrics sample for time-series storage.
+		if sample := manager.BuildMetricSample(clusterID, time.Now(), overview); sample != nil {
+			metricsWriter.Submit(*sample)
 		}
 	}, log, db)
 	if err != nil {

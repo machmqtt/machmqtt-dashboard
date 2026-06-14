@@ -55,19 +55,24 @@ func (h *Hub) SendTo(c *Client, env string, msgType string, data any) {
 	select {
 	case c.send <- pm:
 	default:
+		c.markDropped()
 	}
 }
 
 func (h *Hub) Register(c *Client) {
 	h.mu.Lock()
 	h.clients[c] = true
+	n := len(h.clients)
 	h.mu.Unlock()
+	h.log.Info("ws client connected", "clients", n)
 }
 
 func (h *Hub) Unregister(c *Client) {
 	h.mu.Lock()
 	delete(h.clients, c)
+	n := len(h.clients)
 	h.mu.Unlock()
+	h.log.Info("ws client disconnected", "clients", n)
 }
 
 // Broadcast serializes the message once, pre-frames it as a WebSocket
@@ -94,7 +99,8 @@ func (h *Hub) Broadcast(env string, msgType string, data any) {
 			select {
 			case c.send <- pm:
 			default:
-				// Drop message if client is slow.
+				// Drop message if the client is slow; markDropped surfaces it.
+				c.markDropped()
 			}
 		}
 	}

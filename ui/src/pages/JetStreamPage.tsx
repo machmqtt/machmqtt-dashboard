@@ -3,6 +3,7 @@ import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { TableSkeleton, CardSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ChevronDown, ChevronRight } from 'lucide-react'
+import { formatBytes as fmtBytes } from '../utils/format'
 
 interface ConsumerInfo {
   stream_name: string
@@ -42,6 +43,7 @@ interface JSData {
 export function JetStreamPage() {
   const activeEnv = useStore((s) => s.activeEnv)
   const environments = useStore((s) => s.environments)
+  const addToast = useStore((s) => s.addToast)
   const [data, setData] = useState<Record<string, JSData> | null>(null)
   const [loading, setLoading] = useState(true)
   const [expandedStream, setExpandedStream] = useState<string | null>(null)
@@ -49,16 +51,21 @@ export function JetStreamPage() {
 
   useEffect(() => {
     if (!activeEnv) return
+    let cancelled = false
     const run = async () => {
       setLoading(true)
       try {
         const r = await fetchWithTimeout(`/api/environments/${activeEnv}/jsz`)
-        if (r.ok) setData(await r.json())
-      } catch { /* */ }
-      setLoading(false)
+        if (!cancelled && r.ok) setData(await r.json())
+      } catch {
+        if (!cancelled) addToast('Failed to load JetStream data', 'error')
+      }
+      if (!cancelled) setLoading(false)
     }
     run()
-  }, [activeEnv])
+    // Guard against a late response for a previous env clobbering the current one.
+    return () => { cancelled = true }
+  }, [activeEnv, addToast])
 
   const allStreams: { account: string; stream: StreamDetail }[] = []
   const accounts = new Set<string>()
@@ -221,11 +228,4 @@ function SC({ label, value }: { label: string; value: string }) {
       <div className="text-2xl font-semibold">{value}</div>
     </div>
   )
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
 }

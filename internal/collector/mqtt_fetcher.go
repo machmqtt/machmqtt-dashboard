@@ -21,15 +21,20 @@ type MQTTBridgeFetcher struct {
 	name        string
 }
 
+// sharedMQTTTransport is reused across all bridge fetchers. NewMQTTBridgeFetcher
+// is called once per bridge per discovery cycle, so a per-fetcher transport
+// would never reuse a connection and would churn idle-conn pools every poll.
+// http.Transport is safe for concurrent use and pools connections per host.
+var sharedMQTTTransport = &http.Transport{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 10,
+	IdleConnTimeout:     30 * time.Second,
+	TLSHandshakeTimeout: 5 * time.Second,
+}
+
 func NewMQTTBridgeFetcher(baseURL, name, bearerToken string) *MQTTBridgeFetcher {
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     30 * time.Second,
-		TLSHandshakeTimeout: 5 * time.Second,
-	}
 	return &MQTTBridgeFetcher{
-		client:      &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		client:      &http.Client{Transport: sharedMQTTTransport, Timeout: 10 * time.Second},
 		baseURL:     baseURL,
 		name:        name,
 		bearerToken: bearerToken,

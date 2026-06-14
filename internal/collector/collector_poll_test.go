@@ -110,25 +110,6 @@ func TestCollectorSlowPollPopulatesConnz(t *testing.T) {
 	}
 }
 
-func TestCollectorBuildServerURLMap(t *testing.T) {
-	s := testStore(t)
-	cl := newLiveCluster(t, s, "urlmap", mockNATSServer("srv-3", "nats-3"))
-
-	m, err := NewManager(testCfg(), nil, testLog(), s)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	m.mu.RLock()
-	c := m.collectors[cl.ID]
-	m.mu.RUnlock()
-
-	c.poll(context.Background(), cl.ID, false)
-	snap := c.Snapshot()
-	urlMap := c.buildServerURLMap(snap)
-	_ = urlMap
-}
-
 func TestCollectorComputesRatesAcrossPolls(t *testing.T) {
 	s := testStore(t)
 	cl := newLiveCluster(t, s, "rates", mockNATSServer("srv-r", "nats-r"))

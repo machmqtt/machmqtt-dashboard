@@ -56,12 +56,12 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	// Validate the TLS config (e.g. CA file must be readable) before persisting.
 	env := cl.ToEnvironment()
 	if _, err := collector.NewFetcher(env.TLS); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if err := s.store.CreateCluster(cl); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -100,7 +100,7 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 	// Validate TLS before persisting.
 	env := cl.ToEnvironment()
 	if _, err := collector.NewFetcher(env.TLS); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -109,7 +109,7 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 		if err.Error() == "cluster not found" {
 			status = http.StatusNotFound
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, status)
+		writeError(w, status, err.Error())
 		return
 	}
 
@@ -130,7 +130,7 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	s.manager.RemoveCluster(id)
 
 	if err := s.store.DeleteCluster(id); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 

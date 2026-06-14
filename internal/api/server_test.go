@@ -31,7 +31,7 @@ func setupTestServerWithStore(t *testing.T) (*Server, *store.Store, *auth.Auth, 
 	t.Cleanup(func() { s.Close() })
 
 	u, _ := s.CreateUser("admin", "pass", store.RoleAdmin)
-	a := auth.New(s, "test-secret", false)
+	a := auth.New(s, "test-secret", false, false, nil)
 	token, _ := a.IssueToken(u)
 	log := slog.New(slog.NewTextHandler(nil, nil))
 
@@ -295,7 +295,7 @@ func TestDefaultAdminMustChangePassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := auth.New(s, "test-secret", false)
+	a := auth.New(s, "test-secret", false, false, nil)
 	log := slog.New(slog.NewTextHandler(nil, nil))
 	cfg := &config.Config{
 		PollInterval: 5e9,
