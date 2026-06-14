@@ -4,9 +4,10 @@ import { useStore } from '../store/store'
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton'
 import { Link } from 'react-router-dom'
 import { Radio } from 'lucide-react'
-import { TimeSeriesChart } from '../components/TimeSeriesChart'
+import { TimeSeriesChart, type LineDef } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatNumber as fmtNum, formatBytes as fmtBytes, formatRatePerSec as fmtRate, formatRate as fmtRateAxis, formatBytesPerSec as fmtBytesRate } from '../utils/format'
 
 interface NATSConn {
   connected: boolean
@@ -87,6 +88,14 @@ interface BridgeInstance {
 // Served from the collector's cached bridge list (no upstream fetch), so a
 // snappy refresh is cheap and surfaces newly discovered bridges quickly.
 const REFRESH_INTERVAL = 3_000
+
+// Hoisted so the array reference is stable across renders — an inline array
+// would defeat TimeSeriesChart's memo and re-render recharts on every 3s poll.
+const CONN_LINES: LineDef[] = [{ key: 'connections_active', color: '#a855f7', label: 'Active' }]
+const MSG_RATE_LINES: LineDef[] = [
+  { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
+  { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
+]
 
 export function MQTTOverviewPage() {
   const activeEnv = useStore((s) => s.activeEnv)
@@ -197,9 +206,7 @@ export function MQTTOverviewPage() {
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">MQTT Connections</h3>
           <TimeSeriesChart
             data={mqttMetrics.data}
-            lines={[
-              { key: 'connections_active', color: '#a855f7', label: 'Active' },
-            ]}
+            lines={CONN_LINES}
             yFormatter={(v) => v.toFixed(0)}
           />
         </div>
@@ -207,10 +214,7 @@ export function MQTTOverviewPage() {
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Message Rate</h3>
           <TimeSeriesChart
             data={mqttMetrics.data}
-            lines={[
-              { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
-              { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
-            ]}
+            lines={MSG_RATE_LINES}
             yFormatter={fmtRateAxis}
           />
         </div>
@@ -409,42 +413,4 @@ function DI({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
-}
-
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M/s'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K/s'
-  if (r >= 1) return r.toFixed(0) + '/s'
-  if (r > 0) return r.toFixed(1) + '/s'
-  return '0/s'
-}
-
-function fmtRateAxis(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
-}
-
-function fmtBytesRate(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB/s'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB/s'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB/s'
-  if (b > 0) return b.toFixed(0) + ' B/s'
-  return '0 B/s'
 }

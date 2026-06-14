@@ -47,8 +47,18 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	if authed.Role != RoleAdmin {
 		t.Errorf("authenticated role = %q, want %q", authed.Role, RoleAdmin)
 	}
-	if authed.LastLogin == nil {
-		t.Error("expected last_login to be set after successful auth")
+	// last_login reflects the PREVIOUS login. The first login has none, so it
+	// must be nil; the second login must report the time of the first.
+	if authed.LastLogin != nil {
+		t.Errorf("expected last_login nil on first login, got %v", authed.LastLogin)
+	}
+
+	authed2, err := s.Authenticate("admin", "secret123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authed2.LastLogin == nil {
+		t.Error("expected last_login to be set (previous login) on second auth")
 	}
 }
 
@@ -453,7 +463,7 @@ func TestAutoStep(t *testing.T) {
 
 func TestMetricsWriterSubmitAndRun(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go w.Run(ctx)
@@ -528,7 +538,7 @@ func TestMetricsWriterSubmitAndRun(t *testing.T) {
 
 func TestMetricsWriterDeleteOld(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 
 	oldTS := time.Now().Add(-25 * time.Hour)
 	w.writeSample(MetricSample{
@@ -573,7 +583,7 @@ func TestMetricsWriterDeleteOld(t *testing.T) {
 
 func TestQueryEnvMetricsEmpty(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 
 	pts, err := w.QueryEnvMetrics(context.Background(), "no-data-env", 0, time.Now().Unix(), 0)
 	if err != nil {
@@ -586,7 +596,7 @@ func TestQueryEnvMetricsEmpty(t *testing.T) {
 
 func TestQueryServerMetricsWithServerIDFilter(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 
 	now := time.Now()
 	// Write two servers in the same sample.
@@ -619,7 +629,7 @@ func TestQueryServerMetricsWithServerIDFilter(t *testing.T) {
 
 func TestQueryMQTTMetricsNullConsumerPending(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 
 	now := time.Now()
 	w.writeSample(MetricSample{
@@ -651,7 +661,7 @@ func TestQueryMQTTMetricsNullConsumerPending(t *testing.T) {
 func TestMetricsWriterSubmitDropsWhenFull(t *testing.T) {
 	s := testStore(t)
 	// Do NOT start Run() — we need the channel to stay full.
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 
 	sample := MetricSample{Timestamp: time.Now(), Env: "drop-env"}
 
@@ -962,7 +972,7 @@ func TestWriteSampleCommitError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 	// writeSample: Begin + INSERT env_metrics succeed (FK check is deferred),
 	// but Commit fails because env_ref has no matching row.
 	w.writeSample(MetricSample{
@@ -979,7 +989,7 @@ func TestWriteSampleDroppedEnvTable(t *testing.T) {
 	if _, err := s.db.Exec("DROP TABLE env_metrics"); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 	// writeSample: tx.Begin succeeds, env_metrics INSERT fails.
 	w.writeSample(MetricSample{Timestamp: time.Now(), Env: "e", ServerCount: 1})
 }
@@ -991,7 +1001,7 @@ func TestWriteSampleDroppedServerTable(t *testing.T) {
 	if _, err := s.db.Exec("DROP TABLE server_metrics"); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 	w.writeSample(MetricSample{
 		Timestamp: time.Now(),
 		Env:       "e",
@@ -1005,7 +1015,7 @@ func TestWriteSampleDroppedMQTTTable(t *testing.T) {
 	if _, err := s.db.Exec("DROP TABLE mqtt_bridge_metrics"); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMetricsWriter(s.DB(), slog.Default())
+	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
 	w.writeSample(MetricSample{
 		Timestamp:   time.Now(),
 		Env:         "e",
@@ -1453,7 +1463,7 @@ func TestMetricsWriterClosedDB(t *testing.T) {
 	db := tmp.db // grab the handle before Close
 	tmp.Close()  // close the Store (and therefore the DB)
 
-	w := NewMetricsWriter(db, slog.Default())
+	w := NewMetricsWriter(db, slog.Default(), 0)
 
 	// writeSample: Begin will fail — covers the "metrics tx begin" warn + return.
 	w.writeSample(MetricSample{Timestamp: time.Now(), Env: "e"})

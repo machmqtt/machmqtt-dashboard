@@ -7,6 +7,16 @@ session_secret: "change-me"
 # secure_cookies: true  # Set to true when serving over HTTPS
 data_dir: "./data"
 
+# How long time-series metric samples are kept before the cleanup pass deletes
+# them. Default 24h.
+# metrics_retention: 24h
+
+# Honor the X-Forwarded-For header when identifying the client IP for login rate
+# limiting. Leave false (the default) unless the dashboard is behind a trusted
+# reverse proxy that sets the header — otherwise a client can spoof it to evade
+# the rate limiter.
+# trust_proxy_headers: false
+
 # A default admin user (admin/admin) is created automatically on first startup.
 # You will be required to change the password on first login.
 

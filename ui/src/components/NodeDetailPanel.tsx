@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { X } from 'lucide-react'
 import type { TopologyNode } from '../store/store'
 import { Link } from 'react-router-dom'
+import { formatRate as fmtRate } from '../utils/format'
 
 interface Props {
   node: TopologyNode
@@ -46,10 +47,4 @@ function InfoItem({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  return r.toFixed(0)
 }

@@ -18,7 +18,7 @@ func testAuth(t *testing.T) (*Auth, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return New(s, "test-secret-key", false), s
+	return New(s, "test-secret-key", false, false, nil), s
 }
 
 func TestIssueAndValidate(t *testing.T) {
@@ -242,12 +242,19 @@ func TestClientIP(t *testing.T) {
 		name       string
 		xff        string
 		remoteAddr string
+		trustProxy bool
 		want       string
 	}{
-		{"xff single", "10.0.0.1", "", "10.0.0.1"},
-		{"xff comma-separated", "10.0.0.1,10.0.0.2", "", "10.0.0.1"},
-		{"remoteAddr with port", "", "192.168.1.1:54321", "192.168.1.1"},
-		{"remoteAddr no port", "", "192.168.1.1", "192.168.1.1"},
+		// Trusted proxy: X-Forwarded-For is honored, taking the rightmost hop
+		// (the IP the trusted proxy appended). Earlier entries are spoofable.
+		{"trusted xff single", "10.0.0.1", "192.168.1.1:5", true, "10.0.0.1"},
+		{"trusted xff comma-separated", "10.0.0.1, 10.0.0.2", "192.168.1.1:5", true, "10.0.0.2"},
+		// Untrusted: X-Forwarded-For is ignored so it can't be spoofed to mint a
+		// fresh rate-limit bucket — RemoteAddr wins.
+		{"untrusted xff ignored", "10.0.0.1", "192.168.1.1:54321", false, "192.168.1.1"},
+		{"trusted but no xff falls back", "", "192.168.1.1:54321", true, "192.168.1.1"},
+		{"remoteAddr with port", "", "192.168.1.1:54321", false, "192.168.1.1"},
+		{"remoteAddr no port", "", "192.168.1.1", false, "192.168.1.1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,7 +263,7 @@ func TestClientIP(t *testing.T) {
 				req.Header.Set("X-Forwarded-For", tc.xff)
 			}
 			req.RemoteAddr = tc.remoteAddr
-			if got := clientIP(req); got != tc.want {
+			if got := clientIP(req, tc.trustProxy); got != tc.want {
 				t.Errorf("clientIP = %q, want %q", got, tc.want)
 			}
 		})

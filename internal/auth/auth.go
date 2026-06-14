@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -26,15 +27,22 @@ type Auth struct {
 	secret        []byte
 	cookieTTL     time.Duration
 	secureCookies bool
+	trustProxy    bool
+	log           *slog.Logger
 	loginLimiter  *LoginRateLimiter
 }
 
-func New(s *store.Store, secret string, secureCookies bool) *Auth {
+func New(s *store.Store, secret string, secureCookies, trustProxy bool, log *slog.Logger) *Auth {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Auth{
 		store:         s,
 		secret:        []byte(secret),
 		cookieTTL:     24 * time.Hour,
 		secureCookies: secureCookies,
+		trustProxy:    trustProxy,
+		log:           log,
 		loginLimiter:  NewLoginRateLimiter(10, 5*time.Minute),
 	}
 }

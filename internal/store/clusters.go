@@ -65,32 +65,16 @@ func (s *Store) CreateCluster(c *Cluster) error {
 	}
 	c.ID = id
 
-	servers, err := json.Marshal(c.Servers)
+	cols, err := marshalClusterFields(c)
 	if err != nil {
-		return fmt.Errorf("marshal servers: %w", err)
-	}
-	bridges, err := json.Marshal(nullableSlice(c.MQTTBridges))
-	if err != nil {
-		return fmt.Errorf("marshal mqtt_bridges: %w", err)
-	}
-	discovery, err := marshalNullable(c.MQTTDiscovery)
-	if err != nil {
-		return fmt.Errorf("marshal mqtt_discovery: %w", err)
-	}
-	tlsJSON, err := marshalNullable(c.TLS)
-	if err != nil {
-		return fmt.Errorf("marshal tls: %w", err)
-	}
-	natsConnJSON, err := marshalNullable(c.NATSConn)
-	if err != nil {
-		return fmt.Errorf("marshal nats_conn: %w", err)
+		return err
 	}
 
 	now := time.Now()
 	_, err = s.db.Exec(
 		`INSERT INTO clusters (id, name, servers, mqtt_bridges, mqtt_discovery, tls, admin_token, nats_conn, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.Name, string(servers), string(bridges), discovery, tlsJSON, c.AdminToken, natsConnJSON, now,
+		c.ID, c.Name, cols.servers, cols.bridges, cols.discovery, cols.tls, c.AdminToken, cols.natsConn, now,
 	)
 	if err != nil {
 		return fmt.Errorf("insert cluster: %w", err)
@@ -143,31 +127,15 @@ func (s *Store) UpdateCluster(c *Cluster) error {
 		return fmt.Errorf("at least one server URL is required")
 	}
 
-	servers, err := json.Marshal(c.Servers)
+	cols, err := marshalClusterFields(c)
 	if err != nil {
-		return fmt.Errorf("marshal servers: %w", err)
-	}
-	bridges, err := json.Marshal(nullableSlice(c.MQTTBridges))
-	if err != nil {
-		return fmt.Errorf("marshal mqtt_bridges: %w", err)
-	}
-	discovery, err := marshalNullable(c.MQTTDiscovery)
-	if err != nil {
-		return fmt.Errorf("marshal mqtt_discovery: %w", err)
-	}
-	tlsJSON, err := marshalNullable(c.TLS)
-	if err != nil {
-		return fmt.Errorf("marshal tls: %w", err)
-	}
-	natsConnJSON, err := marshalNullable(c.NATSConn)
-	if err != nil {
-		return fmt.Errorf("marshal nats_conn: %w", err)
+		return err
 	}
 
 	result, err := s.db.Exec(
 		`UPDATE clusters SET name=?, servers=?, mqtt_bridges=?, mqtt_discovery=?, tls=?, admin_token=?, nats_conn=?
 		 WHERE id=?`,
-		c.Name, string(servers), string(bridges), discovery, tlsJSON, c.AdminToken, natsConnJSON, c.ID,
+		c.Name, cols.servers, cols.bridges, cols.discovery, cols.tls, c.AdminToken, cols.natsConn, c.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update cluster: %w", err)
@@ -258,6 +226,42 @@ func scanCluster(row scanner) (Cluster, error) {
 		}
 	}
 	return c, nil
+}
+
+// clusterCols holds the JSON-encoded column values shared by the cluster INSERT
+// and UPDATE statements.
+type clusterCols struct {
+	servers   string
+	bridges   string
+	discovery sql.NullString
+	tls       sql.NullString
+	natsConn  sql.NullString
+}
+
+// marshalClusterFields encodes the variable-shape cluster columns once so
+// CreateCluster and UpdateCluster don't repeat the marshal sequence.
+func marshalClusterFields(c *Cluster) (clusterCols, error) {
+	var cc clusterCols
+	servers, err := json.Marshal(c.Servers)
+	if err != nil {
+		return cc, fmt.Errorf("marshal servers: %w", err)
+	}
+	cc.servers = string(servers)
+	bridges, err := json.Marshal(nullableSlice(c.MQTTBridges))
+	if err != nil {
+		return cc, fmt.Errorf("marshal mqtt_bridges: %w", err)
+	}
+	cc.bridges = string(bridges)
+	if cc.discovery, err = marshalNullable(c.MQTTDiscovery); err != nil {
+		return cc, fmt.Errorf("marshal mqtt_discovery: %w", err)
+	}
+	if cc.tls, err = marshalNullable(c.TLS); err != nil {
+		return cc, fmt.Errorf("marshal tls: %w", err)
+	}
+	if cc.natsConn, err = marshalNullable(c.NATSConn); err != nil {
+		return cc, fmt.Errorf("marshal nats_conn: %w", err)
+	}
+	return cc, nil
 }
 
 // marshalNullable marshals v to a JSON string, or returns sql.NullString{}

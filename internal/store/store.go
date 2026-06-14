@@ -295,16 +295,17 @@ func (s *Store) Authenticate(username, password string) (*User, error) {
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	// Successful login: update last_login, reset failed attempts.
+	// Successful login: update last_login to now, reset failed attempts.
 	now := time.Now()
 	if _, err := s.db.Exec("UPDATE users SET last_login = ?, failed_attempts = 0 WHERE id = ?", now, u.ID); err != nil {
 		slog.Warn("failed to update login timestamp", "user", u.Username, "err", err)
 	}
-	u.LastLogin = &now
 	u.FailedAttempts = 0
+	// Return the PREVIOUS last_login (the value before this login) so the UI can
+	// show "last seen at …"; on the very first login there is none.
 	if lastLogin.Valid {
-		// Return the previous last_login for display (the one before this login).
-		u.LastLogin = &now
+		prev := lastLogin.Time
+		u.LastLogin = &prev
 	}
 
 	return &u, nil

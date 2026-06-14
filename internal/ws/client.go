@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -28,12 +29,22 @@ type subscribeMsg struct {
 }
 
 type Client struct {
-	hub  *Hub
-	conn *websocket.Conn
-	send chan *websocket.PreparedMessage
-	mu   sync.RWMutex
-	env  string
-	log  *slog.Logger
+	hub     *Hub
+	conn    *websocket.Conn
+	send    chan *websocket.PreparedMessage
+	mu      sync.RWMutex
+	env     string
+	log     *slog.Logger
+	dropped atomic.Uint64
+}
+
+// markDropped records an outbound message dropped because the client's send
+// buffer was full (a slow/stalled viewer). It warns on the first drop so a
+// persistently-backed-up client is visible without spamming a line per drop.
+func (c *Client) markDropped() {
+	if c.dropped.Add(1) == 1 {
+		c.log.Warn("ws dropping messages to slow client", "env", c.Env())
+	}
 }
 
 func (c *Client) Env() string {
@@ -102,12 +113,10 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case pm, ok := <-c.send:
+		case pm := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, nil)
-				return
-			}
+			// c.send is never closed (Unregister only removes the client from the
+			// hub map), so a receive here is always a real message.
 			if err := c.conn.WritePreparedMessage(pm); err != nil {
 				return
 			}

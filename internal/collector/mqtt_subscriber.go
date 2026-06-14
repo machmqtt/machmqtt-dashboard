@@ -19,11 +19,18 @@ import (
 // publish before it is considered gone. Set to 3× the expected publish interval.
 const bridgeTTL = 45 * time.Second
 
+// bridgeMetricsSchemaV is the BridgeMetricsMsg schema version this build
+// understands. Messages with a higher "v" are skipped (see the subscriber).
+const bridgeMetricsSchemaV = 1
+
 // BridgeMetricsMsg is the JSON object published by MachMQTT bridges to
 // <prefix>.metrics.<instance_name>. Schema version v=1.
 // Field names and nesting match the publisher exactly; both sides must agree.
 type BridgeMetricsMsg struct {
-	V            int              `json:"v"`
+	V int `json:"v"`
+	// PublishedAt is the publisher's send time. Staleness is tracked via the
+	// receive time (see cachedBridge.receivedAt); this is retained to document
+	// the wire schema and is available for clock-skew diagnostics.
 	PublishedAt  time.Time        `json:"published_at"`
 	InstanceID   string           `json:"instance_id"`   // ephemeral, matches cluster heartbeat id
 	InstanceName string           `json:"instance_name"` // stable across restarts — dashboard's historical key
@@ -133,9 +140,20 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	defer nc.Close()
 
 	var received atomic.Int64
+	var warnedNewerSchema atomic.Bool
 	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
 		var m BridgeMetricsMsg
 		if json.Unmarshal(msg.Data, &m) != nil || m.InstanceName == "" {
+			return
+		}
+		// Accept the current schema and legacy publishers that omit "v" (v=0);
+		// skip messages from a newer, possibly incompatible schema rather than
+		// misinterpreting their fields. Warn once so the mismatch is visible.
+		if m.V > bridgeMetricsSchemaV {
+			if warnedNewerSchema.CompareAndSwap(false, true) {
+				log.Warn("mqtt metrics subscriber: ignoring bridge message with newer schema version — upgrade the dashboard",
+					"v", m.V, "supported", bridgeMetricsSchemaV, "instance", m.InstanceName)
+			}
 			return
 		}
 		if received.Add(1) == 1 {

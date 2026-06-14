@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ChevronDown, ChevronRight } from 'lucide-react'
+import { formatNumber as fmtNum } from '../utils/format'
 
 interface AccountzData {
   [serverId: string]: {
@@ -51,6 +52,7 @@ interface LeafInfo {
 export function AccountsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
   const environments = useStore((s) => s.environments)
+  const addToast = useStore((s) => s.addToast)
   const [data, setData] = useState<AccountzData | null>(null)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -61,19 +63,23 @@ export function AccountsPage() {
   const [drillData, setDrillData] = useState<any>(null)
   const [drillLoading, setDrillLoading] = useState(false)
 
-  const fetchData = useCallback(async () => {
-    if (!activeEnv) return
-    setLoading(true)
-    try {
-      const res = await fetchWithTimeout(`/api/environments/${activeEnv}/accountz`)
-      if (res.ok) setData(await res.json())
-    } catch { /* */ }
-    setLoading(false)
-  }, [activeEnv])
-
   useEffect(() => {
-    fetchData() // eslint-disable-line react-hooks/set-state-in-effect -- fetch-on-mount is intentional
-  }, [fetchData])
+    if (!activeEnv) return
+    let cancelled = false
+    const run = async () => {
+      setLoading(true)
+      try {
+        const res = await fetchWithTimeout(`/api/environments/${activeEnv}/accountz`)
+        if (!cancelled && res.ok) setData(await res.json())
+      } catch {
+        if (!cancelled) addToast('Failed to load accounts', 'error')
+      }
+      if (!cancelled) setLoading(false)
+    }
+    run()
+    // Guard against a late response for a previous env clobbering the current one.
+    return () => { cancelled = true }
+  }, [activeEnv, addToast])
 
   const allAccounts: string[] = []
   const seen = new Set<string>()
@@ -309,10 +315,4 @@ function DI({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
 }

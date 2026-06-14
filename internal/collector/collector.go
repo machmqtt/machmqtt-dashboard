@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,34 +111,6 @@ func (c *Collector) run(ctx context.Context, clusterID string, onChange func(clu
 			}
 		}
 	}
-}
-
-// buildServerURLMap maps server ID → config URL hostname.
-// Used to resolve 127.0.0.1 bridge IPs to the actual server hostname.
-func (c *Collector) buildServerURLMap(snap *Snapshot) map[string]string {
-	env := c.getEnv()
-	m := make(map[string]string)
-	for _, srv := range env.Servers {
-		u, err := url.Parse(srv.URL)
-		if err != nil {
-			continue
-		}
-		host := u.Hostname()
-		// Find which server ID this URL corresponds to by matching the varz.
-		for id := range snap.Varz {
-			// We already fetched varz from this URL, so the ID is known.
-			// Map all server IDs to their config hostnames.
-			if _, ok := m[id]; !ok {
-				m[id] = host
-			}
-		}
-	}
-	// More precise: fetch URL → server ID mapping from the fetch order.
-	// Since we fetch all servers concurrently, we can't guarantee order.
-	// Instead, use a direct approach: for each config server URL,
-	// the hostname is what we'd use to resolve loopback bridges.
-	// Store all config hostnames and let discovery pick the right one.
-	return m
 }
 
 // sysFallbackGrace is how long $SYS collection may produce no server data
@@ -321,53 +294,75 @@ func (c *Collector) fetchServer(ctx context.Context, cfgURL string, snap *Snapsh
 		mu.Unlock()
 	}
 
-	routez, _ := c.fetcher.FetchRoutez(ctx, cfgURL)
-	gatewayz, _ := c.fetcher.FetchGatewayz(ctx, cfgURL)
-	leafz, _ := c.fetcher.FetchLeafz(ctx, cfgURL)
-	health, _ := c.fetcher.FetchHealthz(ctx, cfgURL)
+	// varz already succeeded, so a failure on these is anomalous (transient blip
+	// or partial outage). Log it and skip storing rather than overwriting with a
+	// zero-value struct (these fetchers always return a non-nil pointer).
+	routez, rErr := c.fetcher.FetchRoutez(ctx, cfgURL)
+	gatewayz, gErr := c.fetcher.FetchGatewayz(ctx, cfgURL)
+	leafz, lErr := c.fetcher.FetchLeafz(ctx, cfgURL)
+	health, hErr := c.fetcher.FetchHealthz(ctx, cfgURL)
+	c.logFetchErr("routez", cfgURL, rErr)
+	c.logFetchErr("gatewayz", cfgURL, gErr)
+	c.logFetchErr("leafz", cfgURL, lErr)
+	c.logFetchErr("healthz", cfgURL, hErr)
 
 	mu.Lock()
 	snap.Varz[id] = varz
-	if routez != nil {
+	if rErr == nil {
 		snap.Routez[id] = routez
 	}
-	if gatewayz != nil {
+	if gErr == nil {
 		snap.Gatewayz[id] = gatewayz
 	}
-	if leafz != nil {
+	if lErr == nil {
 		snap.Leafz[id] = leafz
 	}
-	if health != nil {
+	if hErr == nil {
 		snap.Health[id] = health
 	}
 	mu.Unlock()
 
-	connz, _ := c.fetcher.FetchConnz(ctx, cfgURL, 1024, 0, "", "", "", "")
-	mu.Lock()
-	if connz != nil {
+	connz, cErr := c.fetcher.FetchConnz(ctx, cfgURL, 1024, 0, "", "", "", "")
+	c.logFetchErr("connz", cfgURL, cErr)
+	if cErr == nil {
+		mu.Lock()
 		snap.Connz[id] = connz
+		mu.Unlock()
 	}
-	mu.Unlock()
 
 	if !slow {
 		return
 	}
 
-	subsz, _ := c.fetcher.FetchSubsz(ctx, cfgURL)
-	jsInfo, _ := c.fetcher.FetchJSInfo(ctx, cfgURL)
-	accountz, _ := c.fetcher.FetchAccountz(ctx, cfgURL)
+	subsz, sErr := c.fetcher.FetchSubsz(ctx, cfgURL)
+	jsInfo, jErr := c.fetcher.FetchJSInfo(ctx, cfgURL)
+	accountz, aErr := c.fetcher.FetchAccountz(ctx, cfgURL)
+	c.logFetchErr("subsz", cfgURL, sErr)
+	if jErr != nil {
+		// JetStream is commonly disabled, so a jsz error is expected — keep it at
+		// Debug to avoid spamming the logs every slow poll.
+		c.log.Debug("fetch jsz (JetStream may be disabled)", "url", cfgURL, "err", jErr)
+	}
+	c.logFetchErr("accountz", cfgURL, aErr)
 
 	mu.Lock()
-	if subsz != nil {
+	if sErr == nil {
 		snap.Subsz[id] = subsz
 	}
-	if jsInfo != nil {
+	if jErr == nil {
 		snap.JSInfo[id] = jsInfo
 	}
-	if accountz != nil {
+	if aErr == nil {
 		snap.Accountz[id] = accountz
 	}
 	mu.Unlock()
+}
+
+// logFetchErr logs a non-nil secondary-endpoint fetch error at Warn.
+func (c *Collector) logFetchErr(endpoint, url string, err error) {
+	if err != nil {
+		c.log.Warn("fetch "+endpoint, "url", url, "err", err)
+	}
 }
 
 func (c *Collector) discoverMQTTBridges(ctx context.Context, clusterID string) {
@@ -437,12 +432,15 @@ func (c *Collector) MQTTBridges() []MQTTBridgeInstance {
 	// the fleet isn't blank.
 	if c.subscriber != nil {
 		if b := c.subscriber.Bridges(); len(b) > 0 {
-			return b
+			return b // Bridges() already returns a fresh copy
 		}
 	}
 	c.mqttMu.RLock()
 	defer c.mqttMu.RUnlock()
-	return c.mqttBridges
+	// Return a copy: callers (e.g. the API bridge handler) sort and mutate the
+	// result in place, which would otherwise race the poll goroutine that
+	// reassigns c.mqttBridges.
+	return slices.Clone(c.mqttBridges)
 }
 
 // Manager owns collectors for all clusters, supporting live add/remove/update
@@ -505,7 +503,12 @@ func (m *Manager) Start(ctx context.Context) {
 func (m *Manager) AddCluster(cl store.Cluster) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.addClusterLocked(cl)
+}
 
+// addClusterLocked builds and starts a collector for cl. The caller must hold
+// m.mu. Idempotent: a no-op if the cluster is already tracked.
+func (m *Manager) addClusterLocked(cl store.Cluster) error {
 	if _, exists := m.collectors[cl.ID]; exists {
 		return nil
 	}
@@ -550,21 +553,17 @@ func (m *Manager) UpdateCluster(cl store.Cluster) error {
 
 	existing, ok := m.collectors[cl.ID]
 	if !ok {
-		// Not yet tracked — start fresh.
-		m.mu.Unlock()
-		err := m.AddCluster(cl)
-		m.mu.Lock()
-		return err
+		// Not yet tracked — start fresh (we already hold m.mu).
+		return m.addClusterLocked(cl)
 	}
 
 	oldEnv := existing.getEnv()
 	newEnv := cl.ToEnvironment()
 
-	// Determine whether only the display name changed.
-	serversChanged := serversEqual(oldEnv.Servers, newEnv.Servers)
-	tlsChanged := tlsEqual(oldEnv.TLS, newEnv.TLS)
-	natsConnSame := natsConnEqual(oldEnv.NATSConn, newEnv.NATSConn)
-	nameOnly := serversChanged && tlsChanged && natsConnSame
+	// Only the display name changed if servers, TLS, and NATS conn all match.
+	nameOnly := serversSame(oldEnv.Servers, newEnv.Servers) &&
+		tlsSame(oldEnv.TLS, newEnv.TLS) &&
+		natsConnSame(oldEnv.NATSConn, newEnv.NATSConn)
 
 	if nameOnly {
 		// Fast path: update the env label in-place, no goroutine restart.
@@ -572,28 +571,14 @@ func (m *Manager) UpdateCluster(cl store.Cluster) error {
 		return nil
 	}
 
-	// Connection-affecting change: tear down and rebuild.
+	// Connection-affecting change: tear down and rebuild from the new config.
 	if cancel, ok := m.cancels[cl.ID]; ok {
 		cancel()
 		delete(m.cancels, cl.ID)
 	}
 	delete(m.collectors, cl.ID)
 
-	fetcher, err := NewFetcher(newEnv.TLS)
-	if err != nil {
-		return fmt.Errorf("build fetcher: %w", err)
-	}
-
-	c := newCollector(newEnv, fetcher, m.interval, m.log, m.db)
-	m.collectors[cl.ID] = c
-
-	if m.rootCtx != nil {
-		cctx, cancel := context.WithCancel(m.rootCtx)
-		m.cancels[cl.ID] = cancel
-		m.startCollector(cctx, c, cl.ID, newEnv)
-	}
-
-	return nil
+	return m.addClusterLocked(cl)
 }
 
 // startCollector launches the poll loop plus any NATS push goroutines for c.
@@ -632,13 +617,18 @@ func natsConnHasAuth(n *config.NATSConnConfig) bool {
 		n.NKey != "" || n.CredsFile != ""
 }
 
+// collector returns the collector for a cluster ID, or nil if not tracked.
+func (m *Manager) collector(id string) *Collector {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.collectors[id]
+}
+
 // ClusterConfig returns a copy of the live environment config for a cluster ID,
 // for use in MQTT proxy handlers that need token/bridge resolution.
 func (m *Manager) ClusterConfig(id string) *config.Environment {
-	m.mu.RLock()
-	c, ok := m.collectors[id]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(id)
+	if c == nil {
 		return nil
 	}
 	env := c.getEnv()
@@ -658,10 +648,8 @@ func (m *Manager) ClusterIDs() []string {
 
 // Snapshot returns the latest snapshot for a cluster ID.
 func (m *Manager) Snapshot(clusterID string) *Snapshot {
-	m.mu.RLock()
-	c, ok := m.collectors[clusterID]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(clusterID)
+	if c == nil {
 		return nil
 	}
 	return c.Snapshot()
@@ -669,10 +657,8 @@ func (m *Manager) Snapshot(clusterID string) *Snapshot {
 
 // PrevSnapshot returns the previous snapshot for a cluster ID.
 func (m *Manager) PrevSnapshot(clusterID string) *Snapshot {
-	m.mu.RLock()
-	c, ok := m.collectors[clusterID]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(clusterID)
+	if c == nil {
 		return nil
 	}
 	return c.PrevSnapshot()
@@ -689,10 +675,8 @@ func (m *Manager) Overview(clusterID string) *Overview {
 
 // Topology builds the topology graph for a cluster ID.
 func (m *Manager) Topology(clusterID string) *TopologyGraph {
-	m.mu.RLock()
-	c, ok := m.collectors[clusterID]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(clusterID)
+	if c == nil {
 		return nil
 	}
 	snap := c.Snapshot()
@@ -713,10 +697,8 @@ func (m *Manager) Health(clusterID string) map[string]*HealthStatus {
 
 // MQTTBridges returns the discovered MQTT bridges for a cluster ID.
 func (m *Manager) MQTTBridges(clusterID string) []MQTTBridgeInstance {
-	m.mu.RLock()
-	c, ok := m.collectors[clusterID]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(clusterID)
+	if c == nil {
 		return nil
 	}
 	return c.MQTTBridges()
@@ -731,10 +713,8 @@ func (m *Manager) Environments() []string {
 
 // Fetcher returns the HTTP fetcher for a cluster ID (used in admin proxy handlers).
 func (m *Manager) Fetcher(clusterID string) *Fetcher {
-	m.mu.RLock()
-	c, ok := m.collectors[clusterID]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(clusterID)
+	if c == nil {
 		return nil
 	}
 	return c.fetcher
@@ -742,10 +722,8 @@ func (m *Manager) Fetcher(clusterID string) *Fetcher {
 
 // EnvServers returns the configured server URLs for a cluster ID.
 func (m *Manager) EnvServers(clusterID string) []string {
-	m.mu.RLock()
-	c, ok := m.collectors[clusterID]
-	m.mu.RUnlock()
-	if !ok {
+	c := m.collector(clusterID)
+	if c == nil {
 		return nil
 	}
 	env := c.getEnv()
@@ -756,10 +734,9 @@ func (m *Manager) EnvServers(clusterID string) []string {
 	return urls
 }
 
-// serversEqual reports whether two server slices are structurally identical.
-// Returns true when they match (i.e. NOT changed), so the name-only fast path
-// can skip rebuild.
-func serversEqual(a, b []config.Server) bool {
+// serversSame reports whether two server slices are structurally identical, so
+// the name-only fast path can skip a rebuild.
+func serversSame(a, b []config.Server) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -771,8 +748,8 @@ func serversEqual(a, b []config.Server) bool {
 	return true
 }
 
-// tlsEqual reports whether two TLS configs are structurally identical.
-func tlsEqual(a, b *config.TLSConfig) bool {
+// tlsSame reports whether two TLS configs are structurally identical.
+func tlsSame(a, b *config.TLSConfig) bool {
 	if a == nil && b == nil {
 		return true
 	}
@@ -782,9 +759,9 @@ func tlsEqual(a, b *config.TLSConfig) bool {
 	return a.CAFile == b.CAFile && a.Insecure == b.Insecure
 }
 
-// natsConnEqual reports whether two NATSConnConfig values are equivalent for
+// natsConnSame reports whether two NATSConnConfig values are equivalent for
 // the purpose of deciding whether to rebuild the collector (and its subscriber).
-func natsConnEqual(a, b *config.NATSConnConfig) bool {
+func natsConnSame(a, b *config.NATSConnConfig) bool {
 	if a == nil && b == nil {
 		return true
 	}

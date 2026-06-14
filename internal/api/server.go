@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
@@ -39,26 +40,28 @@ var upgrader = websocket.Upgrader{
 }
 
 type Server struct {
-	mux     *http.ServeMux
-	manager *collector.Manager
-	hub     *ws.Hub
-	log     *slog.Logger
-	version string
-	metrics *store.MetricsWriter
-	store   *store.Store
-	logBuf  *logbuf.Handler
+	mux          *http.ServeMux
+	manager      *collector.Manager
+	hub          *ws.Hub
+	log          *slog.Logger
+	version      string
+	metrics      *store.MetricsWriter
+	store        *store.Store
+	logBuf       *logbuf.Handler
+	bridgeStatus *bridgeStatusCache
 }
 
 func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.Logger, version string, cfg *config.Config, metrics *store.MetricsWriter, st *store.Store, lb *logbuf.Handler) *Server {
 	s := &Server{
-		mux:     http.NewServeMux(),
-		manager: manager,
-		hub:     hub,
-		log:     log,
-		version: version,
-		metrics: metrics,
-		store:   st,
-		logBuf:  lb,
+		mux:          http.NewServeMux(),
+		manager:      manager,
+		hub:          hub,
+		log:          log,
+		version:      version,
+		metrics:      metrics,
+		store:        st,
+		logBuf:       lb,
+		bridgeStatus: newBridgeStatusCache(5 * time.Second),
 	}
 
 	s.registerRoutes(a)
@@ -95,8 +98,8 @@ func (s *Server) serveSPA() {
 			return
 		}
 
-		// Fall back to index.html for client-side routing.
-		r.URL.Path = "/"
+		// Fall back to index.html for client-side routing (SPA deep links).
+		r.URL.Path = "/index.html"
 		fileServer.ServeHTTP(w, r)
 	})
 }

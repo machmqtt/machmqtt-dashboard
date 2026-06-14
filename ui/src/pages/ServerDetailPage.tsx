@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatBytes as fmtBytes, formatRate as fmtRateAxis } from '../utils/format'
 
 interface Varz {
   server_id: string
@@ -35,6 +36,7 @@ interface Varz {
 export function ServerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const activeEnv = useStore((s) => s.activeEnv)
+  const addToast = useStore((s) => s.addToast)
   const [data, setData] = useState<Record<string, Varz> | null>(null)
   const [loading, setLoading] = useState(true)
   const metricsParams = useMemo(() => (id ? { server_id: id } : undefined), [id])
@@ -42,16 +44,21 @@ export function ServerDetailPage() {
 
   useEffect(() => {
     if (!activeEnv) return
+    let cancelled = false
     const run = async () => {
       setLoading(true)
       try {
         const r = await fetchWithTimeout(`/api/environments/${activeEnv}/varz`)
-        if (r.ok) setData(await r.json())
-      } catch { /* */ }
-      setLoading(false)
+        if (!cancelled && r.ok) setData(await r.json())
+      } catch {
+        if (!cancelled) addToast('Failed to load server data', 'error')
+      }
+      if (!cancelled) setLoading(false)
     }
     run()
-  }, [activeEnv])
+    // Guard against a late response for a previous env clobbering the current one.
+    return () => { cancelled = true }
+  }, [activeEnv, addToast])
 
   const server = data && id ? data[id] : null
 
@@ -165,19 +172,4 @@ function Item({ label, value, mono }: { label: string; value: string; mono?: boo
       <div className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value}</div>
     </div>
   )
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
-}
-
-function fmtRateAxis(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
 }

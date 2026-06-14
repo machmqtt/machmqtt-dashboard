@@ -66,29 +66,13 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 		return id
 	}
 
-	resolveIP := func(srvID, ip string, s *Snapshot) string {
-		if ip == "127.0.0.1" || ip == "::1" {
-			// First try the config URL hostname (most reliable).
-			if s.ServerURLs != nil {
-				if host, ok := s.ServerURLs[srvID]; ok && host != "" {
-					return host
-				}
-			}
-			// Fallback to varz host.
-			if v, ok := s.Varz[srvID]; ok && v.Host != "" && v.Host != "0.0.0.0" {
-				return v.Host
-			}
-		}
-		return ip
-	}
-
 	// Accumulate current snapshot.
 	for srvID, connz := range snap.Connz {
 		for _, c := range connz.Conns {
 			if !isMQTTBridgeConn(c.Name) {
 				continue
 			}
-			ip := resolveIP(srvID, c.IP, snap)
+			ip := resolveBridgeIP(srvID, c.IP, snap)
 			key := bridgeKey{serverID: srvID, ip: ip}
 			g := groups[key]
 			if g == nil {
@@ -111,7 +95,7 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 				if !isMQTTBridgeConn(c.Name) {
 					continue
 				}
-				ip := resolveIP(srvID, c.IP, prev)
+				ip := resolveBridgeIP(srvID, c.IP, prev)
 				key := bridgeKey{serverID: srvID, ip: ip}
 				g := prevGroups[key]
 				if g == nil {
@@ -212,4 +196,23 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 func isMQTTBridgeConn(name string) bool {
 	return name == "machmqtt-bridge" ||
 		strings.HasPrefix(name, "machmqtt-pool-")
+}
+
+// resolveBridgeIP maps a bridge connection's loopback IP back to a routable
+// host. A bridge running on the same box as its NATS server shows up in connz
+// as 127.0.0.1/::1; we prefer the server's config URL hostname, then its varz
+// host, so bridges from different servers don't all collapse to "localhost".
+// Non-loopback IPs are returned unchanged. Shared by discovery and topology.
+func resolveBridgeIP(srvID, ip string, s *Snapshot) string {
+	if ip == "127.0.0.1" || ip == "::1" {
+		if s.ServerURLs != nil {
+			if host, ok := s.ServerURLs[srvID]; ok && host != "" {
+				return host
+			}
+		}
+		if v, ok := s.Varz[srvID]; ok && v.Host != "" && v.Host != "0.0.0.0" {
+			return v.Host
+		}
+	}
+	return ip
 }
