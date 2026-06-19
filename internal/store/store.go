@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -60,6 +61,11 @@ func Open(dataDir string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// Ping verifies the database connection is usable. Used by the /healthz probe.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 // DB returns the underlying database handle for use by MetricsWriter.

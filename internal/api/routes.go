@@ -11,6 +11,8 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 
 	// Public routes.
 	mux.HandleFunc("POST /api/login", a.HandleLogin)
+	// Unauthenticated liveness/readiness probe (k8s / load balancer).
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	// Protected routes (any authenticated user).
 	protected := http.NewServeMux()
@@ -73,6 +75,8 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	admin.HandleFunc("DELETE /api/admin/clusters/{id}", s.handleDeleteCluster)
 	// Server logs.
 	admin.HandleFunc("GET /api/admin/logs", s.handleAdminLogs)
+	// Dashboard self-health (per-cluster collection state).
+	admin.HandleFunc("GET /api/admin/health", s.handleAdminHealth)
 	protected.Handle("/api/admin/", auth.AdminMiddleware(admin))
 
 	mux.Handle("/api/", a.Middleware(protected))

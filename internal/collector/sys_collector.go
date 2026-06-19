@@ -113,6 +113,13 @@ func (sc *SYSCollector) cacheLen() int {
 	return len(sc.statsz)
 }
 
+// Connected reports whether the $SYS NATS connection is currently established.
+func (sc *SYSCollector) Connected() bool {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.nc != nil
+}
+
 func (sc *SYSCollector) logger() *slog.Logger {
 	if sc.log != nil {
 		return sc.log
@@ -144,9 +151,17 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	}()
 
 	var received atomic.Int64
+	var warnedBadMsg atomic.Bool
 	_, err = nc.Subscribe("$SYS.SERVER.*.STATSZ", func(msg *nats.Msg) {
 		var m sysStatsMsg
-		if json.Unmarshal(msg.Data, &m) != nil || m.Server.ID == "" {
+		if err := json.Unmarshal(msg.Data, &m); err != nil {
+			// Warn once so a schema mismatch is visible without per-message spam.
+			if warnedBadMsg.CompareAndSwap(false, true) {
+				log.Debug("$SYS collector: ignoring malformed STATSZ message", "err", err)
+			}
+			return
+		}
+		if m.Server.ID == "" {
 			return
 		}
 		if received.Add(1) == 1 {

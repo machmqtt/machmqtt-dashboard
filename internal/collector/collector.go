@@ -42,13 +42,15 @@ type Collector struct {
 	// When set, poll() uses STATSZ cache + PING fan-in instead of HTTP.
 	sys *SYSCollector
 
-	// $SYS→HTTP fallback state. Accessed only from the single poll goroutine.
-	// sysFirstFail is when $SYS first started returning no data (zero when
-	// healthy); sysFellBack is true while the HTTP fallback is engaged;
-	// sysEverHealthy records whether $SYS has ever produced data (so cold start
-	// can fall back immediately while a post-healthy outage waits out the grace).
+	// $SYS→HTTP fallback state. sysFirstFail/sysEverHealthy are touched only by
+	// the single poll goroutine; sysFellBack is an atomic because Health() reads
+	// it from the HTTP handler goroutine. sysFirstFail is when $SYS first started
+	// returning no data (zero when healthy); sysFellBack is true while the HTTP
+	// fallback is engaged; sysEverHealthy records whether $SYS has ever produced
+	// data (so cold start can fall back immediately while a post-healthy outage
+	// waits out the grace).
 	sysFirstFail   time.Time
-	sysFellBack    bool
+	sysFellBack    atomic.Bool
 	sysEverHealthy bool
 }
 
@@ -152,14 +154,14 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 		// While in fallback, skip the $SYS poll (a 2s PING fan-in that times out
 		// when there is no $SYS access) unless the STATSZ cache shows the server
 		// is emitting events again. That keeps a permanent fallback cheap.
-		trySys := !c.sysFellBack || c.sys.cacheLen() > 0
+		trySys := !c.sysFellBack.Load() || c.sys.cacheLen() > 0
 		if trySys && c.pollSYS(ctx, clusterID, slow) {
 			// $SYS is healthy. If we were on the HTTP fallback, resume $SYS and
 			// drop any connz-scanned bridges so the push subscriber is the sole
 			// source again.
-			if c.sysFellBack {
+			if c.sysFellBack.Load() {
 				c.log.Info("$SYS collection recovered — disengaging HTTP fallback, resuming $SYS-based collection")
-				c.sysFellBack = false
+				c.sysFellBack.Store(false)
 				c.mqttMu.Lock()
 				c.mqttBridges = nil
 				c.mqttMu.Unlock()
@@ -179,13 +181,13 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 		// system-account credentials) falls back immediately so the user isn't
 		// left staring at a blank page. A post-healthy outage waits out the
 		// grace period first, to ride through a transient drop without flapping.
-		if c.sysEverHealthy && !c.sysFellBack && time.Since(c.sysFirstFail) < sysFallbackGrace {
+		if c.sysEverHealthy && !c.sysFellBack.Load() && time.Since(c.sysFirstFail) < sysFallbackGrace {
 			c.maybeDiscoverBridges(ctx, clusterID)
 			return // within grace period — keep the prior snapshot, wait for $SYS
 		}
-		if !c.sysFellBack {
+		if !c.sysFellBack.Load() {
 			c.log.Warn("$SYS collection produced no data — falling back to HTTP monitoring; $SYS will resume automatically when events return", "servers", len(c.getEnv().Servers), "ever_healthy", c.sysEverHealthy)
-			c.sysFellBack = true
+			c.sysFellBack.Store(true)
 		}
 		// Fall through to the HTTP polling path below.
 	}
@@ -425,6 +427,73 @@ func (c *Collector) PrevSnapshot() *Snapshot {
 	return c.prev
 }
 
+// ClusterHealth is the dashboard's own operational view of one cluster's
+// collection pipeline (distinct from the NATS server /healthz the cluster
+// reports). It powers the /api/admin/health endpoint and the UI degraded badge.
+type ClusterHealth struct {
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	LastPollAgeSeconds float64 `json:"last_poll_age_seconds"`
+	Servers            int     `json:"servers"`
+	HealthyServers     int     `json:"healthy_servers"`
+	CollectionMode     string  `json:"collection_mode"` // "http" | "sys" | "sys-fallback"
+	SysFallbackEngaged bool    `json:"sys_fallback_engaged"`
+	NATSPushConfigured bool    `json:"nats_push_configured"`
+	NATSPushConnected  bool    `json:"nats_push_connected"`
+	Stale              bool    `json:"stale"`
+}
+
+// Degraded reports whether the cluster's collection is in a less-than-nominal
+// state worth surfacing to the user (stale data, $SYS fallback engaged, or a
+// configured NATS push connection that is currently down).
+func (h ClusterHealth) Degraded() bool {
+	return h.Stale || h.SysFallbackEngaged || (h.NATSPushConfigured && !h.NATSPushConnected)
+}
+
+// Health returns the collector's current operational health. Safe to call from
+// any goroutine: the snapshot is read under snapMu, sysFellBack is atomic, and
+// sys/subscriber are immutable after construction.
+func (c *Collector) Health() ClusterHealth {
+	snap := c.Snapshot()
+	h := ClusterHealth{
+		Name:    c.getEnv().Name,
+		Servers: len(snap.Varz),
+	}
+	for id := range snap.Varz {
+		healthy := true
+		if hs, ok := snap.Health[id]; ok {
+			healthy = hs.Status == "ok"
+		}
+		if healthy {
+			h.HealthyServers++
+		}
+	}
+	if !snap.Timestamp.IsZero() {
+		age := time.Since(snap.Timestamp)
+		h.LastPollAgeSeconds = age.Seconds()
+		interval := c.interval
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		h.Stale = age > 3*interval
+	}
+
+	h.SysFallbackEngaged = c.sysFellBack.Load()
+	switch {
+	case c.sys != nil && !h.SysFallbackEngaged:
+		h.CollectionMode = "sys"
+	case c.sys != nil && h.SysFallbackEngaged:
+		h.CollectionMode = "sys-fallback"
+	default:
+		h.CollectionMode = "http"
+	}
+
+	h.NATSPushConfigured = c.sys != nil || c.subscriber != nil
+	h.NATSPushConnected = (c.sys != nil && c.sys.Connected()) ||
+		(c.subscriber != nil && c.subscriber.Connected())
+	return h
+}
+
 func (c *Collector) MQTTBridges() []MQTTBridgeInstance {
 	// Prefer push-subscriber bridges when present. When a subscriber is
 	// configured but reports no bridges (e.g. MachMQTT isn't publishing
@@ -644,6 +713,40 @@ func (m *Manager) ClusterIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// ClusterHealth returns the operational health for a single cluster ID, or nil
+// if the cluster is unknown.
+func (m *Manager) ClusterHealth(clusterID string) *ClusterHealth {
+	c := m.collector(clusterID)
+	if c == nil {
+		return nil
+	}
+	h := c.Health()
+	h.ID = clusterID
+	return &h
+}
+
+// HealthReport returns operational health for every tracked cluster. Collectors
+// are gathered under the manager lock, then queried outside it so a slow
+// snapshot read never blocks cluster add/remove.
+func (m *Manager) HealthReport() []ClusterHealth {
+	m.mu.RLock()
+	ids := make([]string, 0, len(m.collectors))
+	cols := make([]*Collector, 0, len(m.collectors))
+	for id, c := range m.collectors {
+		ids = append(ids, id)
+		cols = append(cols, c)
+	}
+	m.mu.RUnlock()
+
+	report := make([]ClusterHealth, 0, len(cols))
+	for i, c := range cols {
+		h := c.Health()
+		h.ID = ids[i]
+		report = append(report, h)
+	}
+	return report
 }
 
 // Snapshot returns the latest snapshot for a cluster ID.

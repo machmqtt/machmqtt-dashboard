@@ -14,6 +14,7 @@ interface MQTTBridgeEntry {
   name: string
   url: string
   bearer_token: string
+  has_bearer_token?: boolean // display-only: a token is stored but not sent back
 }
 
 interface TLSForm {
@@ -42,6 +43,17 @@ interface NATSConnForm {
   sys_collection: boolean
 }
 
+// secretsSet tracks which secrets already exist server-side (the API returns
+// has_* booleans, never the plaintext). Drives "•••• set" placeholders and lets
+// the admin leave a field blank to keep the stored value.
+interface SecretsSet {
+  admin_token: boolean
+  password: boolean
+  token: boolean
+  nkey: boolean
+  creds_file: boolean
+}
+
 interface ClusterForm {
   name: string
   servers: ServerEntry[]
@@ -50,23 +62,26 @@ interface ClusterForm {
   tls: TLSForm
   admin_token: string
   nats_conn: NATSConnForm
+  secrets_set: SecretsSet
 }
 
+// ManagedCluster mirrors the redacted clusterView the API returns: secrets are
+// replaced by has_* booleans so plaintext never reaches the browser.
 interface ManagedCluster {
   id: string
   name: string
   servers: ServerEntry[]
-  mqtt_bridges: MQTTBridgeEntry[]
+  mqtt_bridges: { name: string; url: string; has_bearer_token?: boolean }[]
   mqtt_discovery: { enabled?: boolean; admin_ports?: number[] } | null
   tls: { ca_file?: string; insecure?: boolean } | null
-  admin_token: string
+  has_admin_token?: boolean
   nats_conn: {
     urls?: string[]
     username?: string
-    password?: string
-    token?: string
-    nkey?: string
-    creds_file?: string
+    has_password?: boolean
+    has_token?: boolean
+    has_nkey?: boolean
+    has_creds?: boolean
     subject_prefix?: string
     sys_collection?: boolean
   } | null
@@ -98,6 +113,7 @@ const emptyForm = (): ClusterForm => ({
     subject_prefix: '',
     sys_collection: false,
   },
+  secrets_set: { admin_token: false, password: false, token: false, nkey: false, creds_file: false },
 })
 
 function formToRequest(f: ClusterForm) {
@@ -106,7 +122,9 @@ function formToRequest(f: ClusterForm) {
   return {
     name: f.name,
     servers: f.servers.filter((s) => s.url.trim()),
-    mqtt_bridges: f.mqtt_bridges.filter((b) => b.url.trim()),
+    mqtt_bridges: f.mqtt_bridges
+      .filter((b) => b.url.trim())
+      .map((b) => ({ name: b.name, url: b.url, bearer_token: b.bearer_token })),
     mqtt_discovery: {
       enabled: f.discovery.enabled,
       admin_ports: ports.length ? ports : [8080],
@@ -134,14 +152,22 @@ function formToRequest(f: ClusterForm) {
 function clusterToForm(c: ManagedCluster): ClusterForm {
   const nc = c.nats_conn
   let auth_type: AuthType = 'none'
-  if (nc?.username) auth_type = 'username_password'
-  else if (nc?.token) auth_type = 'token'
-  else if (nc?.nkey) auth_type = 'nkey'
-  else if (nc?.creds_file) auth_type = 'creds_file'
+  if (nc?.username || nc?.has_password) auth_type = 'username_password'
+  else if (nc?.has_token) auth_type = 'token'
+  else if (nc?.has_nkey) auth_type = 'nkey'
+  else if (nc?.has_creds) auth_type = 'creds_file'
+  // Secrets are never returned by the API: leave the inputs blank (a blank value
+  // on save means "keep the stored secret") and remember which were set so the
+  // editor can show a "•••• set" placeholder.
   return {
     name: c.name,
     servers: c.servers.length ? c.servers : [{ url: '' }],
-    mqtt_bridges: c.mqtt_bridges || [],
+    mqtt_bridges: (c.mqtt_bridges || []).map((b) => ({
+      name: b.name,
+      url: b.url,
+      bearer_token: '',
+      has_bearer_token: b.has_bearer_token,
+    })),
     discovery: {
       enabled: c.mqtt_discovery?.enabled !== false,
       admin_ports: (c.mqtt_discovery?.admin_ports || [8080]).join(', '),
@@ -151,18 +177,25 @@ function clusterToForm(c: ManagedCluster): ClusterForm {
       ca_file: c.tls?.ca_file || '',
       insecure: c.tls?.insecure ?? false,
     },
-    admin_token: c.admin_token || '',
+    admin_token: '',
     nats_conn: {
       enabled: !!nc,
       urls: nc?.urls?.length ? nc.urls : [''],
       auth_type,
       username: nc?.username || '',
-      password: nc?.password || '',
-      token: nc?.token || '',
-      nkey: nc?.nkey || '',
-      creds_file: nc?.creds_file || '',
+      password: '',
+      token: '',
+      nkey: '',
+      creds_file: '',
       subject_prefix: nc?.subject_prefix || '',
       sys_collection: nc?.sys_collection ?? false,
+    },
+    secrets_set: {
+      admin_token: !!c.has_admin_token,
+      password: !!nc?.has_password,
+      token: !!nc?.has_token,
+      nkey: !!nc?.has_nkey,
+      creds_file: !!nc?.has_creds,
     },
   }
 }
@@ -342,7 +375,7 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
           value={form.admin_token}
           onChange={(e) => set({ admin_token: e.target.value })}
           className={monoInputCls}
-          placeholder="optional"
+          placeholder={form.secrets_set.admin_token ? '•••• set — leave blank to keep' : 'optional'}
           type="password"
           autoComplete="new-password"
         />
@@ -503,7 +536,7 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
                 value={form.nats_conn.password}
                 onChange={(e) => set({ nats_conn: { ...form.nats_conn, password: e.target.value } })}
                 className={monoInputCls}
-                placeholder="••••••••"
+                placeholder={form.secrets_set.password ? '•••• set — leave blank to keep' : '••••••••'}
                 type="password"
                 autoComplete="new-password"
               />
@@ -518,7 +551,7 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
               value={form.nats_conn.token}
               onChange={(e) => set({ nats_conn: { ...form.nats_conn, token: e.target.value } })}
               className={monoInputCls}
-              placeholder="secret-token"
+              placeholder={form.secrets_set.token ? '•••• set — leave blank to keep' : 'secret-token'}
               type="password"
               autoComplete="new-password"
             />
@@ -532,7 +565,7 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
               value={form.nats_conn.nkey}
               onChange={(e) => set({ nats_conn: { ...form.nats_conn, nkey: e.target.value } })}
               className={monoInputCls}
-              placeholder="SUAM…"
+              placeholder={form.secrets_set.nkey ? '•••• set — leave blank to keep' : 'SUAM…'}
             />
           </div>
         )}
@@ -546,7 +579,7 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
               value={form.nats_conn.creds_file}
               onChange={(e) => set({ nats_conn: { ...form.nats_conn, creds_file: e.target.value } })}
               className={monoInputCls}
-              placeholder="/etc/nats/user.creds"
+              placeholder={form.secrets_set.creds_file ? '•••• set — leave blank to keep' : '/etc/nats/user.creds'}
             />
           </div>
         )}
@@ -631,7 +664,7 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
                   set({ mqtt_bridges: mb })
                 }}
                 className={monoInputCls}
-                placeholder="token (optional)"
+                placeholder={b.has_bearer_token ? '•••• set — leave blank to keep' : 'token (optional)'}
               />
               <button
                 type="button"
@@ -681,13 +714,17 @@ export function ClustersPage({ onClustersChanged }: ClustersPageProps) {
       if (res.ok) {
         const data = await res.json()
         setClusters(data.clusters || [])
+      } else {
+        addToast('Failed to load clusters', 'error')
       }
-    } catch { /* ignore */ }
+    } catch {
+      addToast('Network error loading clusters', 'error')
+    }
     setLoading(false)
-  }, [])
+  }, [addToast])
 
   useEffect(() => {
-    fetchClusters()
+    fetchClusters() // eslint-disable-line react-hooks/set-state-in-effect -- fetch-on-mount is intentional
   }, [fetchClusters])
 
   const handleCreate = async () => {

@@ -76,12 +76,17 @@ type MetricPoint map[string]any
 
 // MetricsWriter buffers metric samples and writes them to SQLite in batches.
 type MetricsWriter struct {
-	db        *sql.DB
-	ch        chan MetricSample
-	log       *slog.Logger
-	retention time.Duration
-	dropped   atomic.Uint64 // samples dropped because the buffer was full
+	db           *sql.DB
+	ch           chan MetricSample
+	log          *slog.Logger
+	retention    time.Duration
+	dropped      atomic.Uint64 // dropped since the last periodic report (reset by Run)
+	droppedTotal atomic.Uint64 // cumulative dropped, never reset (for /api/admin/health)
 }
+
+// Dropped returns the cumulative number of metric samples dropped because the
+// writer buffer was full, since process start.
+func (w *MetricsWriter) Dropped() uint64 { return w.droppedTotal.Load() }
 
 // NewMetricsWriter creates a new metrics writer that keeps samples for the given
 // retention (<=0 falls back to 24h). Call Run() to start the background goroutine.
@@ -105,6 +110,7 @@ func (w *MetricsWriter) Submit(s MetricSample) {
 		// Drop sample — monitoring is best-effort. Counted and reported
 		// periodically by Run so sustained loss isn't silent.
 		w.dropped.Add(1)
+		w.droppedTotal.Add(1)
 	}
 }
 

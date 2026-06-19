@@ -59,6 +59,13 @@ func (h *Hub) SendTo(c *Client, env string, msgType string, data any) {
 	}
 }
 
+// ClientCount returns the number of currently-connected WebSocket clients.
+func (h *Hub) ClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 func (h *Hub) Register(c *Client) {
 	h.mu.Lock()
 	h.clients[c] = true

@@ -77,6 +77,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
 export function MQTTAllConnectionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
   const environments = useStore((s) => s.environments)
+  const addToast = useStore((s) => s.addToast)
   const [rows, setRows] = useState<MQTTClientRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([])
@@ -124,9 +125,11 @@ export function MQTTAllConnectionsPage() {
         if (r.status === 'fulfilled') allRows.push(...r.value)
       }
       setRows(allRows)
-    } catch { /* ignore */ }
+    } catch {
+      if (isInitial) addToast('Network error loading MQTT connections', 'error')
+    }
     setLoading(false)
-  }, [activeEnv])
+  }, [activeEnv, addToast])
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => {

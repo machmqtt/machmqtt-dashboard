@@ -26,13 +26,23 @@ type core struct {
 	count int
 }
 
-func (c *core) add(r slog.Record) {
+// add appends a record to the ring buffer. base holds the handler's accumulated
+// WithAttrs (group-qualified keys), and groupPath is the dotted WithGroup prefix
+// applied to the record's own attrs — so the buffered view keeps the same
+// context (e.g. cluster=, conn=) that the inner text handler shows.
+func (c *core) add(r slog.Record, base map[string]any, groupPath string) {
 	var attrs map[string]any
+	if len(base) > 0 {
+		attrs = make(map[string]any, len(base)+r.NumAttrs())
+		for k, v := range base {
+			attrs[k] = v
+		}
+	}
 	r.Attrs(func(a slog.Attr) bool {
 		if attrs == nil {
 			attrs = make(map[string]any)
 		}
-		attrs[a.Key] = a.Value.Any()
+		attrs[groupPath+a.Key] = a.Value.Any()
 		return true
 	})
 	entry := Entry{
@@ -72,6 +82,8 @@ func (c *core) entries() []Entry {
 type Handler struct {
 	c     *core
 	inner slog.Handler
+	attrs map[string]any // accumulated WithAttrs, keys already group-qualified
+	group string         // dotted WithGroup prefix (e.g. "req.")
 }
 
 // New creates a Handler wrapping inner, buffering up to size entries.
@@ -93,14 +105,24 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
-	h.c.add(r)
+	h.c.add(r, h.attrs, h.group)
 	return h.inner.Handle(ctx, r)
 }
 
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &Handler{c: h.c, inner: h.inner.WithAttrs(attrs)}
+	merged := make(map[string]any, len(h.attrs)+len(attrs))
+	for k, v := range h.attrs {
+		merged[k] = v
+	}
+	for _, a := range attrs {
+		merged[h.group+a.Key] = a.Value.Any()
+	}
+	return &Handler{c: h.c, inner: h.inner.WithAttrs(attrs), attrs: merged, group: h.group}
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
-	return &Handler{c: h.c, inner: h.inner.WithGroup(name)}
+	if name == "" {
+		return h
+	}
+	return &Handler{c: h.c, inner: h.inner.WithGroup(name), attrs: h.attrs, group: h.group + name + "."}
 }

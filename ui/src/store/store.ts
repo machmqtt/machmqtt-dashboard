@@ -68,6 +68,10 @@ export interface Toast {
 export interface ClusterInfo {
   id: string
   name: string
+  // Lightweight health for the sidebar badge (from GET /api/environments).
+  degraded?: boolean
+  collection_mode?: string
+  last_poll_age_seconds?: number
 }
 
 interface DashboardState {

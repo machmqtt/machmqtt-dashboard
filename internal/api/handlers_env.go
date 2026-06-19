@@ -25,13 +25,25 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"failed to list clusters"}`, http.StatusInternalServerError)
 		return
 	}
+	// Lightweight per-cluster health for the sidebar badge. The full diagnostic
+	// detail lives behind the admin-only /api/admin/health; these three fields are
+	// safe for any authenticated user and reuse the call the UI already polls.
 	type clusterInfo struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID                 string  `json:"id"`
+		Name               string  `json:"name"`
+		Degraded           bool    `json:"degraded"`
+		CollectionMode     string  `json:"collection_mode"`
+		LastPollAgeSeconds float64 `json:"last_poll_age_seconds"`
 	}
 	list := make([]clusterInfo, len(clusters))
 	for i, c := range clusters {
-		list[i] = clusterInfo{ID: c.ID, Name: c.Name}
+		ci := clusterInfo{ID: c.ID, Name: c.Name}
+		if h := s.manager.ClusterHealth(c.ID); h != nil {
+			ci.Degraded = h.Degraded()
+			ci.CollectionMode = h.CollectionMode
+			ci.LastPollAgeSeconds = h.LastPollAgeSeconds
+		}
+		list[i] = ci
 	}
 	writeJSON(w, map[string]any{"environments": list})
 }
