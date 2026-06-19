@@ -110,6 +110,7 @@ type cachedBridge struct {
 type MQTTSubscriber struct {
 	mu      sync.RWMutex
 	bridges map[string]*cachedBridge // keyed by instance_name
+	nc      *nats.Conn               // current NATS connection; nil when disconnected
 	log     *slog.Logger             // optional; nil falls back to slog.Default()
 }
 
@@ -122,6 +123,13 @@ func (s *MQTTSubscriber) logger() *slog.Logger {
 		return s.log
 	}
 	return slog.Default()
+}
+
+// Connected reports whether the metrics subscriber's NATS connection is up.
+func (s *MQTTSubscriber) Connected() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.nc != nil
 }
 
 // run connects to NATS, subscribes to <prefix>.metrics.>, and maintains the
@@ -138,12 +146,28 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 		return
 	}
 	defer nc.Close()
+	s.mu.Lock()
+	s.nc = nc
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.nc = nil
+		s.mu.Unlock()
+	}()
 
 	var received atomic.Int64
 	var warnedNewerSchema atomic.Bool
+	var warnedBadMsg atomic.Bool
 	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
 		var m BridgeMetricsMsg
-		if json.Unmarshal(msg.Data, &m) != nil || m.InstanceName == "" {
+		if err := json.Unmarshal(msg.Data, &m); err != nil {
+			// Warn once so a schema mismatch is visible without per-message spam.
+			if warnedBadMsg.CompareAndSwap(false, true) {
+				log.Debug("mqtt metrics subscriber: ignoring malformed bridge message", "err", err)
+			}
+			return
+		}
+		if m.InstanceName == "" {
 			return
 		}
 		// Accept the current schema and legacy publishers that omit "v" (v=0);

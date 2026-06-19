@@ -3,8 +3,16 @@ import { useStore } from '../../store/store'
 import {
   LayoutDashboard, Network, Cable, GitBranch,
   Database, Users, UserCog, Server, LogOut, Moon, Sun, PanelLeftClose, PanelLeft,
-  Radio, Plug, ScrollText,
+  Radio, Plug, ScrollText, AlertTriangle,
 } from 'lucide-react'
+
+// Short human reason for a degraded cluster, shown under the cluster picker.
+function degradedReason(c: { collection_mode?: string; last_poll_age_seconds?: number }): string {
+  if (c.collection_mode === 'sys-fallback') return 'Using HTTP fallback ($SYS unavailable)'
+  const age = c.last_poll_age_seconds
+  if (age != null && age > 0) return `Data stale — last poll ${Math.round(age)}s ago`
+  return 'Collection degraded'
+}
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
@@ -24,6 +32,7 @@ interface Props {
 
 export function Sidebar({ username, role, version, onLogout }: Props) {
   const { activeEnv, environments, setActiveEnv, darkMode, toggleDarkMode, sidebarOpen, toggleSidebar } = useStore()
+  const activeInfo = environments.find((e) => e.id === activeEnv)
 
   if (!sidebarOpen) {
     return (
@@ -52,15 +61,25 @@ export function Sidebar({ username, role, version, onLogout }: Props) {
         {environments.length === 0 ? (
           <div className="text-xs text-white/50 italic px-1 py-1.5">No clusters — add one in Cluster Management</div>
         ) : (
-          <select
-            value={activeEnv}
-            onChange={(e) => setActiveEnv(e.target.value)}
-            className="w-full bg-white/10 rounded px-2 py-1.5 text-sm outline-none"
-          >
-            {environments.map((env) => (
-              <option key={env.id} value={env.id} className="bg-brand-sidebar">{env.name}</option>
-            ))}
-          </select>
+          <>
+            <select
+              value={activeEnv}
+              onChange={(e) => setActiveEnv(e.target.value)}
+              className="w-full bg-white/10 rounded px-2 py-1.5 text-sm outline-none"
+            >
+              {environments.map((env) => (
+                <option key={env.id} value={env.id} className="bg-brand-sidebar">
+                  {env.degraded ? '⚠ ' : ''}{env.name}
+                </option>
+              ))}
+            </select>
+            {activeInfo?.degraded && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-300" title={degradedReason(activeInfo)}>
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span className="truncate">{degradedReason(activeInfo)}</span>
+              </div>
+            )}
+          </>
         )}
       </div>
 

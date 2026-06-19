@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useParams, Link } from 'react-router-dom'
 import { useStore } from '../store/store'
@@ -38,6 +38,8 @@ const JS_HEALTH_LINES: LineDef[] = [
 export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const { bridge } = useParams<{ bridge: string }>()
   const activeEnv = useStore((s) => s.activeEnv)
+  const addToast = useStore((s) => s.addToast)
+  const fetchSeq = useRef(0)
   const [tab, setTab] = useState<Tab>('nats')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [nats, setNats] = useState<any>(null)
@@ -58,9 +60,11 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
 
   const fetchAll = useCallback(async () => {
     if (!activeEnv || !bridge) return
+    const seq = ++fetchSeq.current
     setLoading(true)
     const b = encodeURIComponent(bridge)
     const base = `/api/environments/${activeEnv}/mqtt/${b}`
+    const val = (r: PromiseSettledResult<unknown>) => (r.status === 'fulfilled' ? r.value : null)
     const results = await Promise.allSettled([
       fetchWithTimeout(`${base}/diag`).then(r => r.ok ? r.json() : null),
       fetchWithTimeout(`${base}/metrics`).then(r => r.ok ? r.json() : null),
@@ -69,14 +73,24 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
       fetchWithTimeout(`${base}/diag/config`).then(r => r.ok ? r.json() : null),
       fetchWithTimeout(`${base}/cluster`).then(r => r.ok ? r.json() : null),
     ])
-    setNats(results[0].status === 'fulfilled' ? results[0].value : null)
-    setMetrics(results[1].status === 'fulfilled' ? results[1].value : null)
-    setPool(results[2].status === 'fulfilled' ? results[2].value : null)
-    setLicense(results[3].status === 'fulfilled' ? results[3].value : null)
-    setDiag(results[4].status === 'fulfilled' ? results[4].value : null)
-    setCluster(results[5].status === 'fulfilled' ? results[5].value : null)
+    // Ignore a late response if the bridge changed or a newer refresh started.
+    if (seq !== fetchSeq.current) return
+    setNats(val(results[0]))
+    setMetrics(val(results[1]))
+    setPool(val(results[2]))
+    setLicense(val(results[3]))
+    setDiag(val(results[4]))
+    setCluster(val(results[5]))
     setLoading(false)
-  }, [activeEnv, bridge])
+    if (results.every((r) => val(r) == null)) {
+      addToast('Failed to load bridge details', 'error')
+    }
+  }, [activeEnv, bridge, addToast])
+
+  // Reset to the default tab when navigating between bridges.
+  useEffect(() => {
+    setTab('nats') // eslint-disable-line react-hooks/set-state-in-effect -- intentional reset on bridge change
+  }, [bridge])
 
   useEffect(() => {
     fetchAll() // eslint-disable-line react-hooks/set-state-in-effect -- fetch-on-mount is intentional

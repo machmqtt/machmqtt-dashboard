@@ -445,7 +445,7 @@ func TestCollectorSYSFallbackToHTTP(t *testing.T) {
 	// to HTTP immediately (no grace period) and populate Varz from the mock
 	// monitoring server.
 	c.poll(context.Background(), cl.ID, false)
-	if !c.sysFellBack {
+	if !c.sysFellBack.Load() {
 		t.Fatal("expected immediate HTTP fallback on cold start (no $SYS data ever)")
 	}
 	if _, ok := c.Snapshot().Varz["http-srv"]; !ok {
@@ -470,7 +470,7 @@ func TestCollectorSYSFallbackToHTTP(t *testing.T) {
 	c.sys.mu.Unlock()
 
 	c.poll(context.Background(), cl.ID, false)
-	if c.sysFellBack {
+	if c.sysFellBack.Load() {
 		t.Error("expected $SYS to resume and fallback to disengage")
 	}
 	if !c.sysEverHealthy {
@@ -488,14 +488,14 @@ func TestCollectorSYSFallbackToHTTP(t *testing.T) {
 	c.sys.mu.Unlock()
 
 	c.poll(context.Background(), cl.ID, false)
-	if c.sysFellBack {
+	if c.sysFellBack.Load() {
 		t.Error("expected grace period to hold off fallback after a healthy period")
 	}
 
 	// Once the outage exceeds the grace period, fall back to HTTP again.
 	c.sysFirstFail = time.Now().Add(-2 * sysFallbackGrace)
 	c.poll(context.Background(), cl.ID, false)
-	if !c.sysFellBack {
+	if !c.sysFellBack.Load() {
 		t.Error("expected HTTP fallback after the grace period elapses")
 	}
 }

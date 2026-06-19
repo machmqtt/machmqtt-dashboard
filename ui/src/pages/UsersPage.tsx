@@ -34,10 +34,14 @@ export function UsersPage() {
       if (res.ok) {
         const data = await res.json()
         setUsers(data.users || [])
+      } else {
+        addToast('Failed to load users', 'error')
       }
-    } catch { /* ignore */ }
+    } catch {
+      addToast('Network error loading users', 'error')
+    }
     setLoading(false)
-  }, [])
+  }, [addToast])
 
   useEffect(() => {
     fetchUsers() // eslint-disable-line react-hooks/set-state-in-effect -- fetch-on-mount is intentional
