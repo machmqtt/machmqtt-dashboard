@@ -218,6 +218,7 @@ machmqtt_session_persist_failed_total{reason="queue_full"} 48
 # --- reliability extras ---
 machmqtt_tls_cert_reload_failures_total 49
 machmqtt_oauth2_jwks_fetch_failures_total 50
+machmqtt_audit_write_failures_total 51
 # --- TLS handshake duration histogram ---
 machmqtt_tls_handshake_duration_seconds_bucket{le="+Inf"} 60
 machmqtt_tls_handshake_duration_seconds_sum 0.06
@@ -529,6 +530,7 @@ func TestParsePrometheusMetrics_NewObservability(t *testing.T) {
 		// Reliability extras
 		"TLSCertReloadFailures":   {m.TLSCertReloadFailures, 49},
 		"OAuth2JWKSFetchFailures": {m.OAuth2JWKSFetchFailures, 50},
+		"AuditWriteFailures":      {m.AuditWriteFailures, 51},
 		// TLS handshake histogram (count; sum checked below)
 		"TLSHandshakeDurationCount": {m.TLSHandshakeDurationCount, 60},
 	}

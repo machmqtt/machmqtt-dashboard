@@ -84,6 +84,9 @@ type MQTTMetrics struct {
 	NATSEnforcementDenied   int64 `json:"nats_enforcement_denied"`
 
 	// --- License feature-gate rejections ---
+	// The bridge snapshot also defines a packet_size feature counter, but it is
+	// always 0 and is not emitted on the Prometheus (/metrics) path; it is omitted
+	// here until it carries real data (add the field + a parser branch then).
 	LicenseRejectedAuthMethod    int64 `json:"license_rejected_auth_method"`
 	LicenseRejectedRetain        int64 `json:"license_rejected_retain"`
 	LicenseRejectedProxyProtocol int64 `json:"license_rejected_proxy_protocol"`
@@ -207,6 +210,10 @@ type MQTTMetrics struct {
 	// --- Reliability extras ---
 	TLSCertReloadFailures   int64 `json:"tls_cert_reload_failures"`
 	OAuth2JWKSFetchFailures int64 `json:"oauth2_jwks_fetch_failures"`
+	// AuditWriteFailures counts audit records lost because the underlying writer
+	// rejected the write (audit writes never surface errors otherwise) — a
+	// non-zero value means audit records are being dropped (disk/path problem).
+	AuditWriteFailures int64 `json:"audit_write_failures"`
 
 	// --- Sparse hex-coded families, keyed by MQTT reason code (e.g. "0x88") ---
 	// Only non-zero reason codes are emitted, so these are maps; nil when absent.
@@ -323,7 +330,7 @@ type MQTTClientInfo struct {
 	LastActivity   time.Time `json:"last_activity,omitempty"`
 	Uptime         string    `json:"uptime,omitempty"`
 	Idle           string    `json:"idle,omitempty"`
-	PendingBytes   int       `json:"pending_bytes"`
+	PendingBytes   int64     `json:"pending_bytes"`
 	InMsgs         int64     `json:"in_msgs"`
 	OutMsgs        int64     `json:"out_msgs"`
 	InBytes        int64     `json:"in_bytes"`

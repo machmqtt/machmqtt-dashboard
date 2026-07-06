@@ -513,6 +513,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="TLS Handshake Failures" value={fmtNum(data.tls_handshake_failures)} />
           <DI label="TLS Cert Reload Failures" value={fmtNum(data.tls_cert_reload_failures)} />
           <DI label="OAuth2 JWKS Fetch Failures" value={fmtNum(data.oauth2_jwks_fetch_failures)} />
+          <DI label="Audit Write Failures" value={fmtNum(data.audit_write_failures)} />
           <DI label="Proxy Protocol Errors" value={fmtNum(data.proxy_protocol_errors)} />
           <DI label="WS Upgrade Failures" value={fmtNum(data.ws_upgrade_failures)} />
           <DI label="Flow-Control Overflow" value={fmtNum(data.flowcontrol_overflow)} />

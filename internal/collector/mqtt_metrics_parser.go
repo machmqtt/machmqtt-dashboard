@@ -364,6 +364,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.TLSCertReloadFailures = parseInt(value)
 		case name == "machmqtt_oauth2_jwks_fetch_failures_total":
 			m.OAuth2JWKSFetchFailures = parseInt(value)
+		case name == "machmqtt_audit_write_failures_total":
+			m.AuditWriteFailures = parseInt(value)
 
 		// --- JetStream / consumer gauges ---
 		case name == "machmqtt_session_write_behind_depth":
