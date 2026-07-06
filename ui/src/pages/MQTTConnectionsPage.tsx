@@ -146,7 +146,10 @@ export function MQTTConnectionsPage() {
     getFilteredRowModel: getFilteredRowModel(),
   })
 
-  const total = data?.total ?? 0
+  // num_connections is the current connection count in the bridge snapshot. The
+  // connz `total` field is a cumulative lifetime CONNECT counter (machmqtt's
+  // socket-split clarified this), so it must NOT be used for pagination.
+  const total = data?.num_connections ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const currentPage = Math.floor(offset / pageSize) + 1
   const hasNext = offset + pageSize < total

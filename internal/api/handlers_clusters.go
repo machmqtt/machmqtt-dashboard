@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -10,6 +11,24 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 )
+
+// writeClusterError maps a store cluster error to an HTTP status and a safe,
+// non-leaking message. Not-found becomes 404, known validation errors become
+// 400 with their (safe) message, and anything else is logged and returned as a
+// generic 500 so raw DB/driver errors are never sent to the client.
+func (s *Server) writeClusterError(w http.ResponseWriter, op string, err error) {
+	switch {
+	case errors.Is(err, store.ErrClusterNotFound):
+		http.Error(w, `{"error":"cluster not found"}`, http.StatusNotFound)
+	case errors.Is(err, store.ErrClusterNameRequired):
+		writeError(w, http.StatusBadRequest, store.ErrClusterNameRequired.Error())
+	case errors.Is(err, store.ErrClusterServersRequired):
+		writeError(w, http.StatusBadRequest, store.ErrClusterServersRequired.Error())
+	default:
+		s.log.Warn(op, "err", err)
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+	}
+}
 
 // redactURLCreds strips any userinfo (user:pass@) from a URL so credentials
 // embedded directly in a connection string don't leak in API responses. URLs
@@ -241,7 +260,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.CreateCluster(cl); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeClusterError(w, "create cluster", err)
 		return
 	}
 
@@ -291,11 +310,7 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.UpdateCluster(cl); err != nil {
-		status := http.StatusBadRequest
-		if err.Error() == "cluster not found" {
-			status = http.StatusNotFound
-		}
-		writeError(w, status, err.Error())
+		s.writeClusterError(w, "update cluster", err)
 		return
 	}
 
@@ -316,7 +331,7 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	s.manager.RemoveCluster(id)
 
 	if err := s.store.DeleteCluster(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		s.writeClusterError(w, "delete cluster", err)
 		return
 	}
 

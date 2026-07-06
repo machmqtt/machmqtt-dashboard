@@ -27,7 +27,40 @@ type User struct {
 	FailedAttempts     int        `json:"failed_attempts"`
 	LastFailedAt       *time.Time `json:"last_failed_at,omitempty"`
 	MustChangePassword bool       `json:"must_change_password"`
+	// TokenVersion is embedded in issued JWTs; bumping it invalidates every
+	// outstanding session for this user (logout, password change, deletion).
+	// Never exposed to the API.
+	TokenVersion int64 `json:"-"`
 }
+
+// MinPasswordLength is the minimum accepted password length for new users and
+// password changes.
+const MinPasswordLength = 8
+
+// Account-lockout policy: after this many consecutive failed logins within the
+// window, further attempts are rejected until the window elapses. This is a
+// per-account throttle complementing the per-IP login rate limiter.
+const (
+	maxFailedAttempts = 10
+	lockoutWindow     = 15 * time.Minute
+)
+
+// ErrPasswordTooShort is returned when a password is below MinPasswordLength.
+var ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+
+// ErrAccountLocked is returned when an account is temporarily locked out after
+// too many failed logins.
+var ErrAccountLocked = fmt.Errorf("account temporarily locked due to too many failed login attempts")
+
+// dummyBcryptHash is compared against on the user-not-found path so that login
+// timing does not reveal whether a username exists (bcrypt is deliberately slow).
+var dummyBcryptHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("timing-equalization-placeholder"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}()
 
 type Store struct {
 	db *sql.DB
@@ -39,15 +72,31 @@ func Open(dataDir string) (*Store, error) {
 	}
 
 	dbPath := filepath.Join(dataDir, "dashboard.db")
-	dsn := "file:" + dbPath + "?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)"
+	// synchronous(normal) is the recommended durability level with WAL: it avoids
+	// an fsync on every commit (safe against app crashes; only a power loss can
+	// lose the last few transactions, acceptable for monitoring time-series).
+	dsn := "file:" + dbPath + "?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=synchronous(normal)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// Cap connections so a burst of concurrent queries can't fan out unboundedly
+	// against the single SQLite file; metrics writes are serialized through one
+	// goroutine, and other writers are low-frequency.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
+	}
+
+	// Enable incremental auto_vacuum before creating tables so retention deletes
+	// can later return freed pages to the OS (via PRAGMA incremental_vacuum).
+	if err := ensureIncrementalAutoVacuum(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure auto_vacuum: %w", err)
 	}
 
 	s := &Store{db: db}
@@ -59,6 +108,36 @@ func Open(dataDir string) (*Store, error) {
 	return s, nil
 }
 
+// ensureIncrementalAutoVacuum sets the database to incremental auto_vacuum mode.
+// The mode is a property of the database file: on a new (empty) database the
+// PRAGMA takes effect immediately, and on a database created before this setting
+// (auto_vacuum=NONE) a one-time VACUUM rewrites the file in the new format. Both
+// statements run on a single pinned connection because the pending mode change
+// only applies to the VACUUM issued on the same connection.
+func ensureIncrementalAutoVacuum(db *sql.DB) error {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	var mode int
+	if err := conn.QueryRowContext(context.Background(), "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return err
+	}
+	if mode == 2 { // 2 = INCREMENTAL, already configured
+		return nil
+	}
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return err
+	}
+	// VACUUM applies the mode change (and, on an existing DB, rewrites it).
+	if _, err := conn.ExecContext(context.Background(), "VACUUM"); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }
@@ -66,11 +145,6 @@ func (s *Store) Close() error {
 // Ping verifies the database connection is usable. Used by the /healthz probe.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
-}
-
-// DB returns the underlying database handle for use by MetricsWriter.
-func (s *Store) DB() *sql.DB {
-	return s.db
 }
 
 func (s *Store) migrate() error {
@@ -84,7 +158,8 @@ func (s *Store) migrate() error {
 			last_login DATETIME,
 			failed_attempts INTEGER NOT NULL DEFAULT 0,
 			last_failed_at DATETIME,
-			must_change_password INTEGER NOT NULL DEFAULT 0
+			must_change_password INTEGER NOT NULL DEFAULT 0,
+			token_version INTEGER NOT NULL DEFAULT 0
 		)
 	`)
 	if err != nil {
@@ -97,6 +172,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE users ADD COLUMN last_failed_at DATETIME`)
 	s.db.Exec(`ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`)
 
 	// Cluster configuration (persisted, managed via admin UI).
 	_, err = s.db.Exec(`
@@ -202,7 +278,18 @@ func (s *Store) migrate() error {
 			msgs_sent_qos2 INTEGER,
 			session_write_behind_depth INTEGER,
 			consumer_pending_messages INTEGER,
-			stalled_consumers INTEGER
+			stalled_consumers INTEGER,
+			sockets_open INTEGER,
+			inflight_out_messages INTEGER,
+			op_queue_depth INTEGER,
+			op_suspended_conns INTEGER,
+			worker_pool_queue_depth INTEGER,
+			pool_slot_connected INTEGER,
+			retained_messages INTEGER,
+			subscriptions_active INTEGER,
+			go_heap_inuse_bytes INTEGER,
+			go_goroutines INTEGER,
+			scram_sessions_active INTEGER
 		)
 	`)
 	if err != nil {
@@ -219,6 +306,20 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN session_write_behind_depth INTEGER`)
 	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN consumer_pending_messages INTEGER`)
 	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN stalled_consumers INTEGER`)
+	// Trend-line gauges (added with the machmqtt observability sync). Existing
+	// rows get NULL; QueryMQTTMetrics scans these as NullFloat64 so pre-migration
+	// buckets render as gaps rather than a spurious zero.
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN sockets_open INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN inflight_out_messages INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_queue_depth INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_suspended_conns INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN worker_pool_queue_depth INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN pool_slot_connected INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN retained_messages INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN subscriptions_active INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_heap_inuse_bytes INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_goroutines INTEGER`)
+	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN scram_sessions_active INTEGER`)
 
 	// Topology node position persistence.
 	_, err = s.db.Exec(`
@@ -282,14 +383,23 @@ func (s *Store) Authenticate(username, password string) (*User, error) {
 	var hash string
 	var lastLogin, lastFailed sql.NullTime
 	err := s.db.QueryRow(
-		"SELECT id, username, password_hash, role, created_at, last_login, failed_attempts, last_failed_at, must_change_password FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, role, created_at, last_login, failed_attempts, last_failed_at, must_change_password, token_version FROM users WHERE username = ?",
 		username,
-	).Scan(&u.ID, &u.Username, &hash, &u.Role, &u.CreatedAt, &lastLogin, &u.FailedAttempts, &lastFailed, &u.MustChangePassword)
+	).Scan(&u.ID, &u.Username, &hash, &u.Role, &u.CreatedAt, &lastLogin, &u.FailedAttempts, &lastFailed, &u.MustChangePassword, &u.TokenVersion)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			// Compare against a dummy hash so the not-found path costs the same
+			// as a wrong-password path, preventing username enumeration by timing.
+			bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 			return nil, fmt.Errorf("invalid credentials")
 		}
 		return nil, err
+	}
+
+	// Per-account lockout: too many recent consecutive failures blocks further
+	// attempts until the window elapses, independent of the per-IP limiter.
+	if u.FailedAttempts >= maxFailedAttempts && lastFailed.Valid && time.Since(lastFailed.Time) < lockoutWindow {
+		return nil, ErrAccountLocked
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
@@ -333,16 +443,46 @@ func (s *Store) ChangePassword(userID int64, oldPassword, newPassword string) er
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	_, err = s.db.Exec("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?", string(newHash), userID)
+	// Bump token_version so any other outstanding sessions for this user are
+	// invalidated once the password changes.
+	_, err = s.db.Exec(
+		"UPDATE users SET password_hash = ?, must_change_password = 0, token_version = token_version + 1 WHERE id = ?",
+		string(newHash), userID,
+	)
 	return err
+}
+
+// BumpTokenVersion invalidates all outstanding sessions for a user (used on
+// logout, which signs the user out everywhere).
+func (s *Store) BumpTokenVersion(userID int64) error {
+	_, err := s.db.Exec("UPDATE users SET token_version = token_version + 1 WHERE id = ?", userID)
+	return err
+}
+
+// SessionState is the per-request authorization state re-read from the database
+// so that a stale JWT (revoked, role-changed, forced-password-change) is caught.
+type SessionState struct {
+	Role               string
+	TokenVersion       int64
+	MustChangePassword bool
+}
+
+// GetSessionState returns the current authorization state for a user, or
+// sql.ErrNoRows if the user no longer exists.
+func (s *Store) GetSessionState(userID int64) (SessionState, error) {
+	var st SessionState
+	err := s.db.QueryRow(
+		"SELECT role, token_version, must_change_password FROM users WHERE id = ?", userID,
+	).Scan(&st.Role, &st.TokenVersion, &st.MustChangePassword)
+	return st, err
 }
 
 func (s *Store) GetUser(id int64) (*User, error) {
 	var u User
 	var lastLogin, lastFailed sql.NullTime
 	err := s.db.QueryRow(
-		"SELECT id, username, role, created_at, last_login, failed_attempts, last_failed_at, must_change_password FROM users WHERE id = ?", id,
-	).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &lastLogin, &u.FailedAttempts, &lastFailed, &u.MustChangePassword)
+		"SELECT id, username, role, created_at, last_login, failed_attempts, last_failed_at, must_change_password, token_version FROM users WHERE id = ?", id,
+	).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &lastLogin, &u.FailedAttempts, &lastFailed, &u.MustChangePassword, &u.TokenVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -413,16 +553,23 @@ func (s *Store) EnsureDefaultAdmin() (*User, error) {
 	if count > 0 {
 		return nil, nil
 	}
-	u, err := s.CreateUser("admin", "admin", RoleAdmin)
+	// Insert directly (not via CreateUser) so the bootstrap password can be the
+	// well-known "admin" placeholder despite the MinPasswordLength policy. The
+	// must_change_password flag is enforced server-side, so this account cannot
+	// reach any endpoint other than the password-change flow until it is reset.
+	hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("hash password: %w", err)
 	}
-	_, err = s.db.Exec("UPDATE users SET must_change_password = 1 WHERE id = ?", u.ID)
+	result, err := s.db.Exec(
+		"INSERT INTO users (username, password_hash, role, must_change_password) VALUES (?, ?, ?, 1)",
+		"admin", string(hash), RoleAdmin,
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("insert default admin: %w", err)
 	}
-	u.MustChangePassword = true
-	return u, nil
+	id, _ := result.LastInsertId()
+	return &User{ID: id, Username: "admin", Role: RoleAdmin, CreatedAt: time.Now(), MustChangePassword: true}, nil
 }
 
 // MQTTBridgeRecord is a persisted discovered bridge.

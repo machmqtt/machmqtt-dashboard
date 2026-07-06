@@ -356,8 +356,14 @@ func TestFetcherFetchJSInfo(t *testing.T) {
 	if got.ServerID != "srv-1" {
 		t.Errorf("ServerID = %q, want srv-1", got.ServerID)
 	}
-	if !containsStr(capturedQuery, "streams=true") {
-		t.Errorf("query %q missing streams=true", capturedQuery)
+	// All three are required: streams+consumers for the detail, and config for the
+	// stream/consumer config blocks (storage, replicas, limits, policies). Without
+	// config=true nats-server returns null config and the JetStream page can't show
+	// stream settings, consumer policies, or detect replica count for dedupe.
+	for _, want := range []string{"streams=true", "consumers=true", "config=true"} {
+		if !containsStr(capturedQuery, want) {
+			t.Errorf("query %q missing %s", capturedQuery, want)
+		}
 	}
 }
 

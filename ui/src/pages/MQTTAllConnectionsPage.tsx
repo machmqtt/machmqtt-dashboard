@@ -99,7 +99,11 @@ export function MQTTAllConnectionsPage() {
       const bridges: BridgeInstance[] = bridgeData.bridges || []
       setBridgeCount(bridges.length)
 
-      const reachable = bridges.filter(b => b.reachable && b.status?.connz_available)
+      // Try connz for every reachable bridge. We can't rely on status.connz_available
+      // here: push-discovered bridges never report it, yet their connz is reachable
+      // through the configured admin URL. The per-bridge connz endpoint returns a
+      // clean error for bridges that genuinely lack it, handled as zero rows below.
+      const reachable = bridges.filter(b => b.reachable)
       const connTotal = bridges.reduce((s, b) => s + (b.status?.connections ?? 0), 0)
       setTotalConns(connTotal)
 

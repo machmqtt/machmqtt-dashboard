@@ -21,6 +21,11 @@ import (
 //go:embed dist/*
 var distFS embed.FS
 
+// spaDistDir is the embedded directory served as the SPA root. It is a var
+// rather than an inline literal so a test can point it at an invalid path to
+// exercise the fs.Sub failure branch.
+var spaDistDir = "dist"
+
 // checkSameOrigin validates that the Origin header matches the Host header,
 // preventing cross-site WebSocket hijacking attacks.
 func checkSameOrigin(r *http.Request) bool {
@@ -49,6 +54,7 @@ type Server struct {
 	store        *store.Store
 	logBuf       *logbuf.Handler
 	bridgeStatus *bridgeStatusCache
+	bridgeJSON   *bridgeRespCache
 }
 
 func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.Logger, version string, cfg *config.Config, metrics *store.MetricsWriter, st *store.Store, lb *logbuf.Handler) *Server {
@@ -62,6 +68,7 @@ func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.
 		store:        st,
 		logBuf:       lb,
 		bridgeStatus: newBridgeStatusCache(5 * time.Second),
+		bridgeJSON:   newBridgeRespCache(3 * time.Second),
 	}
 
 	s.registerRoutes(a)
@@ -75,32 +82,54 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) serveSPA() {
-	sub, err := fs.Sub(distFS, "dist")
+	sub, err := fs.Sub(distFS, spaDistDir)
 	if err != nil {
 		s.log.Error("embed fs", "err", err)
 		return
 	}
 
+	// Read the app shell once so the SPA fallback can write it directly. Going
+	// through http.FileServer for the fallback is wrong: it special-cases
+	// "/index.html" with a redirect to "./", which resolves against the original
+	// deep-link path — so /subscriptions 301s to / (losing the page on reload)
+	// and /mqtt/<id>/detail 301s to /mqtt/<id>/ and loops. Serving the bytes
+	// ourselves keeps client-side routing intact for bookmarks and reloads.
+	index, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		s.log.Error("embed index.html", "err", err)
+		return
+	}
 	fileServer := http.FileServer(http.FS(sub))
 
-	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve static files if they exist, otherwise fall back to index.html.
-		path := r.URL.Path
-		if path == "/" {
-			path = "/index.html"
-		}
+	serveIndex := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(index)
+	}
 
-		// Try to open the file.
-		f, err := sub.Open(strings.TrimPrefix(path, "/"))
-		if err == nil {
-			f.Close()
-			fileServer.ServeHTTP(w, r)
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		clean := strings.TrimPrefix(r.URL.Path, "/")
+		if clean == "" || clean == "index.html" {
+			serveIndex(w)
 			return
 		}
 
-		// Fall back to index.html for client-side routing (SPA deep links).
-		r.URL.Path = "/index.html"
-		fileServer.ServeHTTP(w, r)
+		// Serve a real embedded asset when one exists (and isn't a directory),
+		// otherwise fall through to the SPA shell so client-side routing handles
+		// the path. We never hand a non-asset path to http.FileServer, to avoid
+		// its directory/index.html redirect behavior.
+		if f, err := sub.Open(clean); err == nil {
+			info, statErr := f.Stat()
+			f.Close()
+			if statErr == nil && !info.IsDir() {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// SPA deep link (e.g. /subscriptions, /mqtt/<id>/detail): serve the shell.
+		serveIndex(w)
 	})
 }
 

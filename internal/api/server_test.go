@@ -197,7 +197,7 @@ func TestAdminCreateUser(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, authedReq("POST", "/api/admin/users", token,
-		`{"username":"newuser","password":"pass123","role":"viewer"}`))
+		`{"username":"newuser","password":"pass1234","role":"viewer"}`))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201, body: %s", w.Code, w.Body.String())

@@ -88,6 +88,48 @@ func TestCollectorHealthSysFallback(t *testing.T) {
 	}
 }
 
+func TestClusterHealthDegradedReason(t *testing.T) {
+	cases := []struct {
+		name string
+		h    ClusterHealth
+		want string
+	}{
+		{
+			name: "nominal",
+			h:    ClusterHealth{NATSPushConfigured: true, NATSPushConnected: true},
+			want: "",
+		},
+		{
+			name: "stale wins over everything",
+			h:    ClusterHealth{Stale: true, LastPollAgeSeconds: 95, SysFallbackEngaged: true, NATSPushConfigured: true},
+			want: "Data stale — last poll 95s ago",
+		},
+		{
+			name: "sys fallback",
+			h:    ClusterHealth{SysFallbackEngaged: true, NATSPushConfigured: true},
+			want: "Using HTTP fallback ($SYS unavailable)",
+		},
+		{
+			name: "push link down (fresh poll, not stale, not fallback)",
+			h:    ClusterHealth{NATSPushConfigured: true, NATSPushConnected: false},
+			want: "NATS push metrics connection is down",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.h.DegradedReason()
+			if got != tc.want {
+				t.Errorf("DegradedReason() = %q, want %q", got, tc.want)
+			}
+			// A non-empty reason must coincide with Degraded(), and vice versa, so
+			// the badge text and the badge visibility can never disagree.
+			if (got != "") != tc.h.Degraded() {
+				t.Errorf("DegradedReason()=%q but Degraded()=%v — they must agree", got, tc.h.Degraded())
+			}
+		})
+	}
+}
+
 func TestManagerHealthReport(t *testing.T) {
 	s := testStore(t)
 	addClusterToStore(t, s, "prod", "http://nats:8222")

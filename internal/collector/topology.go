@@ -249,12 +249,21 @@ func buildTopology(snap, prev *Snapshot) *TopologyGraph {
 	}
 
 	for key, b := range mqttBridges {
-		nodeID := "mqtt:" + key.ip
+		// Key the node by the server it attaches to as well as its IP. Co-located
+		// brokers (several on one host, or an all-loopback demo) share an IP but
+		// attach to different servers; keying on IP alone would collapse them into
+		// one node. Name it after that server so each broker reads as "the broker
+		// on <edge>".
+		nodeID := "mqtt:" + key.serverID + ":" + key.ip
+		name := "mqtt@" + key.ip
+		if v, ok := snap.Varz[key.serverID]; ok && v.ServerName != "" {
+			name = "mqtt@" + v.ServerName
+		}
 		if !seenNodes[nodeID] {
 			seenNodes[nodeID] = true
 			g.Nodes = append(g.Nodes, TopologyNode{
 				ID:          nodeID,
-				Name:        "mqtt@" + key.ip,
+				Name:        name,
 				Type:        "mqtt",
 				Connections: b.conns,
 				Healthy:     true,

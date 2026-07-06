@@ -16,7 +16,10 @@ const REFRESH_INTERVAL = 5_000
 
 // Hoisted so the array references are stable across renders — inline arrays would
 // defeat TimeSeriesChart's memo and re-render recharts on every 5s poll.
-const CONN_LINES: LineDef[] = [{ key: 'connections_active', color: '#a855f7', label: 'Active' }]
+const CONN_LINES: LineDef[] = [
+  { key: 'connections_active', color: '#a855f7', label: 'MQTT Active' },
+  { key: 'sockets_open', color: '#64748b', label: 'Sockets Open' },
+]
 const MSG_RATE_LINES: LineDef[] = [
   { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
   { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
@@ -33,13 +36,29 @@ const JS_HEALTH_LINES: LineDef[] = [
   { key: 'consumer_pending_messages', color: '#f59e0b', label: 'Pending msgs' },
   { key: 'session_write_behind_depth', color: '#6366f1', label: 'Write-behind depth' },
   { key: 'stalled_consumers', color: '#ef4444', label: 'Stalled consumers' },
+  { key: 'inflight_out_messages', color: '#0ea5e9', label: 'Inflight out' },
+]
+const BACKPRESSURE_LINES: LineDef[] = [
+  { key: 'op_queue_depth', color: '#6366f1', label: 'Op queue depth' },
+  { key: 'op_suspended_conns', color: '#ef4444', label: 'Suspended conns' },
+  { key: 'worker_pool_queue_depth', color: '#f59e0b', label: 'Worker pool queue' },
+]
+const POOL_LINES: LineDef[] = [{ key: 'pool_slot_connected', color: '#27aae1', label: 'Slots connected' }]
+const CAPACITY_LINES: LineDef[] = [
+  { key: 'retained_messages', color: '#8b5cf6', label: 'Retained msgs' },
+  { key: 'subscriptions_active', color: '#10b981', label: 'Active subs' },
+]
+const MEMORY_LINES: LineDef[] = [{ key: 'go_heap_inuse_bytes', color: '#ec4899', label: 'Heap in-use' }]
+const RUNTIME_LINES: LineDef[] = [
+  { key: 'go_goroutines', color: '#14b8a6', label: 'Goroutines' },
+  { key: 'scram_sessions_active', color: '#f97316', label: 'SCRAM sessions' },
 ]
 
 export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const { bridge } = useParams<{ bridge: string }>()
   const activeEnv = useStore((s) => s.activeEnv)
-  const addToast = useStore((s) => s.addToast)
   const fetchSeq = useRef(0)
+  const loadedOnce = useRef(false)
   const [tab, setTab] = useState<Tab>('nats')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [nats, setNats] = useState<any>(null)
@@ -54,6 +73,9 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [cluster, setCluster] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  // Inline error banner shown when NO source (admin HTTP or push) returns data —
+  // replaces a toast that previously fired on every 5s poll.
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const bridgeMetricsParams = useMemo(() => (bridge ? { bridge_id: bridge } : undefined), [bridge])
   const bridgeMetrics = useMetrics(activeEnv, 'metrics/mqtt', bridgeMetricsParams)
@@ -61,7 +83,9 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const fetchAll = useCallback(async () => {
     if (!activeEnv || !bridge) return
     const seq = ++fetchSeq.current
-    setLoading(true)
+    // Show the skeleton only before the first result lands; later polls refresh
+    // in place so the page doesn't strobe a skeleton every interval.
+    if (!loadedOnce.current) setLoading(true)
     const b = encodeURIComponent(bridge)
     const base = `/api/environments/${activeEnv}/mqtt/${b}`
     const val = (r: PromiseSettledResult<unknown>) => (r.status === 'fulfilled' ? r.value : null)
@@ -81,15 +105,19 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
     setLicense(val(results[3]))
     setDiag(val(results[4]))
     setCluster(val(results[5]))
+    loadedOnce.current = true
     setLoading(false)
-    if (results.every((r) => val(r) == null)) {
-      addToast('Failed to load bridge details', 'error')
-    }
-  }, [activeEnv, bridge, addToast])
+    // Banner only when every source failed; clears as soon as one recovers.
+    setLoadError(results.every((r) => val(r) == null)
+      ? 'Could not load any details for this bridge. Its admin HTTP API is unreachable and no NATS push metrics are currently available — check that the bridge is running and either reachable on its admin port or publishing metrics to $MQTT5.metrics.>.'
+      : null)
+  }, [activeEnv, bridge])
 
-  // Reset to the default tab when navigating between bridges.
+  // Reset to the default tab and re-arm the first-load skeleton when navigating
+  // between bridges.
   useEffect(() => {
     setTab('nats') // eslint-disable-line react-hooks/set-state-in-effect -- intentional reset on bridge change
+    loadedOnce.current = false
   }, [bridge])
 
   useEffect(() => {
@@ -125,6 +153,12 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
           </span>
         )}
       </div>
+
+      {loadError && (
+        <div className="mb-4 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200">
+          {loadError}
+        </div>
+      )}
 
       <div className="flex gap-1 mb-4 border-b dark:border-gray-700">
         {tabs.map(t => (
@@ -309,16 +343,66 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
             yFormatter={(v) => v.toFixed(0)}
           />
         </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Backpressure</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={BACKPRESSURE_LINES}
+            yFormatter={(v) => v.toFixed(0)}
+          />
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Connection Pool</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={POOL_LINES}
+            yFormatter={(v) => v.toFixed(0)}
+          />
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Capacity</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={CAPACITY_LINES}
+            yFormatter={(v) => v.toFixed(0)}
+          />
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Heap Memory</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={MEMORY_LINES}
+            yFormatter={(v) => fmtBytes(v)}
+          />
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Goroutines &amp; SCRAM Sessions</h3>
+          <TimeSeriesChart
+            data={tsMetrics.data}
+            lines={RUNTIME_LINES}
+            yFormatter={(v) => v.toFixed(0)}
+          />
+        </div>
       </div>
 
-      <Section title="Connections">
+      <Section title="Connections (established MQTT)">
         <Grid>
           <DI label="Active" value={fmtNum(data.connections_active)} />
-          <DI label="Total Accepted" value={fmtNum(data.connections_total)} />
+          <DI label="Total CONNECTs" value={fmtNum(data.connections_total)} />
           <DI label="Rejected" value={fmtNum(data.connections_rejected)} />
           <DI label="WS Active" value={fmtNum(data.ws_connections_active)} />
-          <DI label="WS Total" value={fmtNum(data.ws_connections_total)} />
+          <DI label="WS Total CONNECTs" value={fmtNum(data.ws_connections_total)} />
         </Grid>
+        <p className="text-xs text-gray-400 mt-2">Counted once the CONNECT handshake completes; pre-CONNECT probes (e.g. load-balancer TCP checks) are excluded — see Sockets below.</p>
+      </Section>
+      <Section title="Sockets (raw transport accepts)">
+        <Grid>
+          <DI label="Open" value={fmtNum(data.sockets_open)} />
+          <DI label="Accepted (total)" value={fmtNum(data.sockets_accepted)} />
+          <DI label="WS Open" value={fmtNum(data.ws_sockets_open)} />
+          <DI label="WS Accepted (total)" value={fmtNum(data.ws_sockets_accepted)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">Every accepted transport socket, including non-MQTT probes. <span className="font-mono">Open</span> is the value gated against <span className="font-mono">max_connections</span>.</p>
       </Section>
       <Section title="Rejections by Reason">
         <Grid>
@@ -327,8 +411,21 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Per-IP Conns" value={fmtNum(data.rejected_per_ip_conns)} />
           <DI label="Per-IP Accept" value={fmtNum(data.rejected_per_ip_accept)} />
           <DI label="Pool Full" value={fmtNum(data.rejected_pool_full)} />
+          <DI label="Connect Timeout" value={fmtNum(data.rejected_connect_timeout)} />
+          <DI label="Auth Timeout" value={fmtNum(data.rejected_auth_timeout)} />
+          <DI label="Worker Pool" value={fmtNum(data.rejected_worker_pool)} />
         </Grid>
       </Section>
+      {data.connack_rejected_by_reason && Object.keys(data.connack_rejected_by_reason).length > 0 && (
+        <Section title="CONNACK Rejections by Reason Code">
+          <Grid>
+            {Object.entries(data.connack_rejected_by_reason).map(([code, n]) => (
+              <DI key={code} label={code} value={fmtNum(n as number)} mono />
+            ))}
+          </Grid>
+          <p className="text-xs text-gray-400 mt-2">Post-CONNECT failures by MQTT reason code (e.g. <span className="font-mono">0x88</span> ServerUnavailable, <span className="font-mono">0x8C</span> BadAuthenticationMethod).</p>
+        </Section>
+      )}
       <Section title="Dispatch Pool Saturation">
         <Grid>
           <DI label="TLS Slots Active" value={fmtNum(data.dispatch_slots_tls)} />
@@ -343,8 +440,15 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Bad Credentials" value={fmtNum(data.auth_fail_bad_credentials)} />
           <DI label="Enhanced (SCRAM)" value={fmtNum(data.auth_fail_enhanced)} />
           <DI label="Account Locked" value={fmtNum(data.auth_fail_locked)} />
+          <DI label="License" value={fmtNum(data.auth_fail_license)} />
+          <DI label="Token Expired" value={fmtNum(data.auth_fail_token_expired)} />
+          <DI label="Bad Signature" value={fmtNum(data.auth_fail_bad_signature)} />
+          <DI label="Claim Mismatch" value={fmtNum(data.auth_fail_claim_mismatch)} />
+          <DI label="JWKS Unavailable" value={fmtNum(data.auth_fail_jwks_unavailable)} />
           <DI label="Other" value={fmtNum(data.auth_fail_other)} />
           <DI label="SCRAM Sessions Active" value={fmtNum(data.scram_sessions_active)} />
+          <DI label="NATS Enforcement Fallback" value={fmtNum(data.nats_enforcement_fallback)} />
+          <DI label="NATS Enforcement Denied" value={fmtNum(data.nats_enforcement_denied)} />
         </Grid>
       </Section>
       <Section title="License Rejections">
@@ -383,6 +487,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Dropped: Invalid Topic" value={fmtNum(data.will_dropped_invalid_topic)} />
           <DI label="Dropped: Shutdown" value={fmtNum(data.will_dropped_shutdown)} />
           <DI label="Suppressed (Reconnected)" value={fmtNum(data.will_suppressed_reconnected)} />
+          <DI label="Suppressed (Shutdown)" value={fmtNum(data.will_suppressed_shutdown)} />
           <DI label="Pending" value={fmtNum(data.will_pending)} />
           <DI label="Retry Pending" value={fmtNum(data.will_retry_pending)} />
         </Grid>
@@ -406,21 +511,100 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
         <Grid>
           <DI label="Panics Recovered" value={fmtNum(data.panics_recovered)} />
           <DI label="TLS Handshake Failures" value={fmtNum(data.tls_handshake_failures)} />
+          <DI label="TLS Cert Reload Failures" value={fmtNum(data.tls_cert_reload_failures)} />
+          <DI label="OAuth2 JWKS Fetch Failures" value={fmtNum(data.oauth2_jwks_fetch_failures)} />
           <DI label="Proxy Protocol Errors" value={fmtNum(data.proxy_protocol_errors)} />
           <DI label="WS Upgrade Failures" value={fmtNum(data.ws_upgrade_failures)} />
           <DI label="Flow-Control Overflow" value={fmtNum(data.flowcontrol_overflow)} />
         </Grid>
       </Section>
+      {data.disconnects_sent_by_reason && Object.keys(data.disconnects_sent_by_reason).length > 0 && (
+        <Section title="Server DISCONNECTs by Reason Code">
+          <Grid>
+            {Object.entries(data.disconnects_sent_by_reason).map(([code, n]) => (
+              <DI key={code} label={code} value={fmtNum(n as number)} mono />
+            ))}
+          </Grid>
+          <p className="text-xs text-gray-400 mt-2">Server-initiated DISCONNECTs by MQTT reason code (e.g. <span className="font-mono">0x8F</span> SessionTakenOver, <span className="font-mono">0x93</span> ReceiveMaximumExceeded).</p>
+        </Section>
+      )}
       <Section title="Durability & DLQ">
         <Grid>
-          <DI label="QoS 2 Publish Failed" value={fmtNum(data.qos2_server_publish_failed)} />
+          <DI label="QoS 2 Publish Failed (to NATS)" value={fmtNum(data.qos2_server_publish_failed)} />
           <DI label="QoS 1 Client Send Failed" value={fmtNum(data.qos1_client_send_failed)} />
+          <DI label="QoS 2 Client Send Failed" value={fmtNum(data.qos2_client_send_failed)} />
+          <DI label="Publish Failed QoS 0" value={fmtNum(data.server_publish_failed_qos0)} />
+          <DI label="Publish Failed QoS 1" value={fmtNum(data.server_publish_failed_qos1)} />
+          <DI label="Publish Failed QoS 2" value={fmtNum(data.server_publish_failed_qos2)} />
+          <DI label="QoS 0 Shed" value={fmtNum(data.qos0_messages_shed)} />
+          <DI label="Oversized Dropped" value={fmtNum(data.oversized_dropped)} />
+          <DI label="Publish-Outage Disconnects" value={fmtNum(data.publish_outage_disconnects)} />
           <DI label="Server Publish Dropped" value={fmtNum(data.server_publish_dropped)} />
           <DI label="Dead Lettered" value={fmtNum(data.messages_dead_lettered)} />
           <DI label="Poison Terminated" value={fmtNum(data.poison_messages_terminated)} />
           <DI label="DLQ Write Failed" value={fmtNum(data.dead_letter_write_failed)} />
           <DI label="Outbound Queue Dropped" value={fmtNum(data.outbound_queue_dropped)} />
+          <DI label="Outbound Evictions" value={fmtNum(data.outbound_evictions)} />
+          <DI label="Outbound Stall Evictions" value={fmtNum(data.outbound_stall_evictions)} />
+          <DI label="Outbound Stalled Conns" value={fmtNum(data.outbound_stalled_conns)} />
+          <DI label="Retained Verify Failures" value={fmtNum(data.retained_verify_failures)} />
         </Grid>
+      </Section>
+      <Section title="Capacity & Memory">
+        <Grid>
+          <DI label="Retained Messages" value={fmtNum(data.retained_messages)} />
+          <DI label="Inflight Out Messages" value={fmtNum(data.inflight_out_messages)} />
+          <DI label="Active Subscriptions" value={fmtNum(data.subscriptions_active)} />
+          <DI label="Outbound Queue Bytes" value={fmtBytes(data.outbound_bytes)} />
+        </Grid>
+      </Section>
+      <Section title="Bridge & Pool Health">
+        <Grid>
+          <DI label="Pool Slots Connected" value={fmtNum(data.pool_slot_connected)} />
+          <DI label="Pool Slot Rebuilds" value={fmtNum(data.pool_slot_rebuilds)} />
+          <DI label="Primary Rebuilds" value={fmtNum(data.bridge_primary_rebuilds)} />
+          <DI label="Rebuilds Degraded (no JS)" value={fmtNum(data.bridge_rebuilds_degraded)} />
+          <DI label="Consumer Reattached" value={fmtNum(data.bridge_consumer_reattached)} />
+          <DI label="Consumer Force-Disconnected" value={fmtNum(data.bridge_consumer_force_disconnected)} />
+          <DI label="Push Force-Disconnected" value={fmtNum(data.bridge_consumer_push_force_disconnected)} />
+        </Grid>
+      </Section>
+      <Section title="Throttling & ACL">
+        <Grid>
+          <DI label="Aggregate Limit (msg/s)" value={fmtNum(data.aggregate_publish_limit_msgs_per_sec)} />
+          <DI label="Throttled (per-client)" value={fmtNum(data.publish_throttled_per_client)} />
+          <DI label="Throttled (aggregate)" value={fmtNum(data.publish_throttled_aggregate)} />
+          <DI label="ACL Denied: Publish" value={fmtNum(data.acl_denied_publish)} />
+          <DI label="ACL Denied: Subscribe" value={fmtNum(data.acl_denied_subscribe)} />
+        </Grid>
+      </Section>
+      <Section title="Queue Backpressure">
+        <Grid>
+          <DI label="Worker Pool Queue" value={fmtNum(data.worker_pool_queue_depth)} />
+          <DI label="Op Queue Depth" value={fmtNum(data.op_queue_depth)} />
+          <DI label="Op Queue Bytes" value={fmtBytes(data.op_queue_bytes)} />
+          <DI label="Op Suspended Conns" value={fmtNum(data.op_suspended_conns)} />
+          <DI label="Op Pool Queue" value={fmtNum(data.op_pool_queue_depth)} />
+          <DI label="Op Pool Rejected" value={fmtNum(data.op_pool_rejected)} />
+        </Grid>
+      </Section>
+      <Section title="Session & Consumer Persistence">
+        <Grid>
+          <DI label="Consumer Seq-Map Entries" value={fmtNum(data.consumer_seq_map_entries)} />
+          <DI label="Consumer Deletes Dropped" value={fmtNum(data.consumer_deletes_dropped)} />
+          <DI label="Consumer Delete Races" value={fmtNum(data.consumer_delete_races)} />
+          <DI label="Session Deletes Dropped" value={fmtNum(data.session_deletes_dropped)} />
+          <DI label="Persist Failed: Write" value={fmtNum(data.session_persist_failed_write_failed)} />
+          <DI label="Persist Failed: Queue Full" value={fmtNum(data.session_persist_failed_queue_full)} />
+        </Grid>
+      </Section>
+      <Section title="Cluster">
+        <Grid>
+          <DI label="Inspect Timeouts" value={fmtNum(data.cluster_inspect_timeouts)} />
+          <DI label="Takeover Dropped" value={fmtNum(data.cluster_takeover_dropped)} />
+          <DI label="Takeover Order Skew" value={fmtNum(data.cluster_takeover_order_skew)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">Populated only when clustering is enabled. Rising <span className="font-mono">order skew</span> signals inter-node clock divergence.</p>
       </Section>
       <Section title="JetStream Health">
         <Grid>
@@ -437,6 +621,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="JetStream Publish" value={fmtMs(data.jetstream_publish_duration_sum_seconds, data.jetstream_publish_duration_count)} />
           <DI label="Subscribe" value={fmtMs(data.subscribe_duration_sum_seconds, data.subscribe_duration_count)} />
           <DI label="Dispatch Wait" value={fmtMs(data.dispatch_wait_sum_seconds, data.dispatch_wait_count)} />
+          <DI label="TLS Handshake" value={fmtMs(data.tls_handshake_duration_sum_seconds, data.tls_handshake_duration_count)} />
         </Grid>
         <p className="text-xs text-gray-400 mt-2">All values are process-lifetime averages (sum/count from histogram). High dispatch wait correlates with <span className="font-mono">pool_full</span> events.</p>
       </Section>
@@ -569,6 +754,7 @@ function ClusterTab({ data, env, bridge }: { data: any; env: string; bridge?: st
           <DI label="Local Instance" value={c?.local_instance_id || '-'} mono />
           <DI label="Local Connections" value={fmtNum(c?.local_connections || 0)} />
           <DI label="Instances" value={instances.length.toString()} />
+          <DI label="Takeover Order Skew" value={fmtNum(c?.takeover_order_skew || 0)} />
         </Grid>
       </Section>
 
@@ -774,36 +960,68 @@ function summarizeAction(d: any): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function LicenseTab({ data }: { data: any }) {
   if (!data) return <Empty msg="License information not available" />
+  if (data.available === false) return <Empty msg={data.reason || 'License information not available'} />
+  const hasRateLimits =
+    data.effective_aggregate_msgs_per_sec || data.aggregate_msgs_per_sec || data.max_client_msgs_per_sec
   return (
-    <Section title="License">
-      {data.degraded && (
-        <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-          Degraded — peer discovery is disabled; global connection counts and instance totals may be stale.
-        </div>
+    <div className="space-y-6">
+      <Section title="License">
+        {(data.capacity_clamped || data.block_confirmed) && (
+          <div className="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300">
+            {data.capacity_clamped
+              ? `Capacity clamped — new-connection admission is throttled to the clamp floor${
+                  data.clamp_floor ? ` (${data.clamp_floor.toLocaleString()})` : ''
+                }.`
+              : 'License block confirmed.'}
+            {data.block_reason ? ` ${data.block_reason}` : ''}
+          </div>
+        )}
+        {data.degraded && (
+          <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+            Degraded — peer discovery is disabled; global connection counts and instance totals may be stale.
+            {data.degraded_reason ? ` ${data.degraded_reason}` : ''}
+          </div>
+        )}
+        <Grid>
+          <DI label="Status" value={data.status} />
+          <DI label="License ID" value={data.license_id || '-'} />
+          <DI label="Company" value={data.company || '-'} />
+          <DI label="Contact" value={data.contact || '-'} />
+          <DI label="Email" value={data.email || '-'} />
+          <DI label="Kind" value={data.kind || '-'} />
+          <DI label="Tier" value={data.tier || '-'} />
+          <DI label="Max Connections" value={data.max_connections === 0 ? 'Unlimited' : data.max_connections.toLocaleString()} />
+          <DI label="Max QoS" value={data.max_qos.toString()} />
+          <DI label="Connections (Local)" value={data.connections_local.toLocaleString()} />
+          <DI label="Connections (Global)" value={data.connections_global.toLocaleString()} />
+          <DI label="Instances" value={data.instances.toString()} />
+          <DI label="Expires At" value={data.expires_at || 'Never'} />
+          <DI label="Grace Days" value={data.grace_days?.toString() || '-'} />
+          {data.capacity_clamped && (
+            <DI label="Clamp Floor" value={data.clamp_floor?.toLocaleString() || '-'} />
+          )}
+        </Grid>
+      </Section>
+      {hasRateLimits && (
+        <Section title="Rate Limits (Fleet)">
+          <Grid>
+            <DI label="Effective Aggregate" value={`${(data.effective_aggregate_msgs_per_sec || 0).toLocaleString()} msg/s`} />
+            <DI label="License Aggregate" value={`${(data.aggregate_msgs_per_sec || 0).toLocaleString()} msg/s`} />
+            <DI label="Aggregate Burst" value={`${(data.aggregate_burst_msgs_per_sec || 0).toLocaleString()} msg/s`} />
+            <DI label="Burst Window" value={`${(data.aggregate_burst_window_sec || 0).toLocaleString()} s`} />
+            <DI label="Max per Client" value={`${(data.max_client_msgs_per_sec || 0).toLocaleString()} msg/s`} />
+          </Grid>
+          <p className="text-xs text-gray-400 mt-2">Effective aggregate is the ceiling actually enforced after applying <span className="font-mono">mqtt.max_aggregate_publish_rate</span> tightening (0 = no limit).</p>
+        </Section>
       )}
-      <Grid>
-        <DI label="Status" value={data.status} />
-        <DI label="License ID" value={data.license_id || '-'} />
-        <DI label="Company" value={data.company || '-'} />
-        <DI label="Contact" value={data.contact || '-'} />
-        <DI label="Email" value={data.email || '-'} />
-        <DI label="Kind" value={data.kind || '-'} />
-        <DI label="Tier" value={data.tier || '-'} />
-        <DI label="Max Connections" value={data.max_connections === 0 ? 'Unlimited' : data.max_connections.toLocaleString()} />
-        <DI label="Max QoS" value={data.max_qos.toString()} />
-        <DI label="Connections (Local)" value={data.connections_local.toLocaleString()} />
-        <DI label="Connections (Global)" value={data.connections_global.toLocaleString()} />
-        <DI label="Instances" value={data.instances.toString()} />
-        <DI label="Expires At" value={data.expires_at || 'Never'} />
-        <DI label="Grace Days" value={data.grace_days?.toString() || '-'} />
-      </Grid>
-    </Section>
+    </div>
   )
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function ConfigTab({ data }: { data: any }) {
   if (!data) return <Empty msg="Configuration not available" />
+  if (data.available === false) return <Empty msg={data.reason || 'Configuration not available'} />
   return (
     <div className="space-y-4">
       {data.version && (
@@ -845,9 +1063,9 @@ function Grid({ children }: { children: React.ReactNode }) {
 
 function DI({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="text-gray-500 dark:text-gray-400 text-xs">{label}</div>
-      <div className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value || '-'}</div>
+      <div className={`font-medium truncate ${mono ? 'font-mono text-xs' : ''}`} title={value || '-'}>{value || '-'}</div>
     </div>
   )
 }

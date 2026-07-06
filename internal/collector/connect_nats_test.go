@@ -1,10 +1,14 @@
 package collector
 
 import (
+	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 	"github.com/noodlebit/machmqtt-dashboard/internal/testutil/natstest"
 )
@@ -24,6 +28,115 @@ func TestConnectNATSBadNKey(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid NKey seed")
 	}
+}
+
+func TestConnectNATSReconnects(t *testing.T) {
+	// Two-node cluster; connect with both URLs, kill the connected node, and the
+	// client fails over to the other — exercising the disconnect-error and
+	// reconnect callbacks registered in connectNATS.
+	servers := natstest.NewCluster(t, 2, "recon")
+	nc, err := connectNATS(&config.NATSConnConfig{
+		URLs: []string{servers[0].ClientURL(), servers[1].ClientURL()},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	// Wait for the initial connection.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !nc.IsConnected() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !nc.IsConnected() {
+		t.Fatal("never connected initially")
+	}
+	connectedTo := nc.ConnectedUrl()
+
+	// Kill whichever node the client is attached to.
+	if connectedTo == servers[0].ClientURL() {
+		servers[0].Shutdown()
+	} else {
+		servers[1].Shutdown()
+	}
+
+	// The client should disconnect and reconnect to the surviving node.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if nc.IsConnected() && nc.ConnectedUrl() != connectedTo {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("client did not reconnect to the surviving node (still %q)", nc.ConnectedUrl())
+}
+
+func TestConnectNATSErrorHandler(t *testing.T) {
+	// Trigger an async slow-consumer error on the connection and assert that
+	// connectNATS's ErrorHandler actually ran by capturing its log line.
+	s := natstest.New(t)
+	rec := &recordingHandler{}
+	nc, err := connectNATS(&config.NATSConnConfig{URLs: []string{s.ClientURL()}}, slog.New(rec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	for !nc.IsConnected() {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	sub, err := nc.SubscribeSync("flood")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tiny pending limits guarantee a slow-consumer error once we flood.
+	if err := sub.SetPendingLimits(1, 64); err != nil {
+		t.Fatal(err)
+	}
+
+	pub, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+	for i := 0; i < 2000; i++ {
+		_ = pub.Publish("flood", []byte("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
+	}
+	_ = pub.Flush()
+
+	// The connection's async ErrorHandler logs "nats async error" on the
+	// slow-consumer condition.
+	rec.waitForMessage(t, "nats async error")
+}
+
+func TestConnectNATSWithValidNKey(t *testing.T) {
+	// nats.NkeyOptionFromSeed reads the seed from a file, so write a well-formed
+	// user seed to disk and point NKey at it. This takes the success arm of the
+	// NKey switch case (the bad-seed case is covered separately).
+	kp, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := kp.Seed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedFile := filepath.Join(t.TempDir(), "user.nk")
+	if err := os.WriteFile(seedFile, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	nc, err := connectNATS(&config.NATSConnConfig{
+		URLs: []string{"nats://127.0.0.1:14299"}, // unreachable; RetryOnFailedConnect → non-nil conn
+		NKey: seedFile,
+	}, nil)
+	if err != nil {
+		t.Fatalf("valid NKey seed should not error: %v", err)
+	}
+	if nc == nil {
+		t.Fatal("expected a non-nil connection")
+	}
+	nc.Close()
 }
 
 func TestConnectNATSWithUsernamePassword(t *testing.T) {

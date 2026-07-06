@@ -13,9 +13,9 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 )
 
-// statszTTL is how long a server's STATSZ entry survives without a new publish.
-// Set to 3× the 10s heartbeat interval.
-const statszTTL = 30 * time.Second
+// defaultStatszTTL is how long a server's STATSZ entry survives without a new
+// publish. Set to 3× the 10s heartbeat interval.
+const defaultStatszTTL = 30 * time.Second
 
 // Wire types for $SYS.SERVER.*.STATSZ messages.
 // Field names and JSON tags match nats-server events.go ServerStatsMsg / ServerStats.
@@ -39,19 +39,19 @@ type sysDataStats struct {
 }
 
 type sysServerStats struct {
-	Start            time.Time      `json:"start"`
-	Mem              int64          `json:"mem"`
-	Cores            int            `json:"cores"`
-	CPU              float64        `json:"cpu"`
-	Connections      int            `json:"connections"`
-	TotalConnections uint64         `json:"total_connections"`
-	NumSubs          uint32         `json:"subscriptions"` // JSON tag is "subscriptions"
-	Sent             sysDataStats   `json:"sent"`
-	Received         sysDataStats   `json:"received"`
-	SlowConsumers    int64          `json:"slow_consumers"`
+	Start            time.Time         `json:"start"`
+	Mem              int64             `json:"mem"`
+	Cores            int               `json:"cores"`
+	CPU              float64           `json:"cpu"`
+	Connections      int               `json:"connections"`
+	TotalConnections uint64            `json:"total_connections"`
+	NumSubs          uint32            `json:"subscriptions"` // JSON tag is "subscriptions"
+	Sent             sysDataStats      `json:"sent"`
+	Received         sysDataStats      `json:"received"`
+	SlowConsumers    int64             `json:"slow_consumers"`
 	Routes           []json.RawMessage `json:"routes,omitempty"`   // only len needed
 	Gateways         []json.RawMessage `json:"gateways,omitempty"` // only len needed
-	JetStream        *sysJSVarz     `json:"jetstream,omitempty"`
+	JetStream        *sysJSVarz        `json:"jetstream,omitempty"`
 }
 
 type sysJSVarz struct {
@@ -72,7 +72,7 @@ type sysJSVarz struct {
 }
 
 type sysStatsMsg struct {
-	Server sysServerInfo `json:"server"`
+	Server sysServerInfo  `json:"server"`
 	Stats  sysServerStats `json:"statsz"` // JSON key is "statsz", not "stats"
 }
 
@@ -100,10 +100,18 @@ type SYSCollector struct {
 	nc     *nats.Conn
 	statsz map[string]*statszEntry // keyed by server ID
 	log    *slog.Logger            // optional; nil falls back to slog.Default()
+	// ttl and diagDelay default to the package defaults; tests set them shorter
+	// to exercise the sweep and no-data-diagnostic paths without a global race.
+	ttl       time.Duration
+	diagDelay time.Duration
 }
 
 func newSYSCollector() *SYSCollector {
-	return &SYSCollector{statsz: make(map[string]*statszEntry)}
+	return &SYSCollector{
+		statsz:    make(map[string]*statszEntry),
+		ttl:       defaultStatszTTL,
+		diagDelay: defaultDiagnosticDelay,
+	}
 }
 
 // cacheLen returns the number of servers currently in the STATSZ cache.
@@ -131,7 +139,7 @@ func (sc *SYSCollector) logger() *slog.Logger {
 // server cache until ctx is cancelled. Intended to be started as a goroutine.
 func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	log := sc.logger()
-	log.Info("$SYS collector starting", "urls", cfg.URLs, "subject", "$SYS.SERVER.*.STATSZ")
+	log.Info("$SYS collector starting", "urls", redactURLCredsAll(cfg.URLs), "subject", "$SYS.SERVER.*.STATSZ")
 
 	nc, err := connectNATS(cfg, log.With("conn", "sys"))
 	if err != nil {
@@ -183,7 +191,7 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	// Diagnostic: if no $SYS events arrive shortly after connecting, the
 	// connection almost certainly lacks system-account access. Say so plainly.
 	go func() {
-		t := time.NewTimer(20 * time.Second)
+		t := time.NewTimer(sc.diagDelay)
 		defer t.Stop()
 		select {
 		case <-ctx.Done():
@@ -194,7 +202,7 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 		}
 	}()
 
-	sweeper := time.NewTicker(statszTTL / 3)
+	sweeper := time.NewTicker(sc.ttl / 3)
 	defer sweeper.Stop()
 
 	for {
@@ -208,7 +216,7 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 }
 
 func (sc *SYSCollector) sweepExpired() {
-	deadline := time.Now().Add(-statszTTL)
+	deadline := time.Now().Add(-sc.ttl)
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	for id, e := range sc.statsz {
@@ -257,7 +265,21 @@ func (sc *SYSCollector) poll(ctx context.Context, carry *Snapshot, slow bool) *S
 	// Fast path: build Varz from the STATSZ cache.
 	sc.mu.RLock()
 	for id, e := range sc.statsz {
-		snap.Varz[id] = statszToVarz(e)
+		v := statszToVarz(e)
+		// STATSZ carries no leaf count, listen port, max-connections limit,
+		// Go version, or gateway name. On fast polls these would be zero-valued,
+		// making the UI flicker (e.g. "leaf connectivity lost", "host:0"). Carry
+		// the last slow-poll values forward, the same way Routez/Leafz are below.
+		if carry != nil {
+			if prev := carry.Varz[id]; prev != nil {
+				v.Leafs = prev.Leafs
+				v.Port = prev.Port
+				v.MaxConn = prev.MaxConn
+				v.GoVersion = prev.GoVersion
+				v.Gateway = prev.Gateway
+			}
+		}
+		snap.Varz[id] = v
 	}
 	sc.mu.RUnlock()
 
@@ -291,6 +313,30 @@ func (sc *SYSCollector) poll(ctx context.Context, carry *Snapshot, slow bool) *S
 // from the snapshot rather than making live HTTP calls to NATS monitoring.
 var connzSubsDetailBody = json.RawMessage(`{"subscriptions_detail":true}`)
 
+// jszDetailBody asks PING.JSZ for per-stream and per-consumer detail
+// (account_details → stream_detail → consumer_detail). Without it the $SYS JSZ
+// reply carries only top-level aggregates, so the JetStream page would show
+// totals but no streams under $SYS collection. (streams=true with no account
+// makes nats-server auto-set accounts=true, so account_details is populated.)
+//
+// NOTE the key is "consumer" (singular): unlike the HTTP /jsz endpoint, which
+// decodes the "consumers" *query param* into JSzOptions.Consumer, the $SYS PING
+// path unmarshals this body straight into JSzOptions, whose JSON tag is
+// `consumer`. Using "consumers" here would silently drop consumer_detail.
+// config=true is required for the stream/consumer config blocks (storage,
+// replicas, limits, policies, filter); without it they come back null.
+var jszDetailBody = json.RawMessage(`{"streams":true,"consumer":true,"config":true}`)
+
+// jszPingBody selects the PING.JSZ request body for a poll. Detail is requested
+// only on slow polls (it's relatively expensive); fast polls carry the previous
+// slow poll's JSInfo forward, so they need no JSZ body at all.
+func jszPingBody(slowDetail bool) []byte {
+	if slowDetail {
+		return jszDetailBody
+	}
+	return nil
+}
+
 // fillFromPing fires all PING fan-in requests in parallel and populates snap.
 // slowDetail requests per-connection subscription detail from PING.CONNZ so that
 // getSubsRows can be served from the snapshot without HTTP on slow polls.
@@ -305,6 +351,7 @@ func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *S
 	if slowDetail {
 		connzBody = connzSubsDetailBody
 	}
+	jszBody := jszPingBody(slowDetail)
 
 	var mu sync.Mutex
 	endpoints := []endpoint{
@@ -344,7 +391,7 @@ func (sc *SYSCollector) fillFromPing(ctx context.Context, nc *nats.Conn, snap *S
 				snap.Subsz[id] = &v
 			}
 		}},
-		{"JSZ", nil, func(id string, data json.RawMessage) {
+		{"JSZ", jszBody, func(id string, data json.RawMessage) {
 			var v JSInfo
 			if json.Unmarshal(data, &v) == nil {
 				snap.JSInfo[id] = &v

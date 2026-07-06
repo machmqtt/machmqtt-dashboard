@@ -6,7 +6,7 @@ This guide covers building and running the MachMQTT Dashboard from source or via
 
 ### From Source
 
-- **Go** 1.24+
+- **Go** 1.26+
 - **Node.js** 22+
 - **npm** (ships with Node.js)
 
@@ -35,6 +35,10 @@ Login with `admin` / `admin`.
 The compose stack runs:
 - 3 NATS servers (nats-1, nats-2, nats-3) with JetStream enabled, clustered
 - The dashboard on port 8080, polling all three servers
+
+No manual cluster-creation step is needed: `config.docker.yaml` (mounted into the
+dashboard container) declares an `environments:` entry naming the three servers, which
+the dashboard seeds into its database on first startup.
 
 ### Generating Test Traffic
 
@@ -144,8 +148,9 @@ This runs all Go unit tests with a 120-second timeout.
 machmqtt-dashboard [flags]
 
 Flags:
-  -config string   Path to config file (default "config.yaml")
-  -version         Print version and exit
+  -config string    Path to config file (default "config.yaml")
+  -version          Print version and exit
+  -example-config   Print a fully commented example config.yaml to stdout and exit
 ```
 
 ## Ports

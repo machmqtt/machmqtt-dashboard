@@ -15,9 +15,13 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 )
 
-// bridgeTTL is how long a bridge's last-seen entry survives without a new
+// defaultBridgeTTL is how long a bridge's last-seen entry survives without a new
 // publish before it is considered gone. Set to 3× the expected publish interval.
-const bridgeTTL = 45 * time.Second
+const defaultBridgeTTL = 45 * time.Second
+
+// defaultDiagnosticDelay is how long the $SYS / metrics subscribers wait for the
+// first message before warning that none arrived.
+const defaultDiagnosticDelay = 20 * time.Second
 
 // bridgeMetricsSchemaV is the BridgeMetricsMsg schema version this build
 // understands. Messages with a higher "v" are skipped (see the subscriber).
@@ -31,36 +35,22 @@ type BridgeMetricsMsg struct {
 	// PublishedAt is the publisher's send time. Staleness is tracked via the
 	// receive time (see cachedBridge.receivedAt); this is retained to document
 	// the wire schema and is available for clock-skew diagnostics.
-	PublishedAt  time.Time        `json:"published_at"`
-	InstanceID   string           `json:"instance_id"`   // ephemeral, matches cluster heartbeat id
-	InstanceName string           `json:"instance_name"` // stable across restarts — dashboard's historical key
-	Version      string           `json:"version,omitempty"`
-	Drained      bool             `json:"drained,omitempty"`
-	Connections  BridgeMsgConns   `json:"connections"`
-	Messages     BridgeMsgMsgs    `json:"messages"`
-	NATS         BridgeMsgNATS    `json:"nats"`
-	Pool         BridgePool       `json:"pool"`
+	PublishedAt  time.Time `json:"published_at"`
+	InstanceID   string    `json:"instance_id"`   // ephemeral, matches cluster heartbeat id
+	InstanceName string    `json:"instance_name"` // stable across restarts — dashboard's historical key
+	Version      string    `json:"version,omitempty"`
+	Drained      bool      `json:"drained,omitempty"`
 
-	ConsumerPendingMessages int64            `json:"consumer_pending_messages"`
-	StalledConsumers        int64            `json:"stalled_consumers"`
-	SessionWriteBehindDepth int64            `json:"session_write_behind_depth"`
-	Account                 *BridgeMsgAccount `json:"account,omitempty"`
-}
+	// Metrics carries the full MQTTMetrics counter set (the same struct the HTTP
+	// /metrics parser fills). The broker now embeds instance_id and drained inside
+	// this object too; bridgeMsgToInstance prefers those when present.
+	Metrics *MQTTMetrics `json:"metrics,omitempty"`
 
-type BridgeMsgConns struct {
-	Active   int64 `json:"active"`
-	Total    int64 `json:"total"`
-	Rejected int64 `json:"rejected"`
-}
-
-type BridgeMsgMsgs struct {
-	RecvQoS0    int64 `json:"recv_qos0"`
-	RecvQoS1    int64 `json:"recv_qos1"`
-	RecvQoS2    int64 `json:"recv_qos2"`
-	SentQoS0    int64 `json:"sent_qos0"`
-	SentQoS1    int64 `json:"sent_qos1"`
-	SentQoS2    int64 `json:"sent_qos2"`
-	Redelivered int64 `json:"redelivered"`
+	// NATS, Pool, and Account feed the connection/pool/JetStream diagnostics in
+	// Status — these are NOT part of MQTTMetrics.
+	NATS    BridgeMsgNATS     `json:"nats"`
+	Pool    BridgePool        `json:"pool"`
+	Account *BridgeMsgAccount `json:"account,omitempty"`
 }
 
 type BridgeMsgNATS struct {
@@ -92,16 +82,27 @@ type BridgePool struct {
 
 // BridgePoolSlot is one slot in the NATS connection pool.
 type BridgePoolSlot struct {
-	Index      int   `json:"index"`
-	Connected  bool  `json:"connected"`
-	SubCount   int64 `json:"sub_count"`
-	PubCount   int64 `json:"pub_count"`
-	FlushCount int64 `json:"flush_count"`
+	Index         int   `json:"index"`
+	Connected     bool  `json:"connected"`
+	SubCount      int64 `json:"sub_count"`
+	PubCount      int64 `json:"pub_count"`
+	FlushCount    int64 `json:"flush_count"`
+	BufferedBytes int64 `json:"buffered_bytes"`
+	OutMsgs       int64 `json:"out_msgs"`
+	InMsgs        int64 `json:"in_msgs"`
+	OutBytes      int64 `json:"out_bytes"`
+	InBytes       int64 `json:"in_bytes"`
+	Reconnects    int64 `json:"reconnects"`
 }
 
 type cachedBridge struct {
 	msg        *BridgeMetricsMsg
 	receivedAt time.Time
+	// NATS-side message rates, derived from the delta between successive metrics
+	// publishes. Push messages carry only cumulative counters, so the subscriber
+	// computes the rates the Fleet view and per-bridge trend charts display.
+	inRate  float64
+	outRate float64
 }
 
 // MQTTSubscriber maintains a live TTL-keyed cache of bridge metrics received
@@ -112,10 +113,18 @@ type MQTTSubscriber struct {
 	bridges map[string]*cachedBridge // keyed by instance_name
 	nc      *nats.Conn               // current NATS connection; nil when disconnected
 	log     *slog.Logger             // optional; nil falls back to slog.Default()
+	// ttl and diagDelay default to the package defaults; tests set them shorter
+	// to exercise the sweep and no-data-diagnostic paths without a global race.
+	ttl       time.Duration
+	diagDelay time.Duration
 }
 
 func newMQTTSubscriber() *MQTTSubscriber {
-	return &MQTTSubscriber{bridges: make(map[string]*cachedBridge)}
+	return &MQTTSubscriber{
+		bridges:   make(map[string]*cachedBridge),
+		ttl:       defaultBridgeTTL,
+		diagDelay: defaultDiagnosticDelay,
+	}
 }
 
 func (s *MQTTSubscriber) logger() *slog.Logger {
@@ -138,7 +147,7 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	log := s.logger()
 	prefix := cfg.SubjectPrefixOrDefault()
 	subject := prefix + ".metrics.>"
-	log.Info("mqtt metrics subscriber starting", "urls", cfg.URLs, "subject", subject)
+	log.Info("mqtt metrics subscriber starting", "urls", redactURLCredsAll(cfg.URLs), "subject", subject)
 
 	nc, err := connectNATS(cfg, log.With("conn", "mqtt-metrics"))
 	if err != nil {
@@ -187,7 +196,19 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 		if m.Drained {
 			delete(s.bridges, m.InstanceName)
 		} else {
-			s.bridges[m.InstanceName] = &cachedBridge{msg: &m, receivedAt: time.Now()}
+			now := time.Now()
+			cb := &cachedBridge{msg: &m, receivedAt: now}
+			// Derive NATS-side msg rates from the counter delta vs the prior publish.
+			if prev, ok := s.bridges[m.InstanceName]; ok && prev.msg != nil && prev.msg.Metrics != nil && m.Metrics != nil {
+				dt := now.Sub(prev.receivedAt).Seconds()
+				if dt > 0 {
+					cb.inRate = nonNegRate(natsInTotal(m.Metrics), natsInTotal(prev.msg.Metrics), dt)
+					cb.outRate = nonNegRate(natsOutTotal(m.Metrics), natsOutTotal(prev.msg.Metrics), dt)
+				} else {
+					cb.inRate, cb.outRate = prev.inRate, prev.outRate
+				}
+			}
+			s.bridges[m.InstanceName] = cb
 		}
 		s.mu.Unlock()
 	})
@@ -200,18 +221,18 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	// MachMQTT bridges are not publishing to this subject. The MachMQTT Fleet
 	// pages stay empty until they do.
 	go func() {
-		t := time.NewTimer(20 * time.Second)
+		t := time.NewTimer(s.diagDelay)
 		defer t.Stop()
 		select {
 		case <-ctx.Done():
 		case <-t.C:
 			if received.Load() == 0 {
-				log.Warn("mqtt metrics subscriber: no bridge metrics received within 20s — no MachMQTT bridge is publishing to "+subject+"; the MachMQTT Fleet pages will stay empty until bridges publish metrics (or disable the NATS connection to use connz-scan discovery instead)")
+				log.Warn("mqtt metrics subscriber: no bridge metrics received within 20s — no MachMQTT bridge is publishing to " + subject + "; the MachMQTT Fleet pages will stay empty until bridges publish metrics (or disable the NATS connection to use connz-scan discovery instead)")
 			}
 		}
 	}()
 
-	sweeper := time.NewTicker(bridgeTTL / 3)
+	sweeper := time.NewTicker(s.ttl / 3)
 	defer sweeper.Stop()
 
 	for {
@@ -225,7 +246,7 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 }
 
 func (s *MQTTSubscriber) sweepExpired() {
-	deadline := time.Now().Add(-bridgeTTL)
+	deadline := time.Now().Add(-s.ttl)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name, cb := range s.bridges {
@@ -241,9 +262,29 @@ func (s *MQTTSubscriber) Bridges() []MQTTBridgeInstance {
 	defer s.mu.RUnlock()
 	out := make([]MQTTBridgeInstance, 0, len(s.bridges))
 	for name, cb := range s.bridges {
-		out = append(out, bridgeMsgToInstance(name, cb.msg))
+		inst := bridgeMsgToInstance(name, cb.msg)
+		inst.InMsgsRate = cb.inRate
+		inst.OutMsgsRate = cb.outRate
+		out = append(out, inst)
 	}
 	return out
+}
+
+// natsInTotal / natsOutTotal are the bridge's cumulative NATS-side message
+// counts: published-to-NATS and consumed-from-NATS across QoS levels. Their
+// deltas drive the bridge's InMsgsRate/OutMsgsRate.
+func natsInTotal(m *MQTTMetrics) int64 {
+	return m.ServerPublishedQoS0 + m.ServerPublishedQoS1 + m.ServerPublishedQoS2
+}
+func natsOutTotal(m *MQTTMetrics) int64 {
+	return m.ServerConsumedQoS0 + m.ServerConsumedQoS1 + m.ServerConsumedQoS2
+}
+
+func nonNegRate(cur, prev int64, dt float64) float64 {
+	if dt <= 0 || cur < prev {
+		return 0
+	}
+	return float64(cur-prev) / dt
 }
 
 // bridgeMsgToInstance converts a wire message into the MQTTBridgeInstance shape.
@@ -255,33 +296,33 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 	}
 	for _, sl := range m.Pool.Slots {
 		pool.Slots = append(pool.Slots, MQTTPoolSlot{
-			Index:      sl.Index,
-			Connected:  sl.Connected,
-			SubCount:   sl.SubCount,
-			PubCount:   sl.PubCount,
-			FlushCount: sl.FlushCount,
+			Index:         sl.Index,
+			Connected:     sl.Connected,
+			SubCount:      sl.SubCount,
+			PubCount:      sl.PubCount,
+			FlushCount:    sl.FlushCount,
+			BufferedBytes: sl.BufferedBytes,
+			OutMsgs:       sl.OutMsgs,
+			InMsgs:        sl.InMsgs,
+			OutBytes:      sl.OutBytes,
+			InBytes:       sl.InBytes,
+			Reconnects:    sl.Reconnects,
 		})
 	}
 
-	metrics := &MQTTMetrics{
-		ConnectionsActive:       m.Connections.Active,
-		ConnectionsTotal:        m.Connections.Total,
-		ConnectionsRejected:     m.Connections.Rejected,
-		MsgsRecvQoS0:            m.Messages.RecvQoS0,
-		MsgsRecvQoS1:            m.Messages.RecvQoS1,
-		MsgsRecvQoS2:            m.Messages.RecvQoS2,
-		MsgsSentQoS0:            m.Messages.SentQoS0,
-		MsgsSentQoS1:            m.Messages.SentQoS1,
-		MsgsSentQoS2:            m.Messages.SentQoS2,
-		MsgsRedelivered:         m.Messages.Redelivered,
-		NATSDisconnects:         m.NATS.Disconnects,
-		NATSReconnects:          int64(m.NATS.Reconnects),
-		NATSSlowConsumer:        m.NATS.SlowConsumer,
-		ConsumerPendingMessages: m.ConsumerPendingMessages,
-		StalledConsumers:        m.StalledConsumers,
-		SessionWriteBehindDepth: m.SessionWriteBehindDepth,
-		InstanceID:              m.InstanceID,
-		Drained:                 boolToInt64(m.Drained),
+	// The full counter set now arrives inside m.Metrics. When absent, substitute
+	// the JS-absent sentinel the HTTP parser uses so the rest of the mapping is
+	// nil-safe. The broker also embeds instance_id and drained inside Metrics, so
+	// prefer those and only fall back to the top-level wire fields when unset.
+	metrics := m.Metrics
+	if metrics == nil {
+		metrics = &MQTTMetrics{ConsumerPendingMessages: -1}
+	}
+	if metrics.InstanceID == "" {
+		metrics.InstanceID = m.InstanceID
+	}
+	if metrics.Drained == 0 {
+		metrics.Drained = boolToInt64(m.Drained)
 	}
 
 	natsConn := MQTTNATSConnection{
@@ -309,7 +350,7 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 		Name:          name,
 		Ready:         m.NATS.Connected && !m.Drained,
 		Draining:      m.Drained,
-		Connections:   int(m.Connections.Active),
+		Connections:   int(metrics.ConnectionsActive),
 		NATSConnected: m.NATS.Connected,
 		Pool:          pool,
 		Metrics:       metrics,

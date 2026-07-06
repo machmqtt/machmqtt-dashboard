@@ -594,8 +594,11 @@ func TestHandleMeUserNotFound(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "session", Value: token})
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", w.Code)
+	// The middleware re-checks the user against the DB, so a deleted user's
+	// still-signed token is rejected as unauthorized (session revoked) before
+	// the handler runs.
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
 	}
 }
 
@@ -618,8 +621,8 @@ func TestHandleListUsersStoreError(t *testing.T) {
 func TestSweepOnceRemovesFullyExpired(t *testing.T) {
 	rl := NewLoginRateLimiter(10, 30*time.Millisecond)
 	defer rl.Stop()
-	rl.Allow("10.0.0.1") // adds an attempt
-	rl.Allow("10.0.0.2") // adds an attempt
+	rl.Allow("10.0.0.1")              // adds an attempt
+	rl.Allow("10.0.0.2")              // adds an attempt
 	time.Sleep(50 * time.Millisecond) // both expire
 	rl.sweepOnce()
 	rl.mu.Lock()
@@ -650,8 +653,8 @@ func TestSweepOnceTrimsPartiallyExpired(t *testing.T) {
 func TestRateLimiterPrunesExpiredAttempts(t *testing.T) {
 	rl := NewLoginRateLimiter(2, 30*time.Millisecond)
 	defer rl.Stop()
-	rl.Allow("5.5.5.5") // first attempt
-	rl.Allow("5.5.5.5") // second — now at limit
+	rl.Allow("5.5.5.5")               // first attempt
+	rl.Allow("5.5.5.5")               // second — now at limit
 	time.Sleep(50 * time.Millisecond) // both expire
 	// Should be allowed again after expiry (pruning path in Allow)
 	if !rl.Allow("5.5.5.5") {

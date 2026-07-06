@@ -90,7 +90,7 @@ export function ServerDetailPage() {
         <Link to="/" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
           <ArrowLeft className="w-5 h-5" />
         </Link>
-        <h1 className="text-2xl font-semibold">{server.server_name || server.server_id}</h1>
+        <h1 className="text-2xl font-semibold truncate min-w-0" title={server.server_name || server.server_id}>{server.server_name || server.server_id}</h1>
       </div>
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-6 text-sm">
@@ -167,9 +167,9 @@ export function ServerDetailPage() {
 
 function Item({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="text-gray-500 dark:text-gray-400 text-xs mb-1">{label}</div>
-      <div className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value}</div>
+      <div className={`font-medium truncate ${mono ? 'font-mono text-xs' : ''}`} title={value}>{value}</div>
     </div>
   )
 }

@@ -89,6 +89,18 @@ func (m *Manager) BuildMetricSample(clusterID string, ts time.Time, overview *Ov
 				v := mx.ConsumerPendingMessages
 				bm.ConsumerPendingMessages = &v
 			}
+			// Trend-line gauges.
+			bm.SocketsOpen = mx.SocketsOpen
+			bm.InflightOutMessages = mx.InflightOutMessages
+			bm.OpQueueDepth = mx.OpQueueDepth
+			bm.OpSuspendedConns = mx.OpSuspendedConns
+			bm.WorkerPoolQueueDepth = mx.WorkerPoolQueueDepth
+			bm.PoolSlotConnected = mx.PoolSlotConnected
+			bm.RetainedMessages = mx.RetainedMessages
+			bm.SubscriptionsActive = mx.SubscriptionsActive
+			bm.GoHeapInuseBytes = mx.GoHeapInuseBytes
+			bm.GoGoroutines = mx.GoGoroutines
+			bm.ScramSessionsActive = mx.ScramSessionsActive
 		}
 		sample.MQTTBridges = append(sample.MQTTBridges, bm)
 	}

@@ -37,12 +37,23 @@ func TestMQTTSubscriberReceivesBridgeMetrics(t *testing.T) {
 		InstanceID:   "bridge-abc",
 		InstanceName: "my-bridge",
 		NATS:         BridgeMsgNATS{Connected: true},
-		Connections:  BridgeMsgConns{Active: 3},
-		ConsumerPendingMessages: -1,
+		Metrics: &MQTTMetrics{
+			ConnectionsActive:       3,
+			MsgsRecvQoS1:            42,
+			SubscriptionsActive:     7,
+			ConsumerPendingMessages: -1,
+			NATSEnforcementFallback: 9,
+			NATSEnforcementDenied:   11,
+			WillSuppressedShutdown:  13,
+		},
 		Pool: BridgePool{
 			Size: 2,
 			Slots: []BridgePoolSlot{
-				{Index: 0, Connected: true, SubCount: 10, PubCount: 5},
+				{
+					Index: 0, Connected: true, SubCount: 10, PubCount: 5,
+					BufferedBytes: 2048, OutMsgs: 100, InMsgs: 90,
+					OutBytes: 4096, InBytes: 3072, Reconnects: 2,
+				},
 				{Index: 1, Connected: true, SubCount: 8, PubCount: 3},
 			},
 		},
@@ -80,8 +91,26 @@ func TestMQTTSubscriberReceivesBridgeMetrics(t *testing.T) {
 	if b.Status.Metrics.ConnectionsActive != 3 {
 		t.Errorf("ConnectionsActive = %d, want 3", b.Status.Metrics.ConnectionsActive)
 	}
+	if b.Status.Metrics.SubscriptionsActive != 7 {
+		t.Errorf("SubscriptionsActive = %d, want 7", b.Status.Metrics.SubscriptionsActive)
+	}
+	if b.Status.Metrics.MsgsRecvQoS1 != 42 {
+		t.Errorf("MsgsRecvQoS1 = %d, want 42", b.Status.Metrics.MsgsRecvQoS1)
+	}
 	if b.Status.Metrics.ConsumerPendingMessages != -1 {
 		t.Errorf("ConsumerPendingMessages = %d, want -1", b.Status.Metrics.ConsumerPendingMessages)
+	}
+	if b.Status.Metrics.NATSEnforcementFallback != 9 {
+		t.Errorf("NATSEnforcementFallback = %d, want 9", b.Status.Metrics.NATSEnforcementFallback)
+	}
+	if b.Status.Metrics.NATSEnforcementDenied != 11 {
+		t.Errorf("NATSEnforcementDenied = %d, want 11", b.Status.Metrics.NATSEnforcementDenied)
+	}
+	if b.Status.Metrics.WillSuppressedShutdown != 13 {
+		t.Errorf("WillSuppressedShutdown = %d, want 13", b.Status.Metrics.WillSuppressedShutdown)
+	}
+	if b.Status.Connections != 3 {
+		t.Errorf("Status.Connections = %d, want 3", b.Status.Connections)
 	}
 	if b.Status.Pool == nil {
 		t.Fatal("Pool is nil")
@@ -91,6 +120,14 @@ func TestMQTTSubscriberReceivesBridgeMetrics(t *testing.T) {
 	}
 	if len(b.Status.Pool.Slots) != 2 {
 		t.Errorf("Pool.Slots len = %d, want 2", len(b.Status.Pool.Slots))
+	}
+	// Verify the per-slot backpressure/throughput fields survive the pub/sub
+	// round-trip (published over NATS -> decoded by the subscriber -> mapped to
+	// MQTTPoolSlot), not just the count of slots.
+	slot0 := b.Status.Pool.Slots[0]
+	if slot0.BufferedBytes != 2048 || slot0.OutMsgs != 100 || slot0.InMsgs != 90 ||
+		slot0.OutBytes != 4096 || slot0.InBytes != 3072 || slot0.Reconnects != 2 {
+		t.Errorf("Pool.Slots[0] backpressure fields not mapped from push message: %+v", slot0)
 	}
 }
 
@@ -120,7 +157,7 @@ func TestMQTTSubscriberMultipleBridges(t *testing.T) {
 			V:            1,
 			InstanceID:   name,
 			InstanceName: name,
-			Connections:  BridgeMsgConns{Active: int64(i + 1)},
+			Metrics:      &MQTTMetrics{ConnectionsActive: int64(i + 1)},
 		}
 		data, _ := json.Marshal(msg)
 		nc.Publish("$MQTT5.metrics."+name, data)
@@ -237,7 +274,7 @@ func TestMQTTSubscriberAccountMapped(t *testing.T) {
 		V:            1,
 		InstanceID:   "js-bridge",
 		InstanceName: "js-bridge",
-		Connections:  BridgeMsgConns{Active: 1},
+		Metrics:      &MQTTMetrics{ConnectionsActive: 1},
 		Account: &BridgeMsgAccount{
 			Domain:    "hub",
 			Memory:    1024,
@@ -288,7 +325,7 @@ func TestMQTTSubscriberRunExitsOnConnectError(t *testing.T) {
 func TestMQTTSubscriberSweepExpired(t *testing.T) {
 	sub := newMQTTSubscriber()
 	sub.bridges["live"] = &cachedBridge{receivedAt: time.Now()}
-	sub.bridges["stale"] = &cachedBridge{receivedAt: time.Now().Add(-2 * bridgeTTL)}
+	sub.bridges["stale"] = &cachedBridge{receivedAt: time.Now().Add(-2 * defaultBridgeTTL)}
 	sub.sweepExpired()
 	if _, ok := sub.bridges["live"]; !ok {
 		t.Error("live bridge was unexpectedly removed")

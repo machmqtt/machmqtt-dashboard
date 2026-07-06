@@ -14,6 +14,13 @@ internal/api/dist/assets/
 # Node
 ui/node_modules/
 
+# Playwright e2e artifacts
+ui/e2e/.auth/
+ui/e2e/.report/
+ui/e2e/.artifacts/
+ui/test-results/
+ui/playwright-report/
+
 # Test / coverage
 coverage.out
 *.test
@@ -32,3 +39,10 @@ Thumbs.db
 
 # Config with secrets
 config.yaml
+
+# License keys / tokens (never commit — commercial-software secrets)
+*-license.*
+*.lic
+*.token
+*.license
+dev-license.*

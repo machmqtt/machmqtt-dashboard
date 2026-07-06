@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -29,6 +30,10 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Audit trail for failed logins / brute-force attempts (never log the password).
 		a.log.Warn("login failed", "username", req.Username, "ip", ip)
+		if errors.Is(err, store.ErrAccountLocked) {
+			http.Error(w, `{"error":"account temporarily locked, try again later"}`, http.StatusTooManyRequests)
+			return
+		}
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
@@ -45,6 +50,13 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	// Bump token_version so the just-cleared cookie can't be replayed (signs the
+	// user out of any other active sessions too).
+	if claims := UserFromContext(r.Context()); claims != nil {
+		if err := a.store.BumpTokenVersion(claims.UserID); err != nil {
+			a.log.Warn("logout: token invalidation failed", "err", err)
+		}
+	}
 	a.ClearSessionCookie(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true}`))
@@ -88,9 +100,22 @@ func (a *Auth) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.NewPassword) < store.MinPasswordLength {
+		http.Error(w, `{"error":"`+store.ErrPasswordTooShort.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
 	if err := a.store.ChangePassword(id, req.OldPassword, req.NewPassword); err != nil {
 		http.Error(w, `{"error":"failed to change password"}`, http.StatusBadRequest)
 		return
+	}
+
+	// ChangePassword bumped token_version, invalidating this request's own
+	// session. Re-issue a fresh cookie so the user stays logged in.
+	if user, err := a.store.GetUser(id); err == nil {
+		if token, err := a.IssueToken(user); err == nil {
+			a.SetSessionCookie(w, token)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -122,6 +147,10 @@ func (a *Auth) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	if req.Username == "" || req.Password == "" {
 		http.Error(w, `{"error":"username and password are required"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.Password) < store.MinPasswordLength {
+		http.Error(w, `{"error":"`+store.ErrPasswordTooShort.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Role == "" {

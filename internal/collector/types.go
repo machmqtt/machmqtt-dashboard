@@ -182,8 +182,8 @@ type SubszResp struct {
 	NumCache  uint32  `json:"num_cache"`
 	NumInsert uint64  `json:"num_inserts"`
 	NumRemove uint64  `json:"num_removes"`
-	NumMatch  uint64  `json:"num_matching"`
-	CacheHit  uint64  `json:"cache_hit_rate"`
+	NumMatch  uint64  `json:"num_matches"`
+	CacheHit  float64 `json:"cache_hit_rate"`
 	MaxFanout uint32  `json:"max_fanout"`
 	AvgFanout float64 `json:"avg_fanout"`
 }

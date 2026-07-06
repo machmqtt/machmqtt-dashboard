@@ -32,6 +32,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 		ID                 string  `json:"id"`
 		Name               string  `json:"name"`
 		Degraded           bool    `json:"degraded"`
+		DegradedReason     string  `json:"degraded_reason,omitempty"`
 		CollectionMode     string  `json:"collection_mode"`
 		LastPollAgeSeconds float64 `json:"last_poll_age_seconds"`
 	}
@@ -40,6 +41,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 		ci := clusterInfo{ID: c.ID, Name: c.Name}
 		if h := s.manager.ClusterHealth(c.ID); h != nil {
 			ci.Degraded = h.Degraded()
+			ci.DegradedReason = h.DegradedReason()
 			ci.CollectionMode = h.CollectionMode
 			ci.LastPollAgeSeconds = h.LastPollAgeSeconds
 		}
@@ -331,17 +333,34 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 
 	const maxRows = 50000
 
+	// Fetch every server's connz concurrently — a sequential loop serializes each
+	// server's round-trip latency, which is slow on large clusters and blocks the
+	// request goroutine for the sum of all per-server fetches on a cache miss.
+	results := make([]*collector.Connz, len(servers))
+	var wg sync.WaitGroup
+	for i, url := range servers {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 1024)
+			if err != nil {
+				connz, err = fetcher.FetchConnzWithSubs(ctx, url, 1024)
+				if err != nil {
+					return
+				}
+			}
+			results[i] = connz
+		}(i, url)
+	}
+	wg.Wait()
+
 	var all []subRow
-	for _, url := range servers {
+	for _, connz := range results {
+		if connz == nil {
+			continue
+		}
 		if len(all) >= maxRows {
 			break
-		}
-		connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 1024)
-		if err != nil {
-			connz, err = fetcher.FetchConnzWithSubs(ctx, url, 1024)
-			if err != nil {
-				continue
-			}
 		}
 		srvName := serverName(connz.ServerID)
 		for _, c := range connz.Conns {
@@ -513,7 +532,6 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-
 func (s *Server) handleJSz(w http.ResponseWriter, r *http.Request) {
 	snap := s.envSnapshot(w, r)
 	if snap == nil {
@@ -640,6 +658,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 		// silent encode failure is otherwise invisible. Log it once here, the
 		// single chokepoint every JSON handler funnels through.
 		slog.Warn("writeJSON encode failed", "err", err)
+	}
+}
+
+// writeRawJSON writes pre-encoded JSON bytes (e.g. a cached response body).
+func writeRawJSON(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(body); err != nil {
+		slog.Warn("writeRawJSON write failed", "err", err)
 	}
 }
 

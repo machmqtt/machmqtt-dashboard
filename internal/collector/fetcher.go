@@ -181,7 +181,11 @@ func (f *Fetcher) FetchSubsz(ctx context.Context, baseURL string) (*SubszResp, e
 }
 
 func (f *Fetcher) FetchJSInfo(ctx context.Context, baseURL string) (*JSInfo, error) {
-	params := url.Values{"streams": {"true"}, "consumers": {"true"}}
+	// config=true is required for nats-server to include each stream's and
+	// consumer's config block (storage, replicas, limits, retention, deliver/ack
+	// policy, filter subject). Without it those come back null and the JetStream
+	// page can't show stream settings or consumer policies.
+	params := url.Values{"streams": {"true"}, "consumers": {"true"}, "config": {"true"}}
 	var j JSInfo
 	return &j, f.fetch(ctx, baseURL, "/jsz", params, &j)
 }

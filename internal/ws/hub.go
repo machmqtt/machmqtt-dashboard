@@ -40,23 +40,41 @@ func (h *Hub) notifySubscribe(c *Client, env string) {
 	}
 }
 
-// SendTo serializes a message and delivers it to a single client.
-func (h *Hub) SendTo(c *Client, env string, msgType string, data any) {
+// prepare serializes a message and pre-frames it as a WebSocket
+// PreparedMessage. It returns nil (and logs) on marshal/prepare failure so both
+// SendTo and Broadcast share a single encode path.
+func (h *Hub) prepare(env, msgType string, data any) *websocket.PreparedMessage {
 	raw, err := json.Marshal(Message{Type: msgType, Env: env, Data: data})
 	if err != nil {
-		h.log.Error("ws sendto marshal", "err", err)
-		return
+		h.log.Error("ws marshal", "err", err)
+		return nil
 	}
 	pm, err := websocket.NewPreparedMessage(websocket.TextMessage, raw)
 	if err != nil {
-		h.log.Error("ws sendto prepare", "err", err)
-		return
+		h.log.Error("ws prepare", "err", err)
+		return nil
 	}
+	return pm
+}
+
+// deliver queues a prepared message to a client, recording a drop if the
+// client's send buffer is full.
+func deliver(c *Client, pm *websocket.PreparedMessage) {
 	select {
 	case c.send <- pm:
+		c.noteDelivered()
 	default:
 		c.markDropped()
 	}
+}
+
+// SendTo serializes a message and delivers it to a single client.
+func (h *Hub) SendTo(c *Client, env string, msgType string, data any) {
+	pm := h.prepare(env, msgType, data)
+	if pm == nil {
+		return
+	}
+	deliver(c, pm)
 }
 
 // ClientCount returns the number of currently-connected WebSocket clients.
@@ -64,6 +82,33 @@ func (h *Hub) ClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
+}
+
+// DroppedTotal returns the cumulative number of outbound messages dropped to
+// slow clients across all currently-connected clients (surfaced in admin health
+// so a persistently-stale viewer is visible to operators, not just in a log line).
+func (h *Hub) DroppedTotal() uint64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var total uint64
+	for c := range h.clients {
+		total += c.dropped.Load()
+	}
+	return total
+}
+
+// StaleClientCount returns how many currently-connected clients have dropped at
+// least one message (i.e. are or were backed up).
+func (h *Hub) StaleClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	n := 0
+	for c := range h.clients {
+		if c.dropped.Load() > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func (h *Hub) Register(c *Client) {
@@ -87,14 +132,8 @@ func (h *Hub) Unregister(c *Client) {
 // subscribed to env. This removes the per-client JSON re-encode cost that
 // previously grew linearly with the number of connected viewers.
 func (h *Hub) Broadcast(env string, msgType string, data any) {
-	raw, err := json.Marshal(Message{Type: msgType, Env: env, Data: data})
-	if err != nil {
-		h.log.Error("ws broadcast marshal", "err", err)
-		return
-	}
-	pm, err := websocket.NewPreparedMessage(websocket.TextMessage, raw)
-	if err != nil {
-		h.log.Error("ws broadcast prepare", "err", err)
+	pm := h.prepare(env, msgType, data)
+	if pm == nil {
 		return
 	}
 
@@ -103,12 +142,7 @@ func (h *Hub) Broadcast(env string, msgType string, data any) {
 
 	for c := range h.clients {
 		if c.Env() == env {
-			select {
-			case c.send <- pm:
-			default:
-				// Drop message if the client is slow; markDropped surfaces it.
-				c.markDropped()
-			}
+			deliver(c, pm)
 		}
 	}
 }

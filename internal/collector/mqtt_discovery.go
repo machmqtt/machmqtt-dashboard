@@ -35,7 +35,13 @@ type MQTTBridgeInstance struct {
 // DiscoverMQTTBridges finds MQTT bridge instances from NATS connection data.
 // adminToken is the environment-level bearer token used to authenticate the
 // admin-API probe against each discovered bridge ("" = send no token).
-func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts []int, adminToken string) []MQTTBridgeInstance {
+//
+// trustedHosts is the set of hosts (lowercased, no port) the admin token may be
+// sent to. A discovered bridge whose IP/host is neither loopback nor trusted is
+// still probed, but without the token — this prevents a NATS client that merely
+// names itself "machmqtt-bridge" from a rogue address from capturing the shared
+// admin secret via the callback probe.
+func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts []int, adminToken string, trustedHosts map[string]bool) []MQTTBridgeInstance {
 	if snap == nil {
 		return nil
 	}
@@ -168,13 +174,19 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 			case <-ctx.Done():
 				return
 			}
+			// Only send the shared admin token to loopback or explicitly-trusted
+			// hosts; withhold it from any other discovered address.
+			probeToken := adminToken
+			if adminToken != "" && !discoveryHostTrusted(inst.IP, trustedHosts) {
+				probeToken = ""
+			}
 			for _, port := range adminPorts {
 				host := inst.IP
 				if net.ParseIP(host) != nil && strings.Contains(host, ":") {
 					host = "[" + host + "]"
 				}
 				url := fmt.Sprintf("http://%s:%d", host, port)
-				f := NewMQTTBridgeFetcher(url, inst.IP, adminToken)
+				f := NewMQTTBridgeFetcher(url, inst.IP, probeToken)
 				status := f.FetchStatus(ctx)
 				if status.Error == "" {
 					inst.AdminURL = url
@@ -191,6 +203,20 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 
 	wg.Wait()
 	return instances
+}
+
+// discoveryHostTrusted reports whether the environment admin token may be sent
+// to a discovered bridge at host. Loopback is always trusted (a colocated
+// bridge); otherwise the host must appear in the configured trusted set.
+func discoveryHostTrusted(host string, trusted map[string]bool) bool {
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	h := strings.ToLower(host)
+	if h == "localhost" {
+		return true
+	}
+	return trusted[h]
 }
 
 func isMQTTBridgeConn(name string) bool {

@@ -100,16 +100,14 @@ const MSG_RATE_LINES: LineDef[] = [
 export function MQTTOverviewPage() {
   const activeEnv = useStore((s) => s.activeEnv)
   const environments = useStore((s) => s.environments)
+  // bridges === null means "not loaded yet" → show the skeleton. Background
+  // refreshes update it in place, so the fleet doesn't strobe a skeleton (and
+  // lose the user's scroll position) on every poll.
   const [bridges, setBridges] = useState<BridgeInstance[] | null>(null)
-  const [loading, setLoading] = useState(true)
   const mqttMetrics = useMetrics(activeEnv, 'metrics/mqtt')
 
   const fetchData = useCallback(async () => {
-    if (!activeEnv) {
-      setLoading(false)
-      return
-    }
-    setLoading(true)
+    if (!activeEnv) return
     try {
       const res = await fetchWithTimeout(`/api/environments/${activeEnv}/mqtt/bridges`)
       if (res.ok) {
@@ -117,7 +115,13 @@ export function MQTTOverviewPage() {
         setBridges(data.bridges || [])
       }
     } catch { /* ignore */ }
-    setLoading(false)
+  }, [activeEnv])
+
+  // Clear the fleet when switching environments so the previous env's cards don't
+  // linger while the new env loads (bridges is local state, unlike the store-backed
+  // overview which setActiveEnv resets).
+  useEffect(() => {
+    setBridges(null) // eslint-disable-line react-hooks/set-state-in-effect -- intentional reset on env change
   }, [activeEnv])
 
   useEffect(() => {
@@ -151,7 +155,7 @@ export function MQTTOverviewPage() {
     )
   }
 
-  if (loading) {
+  if (!bridges) {
     return (
       <div>
         <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
@@ -163,7 +167,7 @@ export function MQTTOverviewPage() {
     )
   }
 
-  if (!bridges || bridges.length === 0) {
+  if (bridges.length === 0) {
     return (
       <div>
         <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
@@ -228,17 +232,17 @@ export function MQTTOverviewPage() {
           return (
           <div key={b.ip} className="bg-white dark:bg-gray-800 rounded-lg shadow">
             <div className="p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${healthy ? 'bg-healthy' : b.reachable ? 'bg-yellow-400' : 'bg-unhealthy'}`} />
-                  <h2 className="font-semibold text-lg">{displayName}</h2>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className={`shrink-0 w-2.5 h-2.5 rounded-full ${healthy ? 'bg-healthy' : b.reachable ? 'bg-yellow-400' : 'bg-unhealthy'}`} />
+                  <h2 className="font-semibold text-lg shrink-0">{displayName}</h2>
                   {s?.draining && (
-                    <span className="text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="Operator-drained: not accepting new connections">
+                    <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="Operator-drained: not accepting new connections">
                       Draining
                     </span>
                   )}
-                  <span className="text-xs text-gray-400">on {b.server_name}</span>
-                  {b.admin_url && <span className="text-xs text-gray-400 font-mono">{b.admin_url}</span>}
+                  <span className="text-xs text-gray-400 truncate" title={b.server_name}>on {b.server_name}</span>
+                  {b.admin_url && <span className="shrink-0 text-xs text-gray-400 font-mono">{b.admin_url}</span>}
                 </div>
                 <div className="flex items-center gap-4">
                   {s?.connz_available && (
@@ -408,9 +412,9 @@ function SC({ label, value, sub }: { label: string; value: string; sub?: string 
 
 function DI({ label, value }: { label: string; value: string }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="text-gray-500 dark:text-gray-400 text-xs">{label}</div>
-      <div className="font-medium">{value}</div>
+      <div className="font-medium truncate" title={value}>{value}</div>
     </div>
   )
 }

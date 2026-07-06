@@ -18,21 +18,21 @@ A real-time monitoring dashboard for [NATS](https://nats.io) clusters. Built wit
 ## Architecture
 
 ```
-┌──────────────┐     HTTP polling     ┌───────────────────┐
-│ NATS Server  │◄────────────────────►│  Go Backend       │
-│ :8222 (mon)  │  /varz /connz /jsz   │  Collector        │
-└──────────────┘                      │  ↓ Snapshot cache │
-                                      │  ↓ SQLite metrics │
-                                      │  ↓ WebSocket hub  │
-                                      └────────┬──────────┘
-                                               │ WS push
-                                      ┌────────▼──────────┐
-                                      │  React Frontend   │
-                                      │  Zustand store    │
-                                      └───────────────────┘
+┌──────────────┐  HTTP :8222 (monitoring, default)   ┌───────────────────┐
+│ NATS Server  │◄───────────────────────────────────►│  Go Backend       │
+│ /varz /connz │  NATS :4222 (optional push)         │  Collector        │
+│ /jsz ...     │◄───────────────────────────────────►│  ↓ Snapshot cache │
+└──────────────┘                                     │  ↓ SQLite metrics │
+                                                      │  ↓ WebSocket hub  │
+                                                      └────────┬──────────┘
+                                                               │ WS push
+                                                      ┌────────▼──────────┐
+                                                      │  React Frontend   │
+                                                      │  Zustand store    │
+                                                      └───────────────────┘
 ```
 
-The backend polls each NATS server's HTTP monitoring endpoints on a configurable interval (default 30s). All dashboard users share the same cached snapshot — multiple people viewing the dashboard generates zero additional load on your NATS cluster.
+By default the backend polls each NATS server's HTTP monitoring endpoints on a configurable interval (default 30s), with no NATS client connection required. A cluster can optionally configure a NATS client connection (`nats_conn`) for push-based collection instead — `$SYS` events for continuous server stats and/or a subscription for MachMQTT bridge metrics — with HTTP polling as the automatic fallback if push collection stops producing data. All dashboard users share the same cached snapshot — multiple people viewing the dashboard generates zero additional load on your NATS cluster or MachMQTT bridges.
 
 Time-series metrics are stored in SQLite for trend charts (configurable retention, default 24h).
 
@@ -52,7 +52,7 @@ Open [http://localhost:8080](http://localhost:8080) and log in with `admin` / `a
 
 ### From Source
 
-Prerequisites: Go 1.22+, Node.js 20+
+Prerequisites: Go 1.26+, Node.js 22+
 
 ```bash
 # Clone
@@ -94,10 +94,16 @@ metrics_retention: 24h          # how long time-series samples are kept (default
 # trust_proxy_headers: true     # honor X-Forwarded-For (only behind a trusted reverse proxy)
 ```
 
-Clusters are **not** configured in YAML — they're added and managed at runtime via the
-admin UI (Cluster Management), including servers, TLS, MQTT bridge discovery, and the
-optional NATS push-collection modes. A default admin user (`admin`/`admin`) is created on
-first startup; you'll be required to change the password on first login.
+Clusters can be declared in YAML under an `environments:` key to seed them automatically
+on first startup — an environment whose name isn't already in the database is created;
+one that already exists is left untouched, so runtime edits are never overwritten. This
+is what the Docker Compose stack above relies on: `config.docker.yaml` ships an
+`environments:` block declaring the 3-node cluster, so `docker compose up` polls all
+three servers with no manual step. Clusters can also be added and managed entirely at
+runtime via the admin UI (Cluster Management), including servers, TLS, MQTT bridge
+discovery, and the optional NATS push-collection modes. A default admin user
+(`admin`/`admin`) is created on first startup; you'll be required to change the password
+on first login.
 
 See [config.example.yaml](config.example.yaml) for the fully commented configuration.
 
@@ -121,15 +127,12 @@ The Vite dev server proxies `/api` requests to the Go backend on `:8080`.
 go test ./internal/...
 ```
 
-Integration tests run automatically when a NATS server is available on `localhost:4222`/`localhost:8222`. To start one:
-
-```bash
-docker run -d -p 4222:4222 -p 8222:8222 nats:latest -js -m 8222
-```
+Collector integration tests spin up an in-process NATS server (`internal/testutil/natstest`, built on the `nats-server/v2` test helpers) — no external NATS instance or Docker container is required.
 
 ## NATS Endpoints Used
 
-The dashboard reads from these HTTP monitoring endpoints. No NATS client connection is required.
+By default the dashboard reads from each server's HTTP monitoring endpoints, and no NATS
+client connection is required.
 
 | Endpoint | Data | Poll Frequency |
 |----------|------|----------------|
@@ -138,15 +141,19 @@ The dashboard reads from these HTTP monitoring endpoints. No NATS client connect
 | `/gatewayz` | Supercluster gateways | Every cycle |
 | `/leafz` | Leaf node connections | Every cycle |
 | `/healthz` | Server health | Every cycle |
-| `/connz` | Client connections | Every 3rd cycle |
-| `/subsz` | Subscription stats | Every 3rd cycle |
-| `/jsz` | JetStream streams/consumers | Every 3rd cycle |
-| `/accountz` | Account listing | Every 3rd cycle |
-| `/accstatz` | Per-account message stats | Every 3rd cycle |
+| `/connz` | Client connections | Every cycle |
+| `/subsz` | Subscription stats | Every 3rd (slow) cycle |
+| `/jsz` | JetStream streams/consumers | Every 3rd (slow) cycle |
+| `/accountz` | Account listing | Every 3rd (slow) cycle |
+
+When a cluster configures `nats_conn`, the dashboard also opens a NATS client connection
+(port 4222 by default) for push-based collection: `$SYS` events for continuous
+per-server stats and/or a subscription for MachMQTT bridge metrics. HTTP polling remains
+the automatic fallback if push collection stops producing data.
 
 ## Tech Stack
 
-- **Backend**: Go, SQLite (WAL mode), WebSocket (gorilla/websocket), JWT auth
+- **Backend**: Go, SQLite (WAL mode), WebSocket (gorilla/websocket), JWT auth, NATS client (nats.go) for optional push collection
 - **Frontend**: React 19, TypeScript, Zustand, TanStack Table, Recharts, Tailwind CSS, Vite
 - **Deployment**: Single binary with embedded frontend, Docker, Docker Compose
 

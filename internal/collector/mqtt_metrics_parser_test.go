@@ -40,6 +40,10 @@ machmqtt_auth_failure_total{reason="locked"} 2
 machmqtt_auth_failure_total{reason="other"} 1
 # TYPE machmqtt_scram_sessions_active gauge
 machmqtt_scram_sessions_active 2
+# TYPE machmqtt_nats_enforcement_fallback_total counter
+machmqtt_nats_enforcement_fallback_total 14
+# TYPE machmqtt_nats_enforcement_denied_total counter
+machmqtt_nats_enforcement_denied_total 15
 # TYPE machmqtt_client_messages_received_total counter
 machmqtt_client_messages_received_total{qos="0"} 10
 machmqtt_client_messages_received_total{qos="1"} 20
@@ -67,6 +71,7 @@ machmqtt_will_dropped_total{reason="invalid_topic"} 3
 machmqtt_will_dropped_total{reason="shutdown"} 4
 # TYPE machmqtt_will_suppressed_total counter
 machmqtt_will_suppressed_total{reason="reconnected"} 6
+machmqtt_will_suppressed_total{reason="shutdown"} 16
 # TYPE machmqtt_will_pending gauge
 machmqtt_will_pending 5
 # TYPE machmqtt_will_retry_pending gauge
@@ -146,23 +151,105 @@ machmqtt_go_gc_cycles_total 55
 # TYPE machmqtt_go_gc_pause_ns_total counter
 machmqtt_go_gc_pause_ns_total 999999
 machmqtt_drained 1
+# --- socket-level counters (post socket-split) ---
+machmqtt_sockets_open 9
+machmqtt_sockets_accepted_total 200
+machmqtt_ws_sockets_open 4
+machmqtt_ws_sockets_accepted_total 60
+# --- new rejection reasons ---
+machmqtt_connections_rejected_by_reason_total{reason="connect_timeout"} 6
+machmqtt_connections_rejected_by_reason_total{reason="auth_timeout"} 7
+machmqtt_connections_rejected_by_reason_total{reason="worker_pool"} 8
+# --- new auth-failure reasons ---
+machmqtt_auth_failure_total{reason="license"} 4
+machmqtt_auth_failure_total{reason="token_expired"} 5
+machmqtt_auth_failure_total{reason="bad_signature"} 6
+machmqtt_auth_failure_total{reason="claim_mismatch"} 7
+machmqtt_auth_failure_total{reason="jwks_unavailable"} 8
+# --- durability extras ---
+machmqtt_qos2_client_send_failed_total 18
+machmqtt_server_publish_failed_total{qos="0"} 1
+machmqtt_server_publish_failed_total{qos="1"} 2
+machmqtt_server_publish_failed_total{qos="2"} 3
+machmqtt_qos0_messages_shed_total 19
+machmqtt_oversized_dropped_total 20
+machmqtt_publish_outage_disconnects_total 21
+machmqtt_outbound_evictions_total 22
+machmqtt_outbound_stall_evictions_total 7
+machmqtt_outbound_stalled_connections 3
+machmqtt_outbound_bytes 4096
+machmqtt_retained_verify_failures_total 23
+# --- capacity & memory gauges ---
+machmqtt_retained_messages 500
+machmqtt_inflight_out_messages 24
+machmqtt_subscriptions_active 600
+# --- bridge / pool health ---
+machmqtt_pool_slot_connected 16
+machmqtt_pool_slot_rebuilds_total 25
+machmqtt_bridge_primary_rebuilds_total 26
+machmqtt_bridge_rebuilds_degraded_total 27
+machmqtt_bridge_consumer_reattach_total{result="reattached"} 28
+machmqtt_bridge_consumer_reattach_total{result="force_disconnected"} 29
+machmqtt_bridge_consumer_reattach_total{result="push_force_disconnected"} 30
+# --- throttling & ACL ---
+machmqtt_aggregate_publish_limit_msgs_per_sec 10000
+machmqtt_publish_throttled_total{scope="per_client"} 31
+machmqtt_publish_throttled_total{scope="aggregate"} 32
+machmqtt_acl_denied_total{action="publish"} 33
+machmqtt_acl_denied_total{action="subscribe"} 34
+# --- cluster counters ---
+machmqtt_cluster_inspect_timeouts_total 35
+machmqtt_cluster_takeover_dropped_total 36
+machmqtt_cluster_takeover_order_skew_total 37
+# --- queue backpressure ---
+machmqtt_worker_pool_queue_depth 38
+machmqtt_op_queue_depth 39
+machmqtt_op_queue_bytes 8192
+machmqtt_op_suspended_conns 40
+machmqtt_op_pool_queue_depth 41
+machmqtt_op_pool_rejected_total 42
+# --- session / consumer persistence ---
+machmqtt_consumer_seq_map_entries 43
+machmqtt_consumer_deletes_dropped_total 44
+machmqtt_consumer_delete_races_total 45
+machmqtt_session_deletes_dropped_total 46
+machmqtt_session_persist_failed_total{reason="write_failed"} 47
+machmqtt_session_persist_failed_total{reason="queue_full"} 48
+# --- reliability extras ---
+machmqtt_tls_cert_reload_failures_total 49
+machmqtt_oauth2_jwks_fetch_failures_total 50
+# --- TLS handshake duration histogram ---
+machmqtt_tls_handshake_duration_seconds_bucket{le="+Inf"} 60
+machmqtt_tls_handshake_duration_seconds_sum 0.06
+machmqtt_tls_handshake_duration_seconds_count 60
+# --- sparse hex-coded families ---
+machmqtt_connack_rejected_by_reason_total{reason="0x88"} 3
+machmqtt_connack_rejected_by_reason_total{reason="0x81"} 1
+machmqtt_disconnects_sent_by_reason_total{reason="0x8F"} 2
 `
 
 func TestParsePrometheusMetrics_Connections(t *testing.T) {
 	m := parsePrometheusMetrics(sampleMetrics)
 	checks := map[string]struct{ got, want int64 }{
-		"ConnectionsActive":   {m.ConnectionsActive, 7},
-		"ConnectionsTotal":    {m.ConnectionsTotal, 100},
-		"ConnectionsRejected": {m.ConnectionsRejected, 15},
-		"WSConnectionsActive": {m.WSConnectionsActive, 3},
-		"WSConnectionsTotal":  {m.WSConnectionsTotal, 50},
-		"RejectedMaxConns":    {m.RejectedMaxConns, 5},
-		"RejectedLicense":     {m.RejectedLicense, 4},
-		"RejectedPerIPConns":  {m.RejectedPerIPConns, 3},
-		"RejectedPerIPAccept": {m.RejectedPerIPAccept, 2},
-		"RejectedPoolFull":    {m.RejectedPoolFull, 1},
-		"DispatchSlotsTLS":    {m.DispatchSlotsTLS, 12},
-		"DispatchSlotsWS":     {m.DispatchSlotsWS, 8},
+		"ConnectionsActive":      {m.ConnectionsActive, 7},
+		"ConnectionsTotal":       {m.ConnectionsTotal, 100},
+		"ConnectionsRejected":    {m.ConnectionsRejected, 15},
+		"WSConnectionsActive":    {m.WSConnectionsActive, 3},
+		"WSConnectionsTotal":     {m.WSConnectionsTotal, 50},
+		"RejectedMaxConns":       {m.RejectedMaxConns, 5},
+		"RejectedLicense":        {m.RejectedLicense, 4},
+		"RejectedPerIPConns":     {m.RejectedPerIPConns, 3},
+		"RejectedPerIPAccept":    {m.RejectedPerIPAccept, 2},
+		"RejectedPoolFull":       {m.RejectedPoolFull, 1},
+		"RejectedConnectTimeout": {m.RejectedConnectTimeout, 6},
+		"RejectedAuthTimeout":    {m.RejectedAuthTimeout, 7},
+		"RejectedWorkerPool":     {m.RejectedWorkerPool, 8},
+		"DispatchSlotsTLS":       {m.DispatchSlotsTLS, 12},
+		"DispatchSlotsWS":        {m.DispatchSlotsWS, 8},
+		"SocketsOpen":            {m.SocketsOpen, 9},
+		"SocketsAccepted":        {m.SocketsAccepted, 200},
+		"WSSocketsOpen":          {m.WSSocketsOpen, 4},
+		"WSSocketsAccepted":      {m.WSSocketsAccepted, 60},
 	}
 	for field, c := range checks {
 		if c.got != c.want {
@@ -174,13 +261,20 @@ func TestParsePrometheusMetrics_Connections(t *testing.T) {
 func TestParsePrometheusMetrics_Auth(t *testing.T) {
 	m := parsePrometheusMetrics(sampleMetrics)
 	checks := map[string]struct{ got, want int64 }{
-		"AuthSuccess":         {m.AuthSuccess, 42},
-		"AuthFailure (sum)":   {m.AuthFailure, 11},
-		"AuthFailBadCreds":    {m.AuthFailBadCreds, 5},
-		"AuthFailEnhanced":    {m.AuthFailEnhanced, 3},
-		"AuthFailLocked":      {m.AuthFailLocked, 2},
-		"AuthFailOther":       {m.AuthFailOther, 1},
-		"ScramSessionsActive": {m.ScramSessionsActive, 2},
+		"AuthSuccess":             {m.AuthSuccess, 42},
+		"AuthFailure (sum)":       {m.AuthFailure, 41}, // 5+3+2+1 + 4+5+6+7+8
+		"AuthFailBadCreds":        {m.AuthFailBadCreds, 5},
+		"AuthFailEnhanced":        {m.AuthFailEnhanced, 3},
+		"AuthFailLocked":          {m.AuthFailLocked, 2},
+		"AuthFailOther":           {m.AuthFailOther, 1},
+		"AuthFailLicense":         {m.AuthFailLicense, 4},
+		"AuthFailTokenExpired":    {m.AuthFailTokenExpired, 5},
+		"AuthFailBadSignature":    {m.AuthFailBadSignature, 6},
+		"AuthFailClaimMismatch":   {m.AuthFailClaimMismatch, 7},
+		"AuthFailJWKSUnavailable": {m.AuthFailJWKSUnavailable, 8},
+		"ScramSessionsActive":     {m.ScramSessionsActive, 2},
+		"NATSEnforcementFallback": {m.NATSEnforcementFallback, 14},
+		"NATSEnforcementDenied":   {m.NATSEnforcementDenied, 15},
 	}
 	for field, c := range checks {
 		if c.got != c.want {
@@ -247,6 +341,7 @@ func TestParsePrometheusMetrics_Will(t *testing.T) {
 		"WillDroppedInvalidTopic": {m.WillDroppedInvalidTopic, 3},
 		"WillDroppedShutdown":     {m.WillDroppedShutdown, 4},
 		"WillSuppressedReconnect": {m.WillSuppressedReconnect, 6},
+		"WillSuppressedShutdown":  {m.WillSuppressedShutdown, 16},
 		"WillPending":             {m.WillPending, 5},
 		"WillRetryPending":        {m.WillRetryPending, 8},
 	}
@@ -278,18 +373,18 @@ func TestParsePrometheusMetrics_ProtocolAndNATS(t *testing.T) {
 func TestParsePrometheusMetrics_ReliabilityAndDurability(t *testing.T) {
 	m := parsePrometheusMetrics(sampleMetrics)
 	checks := map[string]struct{ got, want int64 }{
-		"PanicsRecovered":         {m.PanicsRecovered, 0},
-		"TLSHandshakeFailures":    {m.TLSHandshakeFailures, 6},
-		"ProxyProtocolErrors":     {m.ProxyProtocolErrors, 7},
-		"WSUpgradeFailures":       {m.WSUpgradeFailures, 8},
-		"FlowcontrolOverflow":     {m.FlowcontrolOverflow, 9},
-		"QoS2ServerPublishFailed": {m.QoS2ServerPublishFailed, 10},
-		"QoS1ClientSendFailed":    {m.QoS1ClientSendFailed, 11},
-		"ServerPublishDropped":    {m.ServerPublishDropped, 12},
-		"MessagesDeadLettered":    {m.MessagesDeadLettered, 13},
+		"PanicsRecovered":          {m.PanicsRecovered, 0},
+		"TLSHandshakeFailures":     {m.TLSHandshakeFailures, 6},
+		"ProxyProtocolErrors":      {m.ProxyProtocolErrors, 7},
+		"WSUpgradeFailures":        {m.WSUpgradeFailures, 8},
+		"FlowcontrolOverflow":      {m.FlowcontrolOverflow, 9},
+		"QoS2ServerPublishFailed":  {m.QoS2ServerPublishFailed, 10},
+		"QoS1ClientSendFailed":     {m.QoS1ClientSendFailed, 11},
+		"ServerPublishDropped":     {m.ServerPublishDropped, 12},
+		"MessagesDeadLettered":     {m.MessagesDeadLettered, 13},
 		"PoisonMessagesTerminated": {m.PoisonMessagesTerminated, 14},
-		"DeadLetterWriteFailed":   {m.DeadLetterWriteFailed, 15},
-		"OutboundQueueDropped":    {m.OutboundQueueDropped, 16},
+		"DeadLetterWriteFailed":    {m.DeadLetterWriteFailed, 15},
+		"OutboundQueueDropped":     {m.OutboundQueueDropped, 16},
 	}
 	for field, c := range checks {
 		if c.got != c.want {
@@ -301,9 +396,9 @@ func TestParsePrometheusMetrics_ReliabilityAndDurability(t *testing.T) {
 func TestParsePrometheusMetrics_JetStreamAndGauges(t *testing.T) {
 	m := parsePrometheusMetrics(sampleMetrics)
 	checks := map[string]struct{ got, want int64 }{
-		"SessionWriteBehindDepth":  {m.SessionWriteBehindDepth, 17},
-		"ConsumerPendingMessages":  {m.ConsumerPendingMessages, 42},
-		"StalledConsumers":         {m.StalledConsumers, 2},
+		"SessionWriteBehindDepth": {m.SessionWriteBehindDepth, 17},
+		"ConsumerPendingMessages": {m.ConsumerPendingMessages, 42},
+		"StalledConsumers":        {m.StalledConsumers, 2},
 	}
 	for field, c := range checks {
 		if c.got != c.want {
@@ -372,6 +467,109 @@ func TestParsePrometheusMetrics_RuntimeAndInstance(t *testing.T) {
 	}
 	if m.InstanceID != "broker-1" {
 		t.Errorf("InstanceID = %q, want %q", m.InstanceID, "broker-1")
+	}
+}
+
+// TestParsePrometheusMetrics_NewObservability covers the scalar metrics added to
+// match machmqtt's recent observability work: durability extras, capacity gauges,
+// bridge/pool health, throttling/ACL, cluster counters, queue backpressure,
+// persistence, and reliability extras.
+func TestParsePrometheusMetrics_NewObservability(t *testing.T) {
+	m := parsePrometheusMetrics(sampleMetrics)
+	checks := map[string]struct{ got, want int64 }{
+		// Durability extras
+		"QoS2ClientSendFailed":     {m.QoS2ClientSendFailed, 18},
+		"ServerPublishFailedQoS0":  {m.ServerPublishFailedQoS0, 1},
+		"ServerPublishFailedQoS1":  {m.ServerPublishFailedQoS1, 2},
+		"ServerPublishFailedQoS2":  {m.ServerPublishFailedQoS2, 3},
+		"QoS0MessagesShed":         {m.QoS0MessagesShed, 19},
+		"OversizedDropped":         {m.OversizedDropped, 20},
+		"PublishOutageDisconnects": {m.PublishOutageDisconnects, 21},
+		"OutboundEvictions":        {m.OutboundEvictions, 22},
+		"OutboundStallEvictions":   {m.OutboundStallEvictions, 7},
+		"OutboundStalledConns":     {m.OutboundStalledConns, 3},
+		"OutboundBytes":            {m.OutboundBytes, 4096},
+		"RetainVerifyFailures":     {m.RetainVerifyFailures, 23},
+		// Capacity & memory
+		"RetainedMessages":    {m.RetainedMessages, 500},
+		"InflightOutMessages": {m.InflightOutMessages, 24},
+		"SubscriptionsActive": {m.SubscriptionsActive, 600},
+		// Bridge / pool
+		"PoolSlotConnected":                   {m.PoolSlotConnected, 16},
+		"PoolSlotRebuilds":                    {m.PoolSlotRebuilds, 25},
+		"BridgePrimaryRebuilds":               {m.BridgePrimaryRebuilds, 26},
+		"BridgeRebuildsDegraded":              {m.BridgeRebuildsDegraded, 27},
+		"BridgeConsumerReattached":            {m.BridgeConsumerReattached, 28},
+		"BridgeConsumerForceDisconnected":     {m.BridgeConsumerForceDisconnected, 29},
+		"BridgeConsumerPushForceDisconnected": {m.BridgeConsumerPushForceDisconnected, 30},
+		// Throttling & ACL
+		"AggregatePublishLimit":     {m.AggregatePublishLimit, 10000},
+		"PublishThrottledPerClient": {m.PublishThrottledPerClient, 31},
+		"PublishThrottledAggregate": {m.PublishThrottledAggregate, 32},
+		"ACLDeniedPublish":          {m.ACLDeniedPublish, 33},
+		"ACLDeniedSubscribe":        {m.ACLDeniedSubscribe, 34},
+		// Cluster counters
+		"ClusterInspectTimeouts":   {m.ClusterInspectTimeouts, 35},
+		"ClusterTakeoverDropped":   {m.ClusterTakeoverDropped, 36},
+		"ClusterTakeoverOrderSkew": {m.ClusterTakeoverOrderSkew, 37},
+		// Queue backpressure
+		"WorkerPoolQueueDepth": {m.WorkerPoolQueueDepth, 38},
+		"OpQueueDepth":         {m.OpQueueDepth, 39},
+		"OpQueueBytes":         {m.OpQueueBytes, 8192},
+		"OpSuspendedConns":     {m.OpSuspendedConns, 40},
+		"OpPoolQueueDepth":     {m.OpPoolQueueDepth, 41},
+		"OpPoolRejected":       {m.OpPoolRejected, 42},
+		// Persistence
+		"ConsumerSeqMapEntries":           {m.ConsumerSeqMapEntries, 43},
+		"ConsumerDeletesDropped":          {m.ConsumerDeletesDropped, 44},
+		"ConsumerDeleteRaces":             {m.ConsumerDeleteRaces, 45},
+		"SessionDeletesDropped":           {m.SessionDeletesDropped, 46},
+		"SessionPersistFailedWriteFailed": {m.SessionPersistFailedWriteFailed, 47},
+		"SessionPersistFailedQueueFull":   {m.SessionPersistFailedQueueFull, 48},
+		// Reliability extras
+		"TLSCertReloadFailures":   {m.TLSCertReloadFailures, 49},
+		"OAuth2JWKSFetchFailures": {m.OAuth2JWKSFetchFailures, 50},
+		// TLS handshake histogram (count; sum checked below)
+		"TLSHandshakeDurationCount": {m.TLSHandshakeDurationCount, 60},
+	}
+	for field, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", field, c.got, c.want)
+		}
+	}
+	if m.TLSHandshakeDurationSumSeconds != 0.06 {
+		t.Errorf("TLSHandshakeDurationSumSeconds = %g, want 0.06", m.TLSHandshakeDurationSumSeconds)
+	}
+}
+
+// TestParsePrometheusMetrics_HexFamilies covers the sparse, reason-code-keyed
+// families. Only emitted codes should be present; absent codes stay out of the map.
+func TestParsePrometheusMetrics_HexFamilies(t *testing.T) {
+	m := parsePrometheusMetrics(sampleMetrics)
+	if got := m.ConnackRejectedByReason["0x88"]; got != 3 {
+		t.Errorf(`ConnackRejectedByReason["0x88"] = %d, want 3`, got)
+	}
+	if got := m.ConnackRejectedByReason["0x81"]; got != 1 {
+		t.Errorf(`ConnackRejectedByReason["0x81"] = %d, want 1`, got)
+	}
+	if _, ok := m.ConnackRejectedByReason["0x99"]; ok {
+		t.Errorf("ConnackRejectedByReason should not contain unemitted code 0x99")
+	}
+	if got := m.DisconnectsSentByReason["0x8F"]; got != 2 {
+		t.Errorf(`DisconnectsSentByReason["0x8F"] = %d, want 2`, got)
+	}
+}
+
+// TestParsePrometheusMetrics_HexFamiliesAbsent verifies the maps stay nil (and so
+// marshal away via omitempty) when no codes are emitted.
+func TestParsePrometheusMetrics_HexFamiliesAbsent(t *testing.T) {
+	m := parsePrometheusMetrics(`machmqtt_connections_active 1
+`)
+	if m.ConnackRejectedByReason != nil {
+		t.Errorf("ConnackRejectedByReason = %v, want nil when absent", m.ConnackRejectedByReason)
+	}
+	if m.DisconnectsSentByReason != nil {
+		t.Errorf("DisconnectsSentByReason = %v, want nil when absent", m.DisconnectsSentByReason)
 	}
 }
 

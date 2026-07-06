@@ -273,7 +273,7 @@ func TestFormatUptime(t *testing.T) {
 func TestSYSCollectorSweepExpired(t *testing.T) {
 	sc := newSYSCollector()
 	sc.statsz["live"] = &statszEntry{when: time.Now()}
-	sc.statsz["stale"] = &statszEntry{when: time.Now().Add(-2 * statszTTL)}
+	sc.statsz["stale"] = &statszEntry{when: time.Now().Add(-2 * defaultStatszTTL)}
 	sc.sweepExpired()
 	if _, ok := sc.statsz["live"]; !ok {
 		t.Error("live entry was unexpectedly removed")

@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadValid(t *testing.T) {
@@ -180,6 +182,48 @@ func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.yaml")
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
+	}
+}
+
+// TestLoadInvalidYAML verifies that a syntactically malformed config file is
+// rejected with a "parse config" error rather than yielding a partial Config.
+func TestLoadInvalidYAML(t *testing.T) {
+	t.Setenv("SESSION_SECRET", "")
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	// Unterminated/mismatched YAML that gopkg.in/yaml.v3 cannot parse.
+	os.WriteFile(p, []byte("listen: \":8080\"\n  bad: : indent\n\t- nope"), 0o644)
+
+	cfg, err := Load(p)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML, got nil")
+	}
+	if cfg != nil {
+		t.Errorf("expected nil Config on parse failure, got %+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Errorf("error = %q, want it to wrap %q", err.Error(), "parse config")
+	}
+}
+
+// TestLoadNonPositiveMetricsRetentionDefaults verifies that a non-positive
+// metrics_retention in the file is reset to the 24h default. A negative value
+// (rather than 0s) proves the reset branch ran, since the pre-unmarshal default
+// would already have been overwritten by the file's negative value.
+func TestLoadNonPositiveMetricsRetentionDefaults(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	os.WriteFile(p, []byte(`
+session_secret: "test-secret-that-is-at-least-32-characters-long"
+metrics_retention: -1s
+`), 0o644)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsRetention != 24*time.Hour {
+		t.Errorf("MetricsRetention = %v, want 24h (non-positive value should reset)", cfg.MetricsRetention)
 	}
 }
 

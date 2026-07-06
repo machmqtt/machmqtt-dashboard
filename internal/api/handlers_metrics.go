@@ -77,5 +77,17 @@ func parseTimeRange(r *http.Request) (from, to, step int64) {
 			step = n
 		}
 	}
+	// Clamp step up so a caller can't force an unbounded number of points
+	// (e.g. step=1 over a 30-day window). At most maxMetricPoints are returned;
+	// a step of <=0 leaves auto-bucketing to the store, which is already bounded.
+	if step > 0 {
+		if minStep := (to - from) / maxMetricPoints; step < minStep {
+			step = minStep
+		}
+	}
 	return
 }
+
+// maxMetricPoints bounds the number of time-series points any single query can
+// return, regardless of the caller-supplied step.
+const maxMetricPoints = 5000

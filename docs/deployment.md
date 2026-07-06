@@ -40,6 +40,10 @@ This starts:
 - `nats-1`, `nats-2`, `nats-3` — Clustered NATS servers with JetStream
 - `dashboard` — The dashboard, configured to poll all three servers
 
+No manual cluster setup is required: the mounted `config.docker.yaml` declares an
+`environments:` entry naming the three servers, which the dashboard seeds into its
+database (idempotently, on every startup) the first time it doesn't already exist.
+
 Ports:
 - `8080` — Dashboard UI
 - `4222-4224` — NATS client connections
@@ -185,18 +189,30 @@ The WebSocket endpoint (`/api/ws`) requires the `Upgrade` and `Connection` heade
 
 ## Network Requirements
 
-The dashboard needs HTTP access to the NATS monitoring port (default 8222) on each configured server. Ensure firewall rules allow:
+By default the dashboard needs HTTP access to the NATS monitoring port (default 8222) on
+each configured server, and does not need the NATS client port. Ensure firewall rules
+allow:
 
 - Dashboard -> NATS servers: TCP port 8222 (or custom monitoring port)
 - Browsers -> Dashboard: TCP port 8080 (or custom listen port)
 
-The dashboard does **not** connect to the NATS client port (4222). It only uses the HTTP monitoring API.
+If a cluster configures `nats_conn` for push-based collection (`$SYS` server stats
+and/or MachMQTT bridge metrics), the dashboard also opens a NATS client connection to
+that cluster — allow TCP port 4222 (or custom client port) in that case. HTTP polling
+of the monitoring port remains available as the automatic fallback if push collection
+stops producing data, so it's reasonable to keep both open.
 
 ## Security Considerations
 
 - Change the `session_secret` from the default value
 - Change the default admin password after first login
-- Use TLS termination via a reverse proxy for production
+- Use TLS termination via a reverse proxy for production, and set `secure_cookies: true`
+  in the config when serving over HTTPS — the dashboard logs a startup warning when it's
+  left `false`
 - If NATS monitoring endpoints use HTTPS, configure the `tls` section in the environment config
-- The SQLite database contains only bcrypt-hashed passwords
+- User passwords are bcrypt-hashed, but the `clusters` table stores each cluster's
+  `admin_token` and `nats_conn` (which may hold NATS passwords, tokens, nkeys, or
+  credentials) as **plaintext** columns — these values are only redacted when served
+  back through the API, not at rest. Restrict filesystem access to `data_dir` (and back
+  up the database file) accordingly.
 - Session cookies are `httpOnly` and `SameSite=Strict`

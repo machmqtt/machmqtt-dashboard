@@ -38,9 +38,11 @@ func (s *Server) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
 		dropped = s.metrics.Dropped()
 	}
 	writeJSON(w, map[string]any{
-		"status":          status,
-		"ws_clients":      s.hub.ClientCount(),
-		"dropped_samples": dropped,
-		"clusters":        clusters,
+		"status":           status,
+		"ws_clients":       s.hub.ClientCount(),
+		"ws_stale_clients": s.hub.StaleClientCount(),
+		"ws_dropped_total": s.hub.DroppedTotal(),
+		"dropped_samples":  dropped,
+		"clusters":         clusters,
 	})
 }

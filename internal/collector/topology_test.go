@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -182,10 +183,20 @@ func TestBuildTopologyMQTTLoopbackResolution(t *testing.T) {
 		Rates:      map[string]*ServerRates{},
 	}
 	g := buildTopology(snap, nil)
+	var found bool
 	for _, n := range g.Nodes {
-		if n.Type == "mqtt" && n.ID == "mqtt:127.0.0.1" {
-			t.Error("loopback 127.0.0.1 should have been resolved to 10.0.0.5")
+		if n.Type == "mqtt" {
+			found = true
+			if strings.Contains(n.ID, "127.0.0.1") {
+				t.Errorf("loopback 127.0.0.1 should have resolved to 10.0.0.5; node ID = %q", n.ID)
+			}
+			if !strings.HasSuffix(n.ID, ":10.0.0.5") {
+				t.Errorf("mqtt node ID should end with the resolved host :10.0.0.5; got %q", n.ID)
+			}
 		}
+	}
+	if !found {
+		t.Fatal("no mqtt node built")
 	}
 }
 
@@ -205,10 +216,20 @@ func TestBuildTopologyLoopbackFallbackToVarz(t *testing.T) {
 		Rates:  map[string]*ServerRates{},
 	}
 	g := buildTopology(snap, nil)
+	var found bool
 	for _, n := range g.Nodes {
-		if n.Type == "mqtt" && (n.ID == "mqtt:::1" || n.ID == "mqtt:[::]") {
-			t.Errorf("IPv6 loopback not resolved: node ID = %q", n.ID)
+		if n.Type == "mqtt" {
+			found = true
+			if strings.Contains(n.ID, "::1") {
+				t.Errorf("IPv6 loopback not resolved: node ID = %q", n.ID)
+			}
+			if !strings.HasSuffix(n.ID, ":10.0.0.9") {
+				t.Errorf("mqtt node ID should end with the resolved host :10.0.0.9; got %q", n.ID)
+			}
 		}
+	}
+	if !found {
+		t.Fatal("no mqtt node built")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -68,15 +69,34 @@ func main() {
 		log.Info("created default admin user", "username", defaultUser.Username)
 	}
 
+	// Seed any clusters declared in the config file that don't already exist
+	// (idempotent, matched by name). This lets a fresh `docker compose up` poll
+	// the configured servers with no manual cluster-creation step; existing
+	// clusters (managed via the admin UI) are never overwritten.
+	if seeded, err := db.SeedClusters(cfg.Environments); err != nil {
+		log.Error("seed clusters from config", "err", err)
+		os.Exit(1)
+	} else if seeded > 0 {
+		log.Info("seeded clusters from config", "count", seeded)
+	}
+
 	a := auth.New(db, cfg.SessionSecret, cfg.SecureCookies, cfg.TrustProxyHeaders, log)
+	if !cfg.SecureCookies {
+		log.Warn("secure_cookies is disabled: session cookies will be sent over plain HTTP — set secure_cookies: true when the dashboard is served over HTTPS/TLS")
+	}
 	hub := ws.NewHub(log)
 
-	metricsWriter := store.NewMetricsWriter(db.DB(), log, cfg.MetricsRetention)
+	metricsWriter := store.NewMetricsWriter(db, log, cfg.MetricsRetention)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go metricsWriter.Run(ctx)
+	var bg sync.WaitGroup
+	bg.Add(1)
+	go func() {
+		defer bg.Done()
+		metricsWriter.Run(ctx)
+	}()
 
 	var manager *collector.Manager
 	manager, err = collector.NewManager(cfg, func(clusterID string) {
@@ -132,4 +152,19 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	httpServer.Shutdown(shutdownCtx)
+
+	// Join the collector and metrics-writer goroutines (bounded) so no write is
+	// in flight when the deferred db.Close() runs. Prevents the "database is
+	// closed" race and a dropped final metrics sample on shutdown.
+	drained := make(chan struct{})
+	go func() {
+		manager.Wait()
+		bg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		log.Warn("shutdown: timed out waiting for background goroutines to drain")
+	}
 }

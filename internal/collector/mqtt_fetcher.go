@@ -234,7 +234,6 @@ func (f *MQTTBridgeFetcher) FetchStatus(ctx context.Context) *MQTTBridgeStatus {
 	}
 	status.Ready = readyz.Status == "ready"
 	status.Draining = readyz.Status == "draining"
-	status.Connections = readyz.Connections
 	status.NATSConnected = readyz.NATSConnected
 
 	if diag, err := f.FetchDiagNATS(ctx); err == nil {
@@ -247,12 +246,20 @@ func (f *MQTTBridgeFetcher) FetchStatus(ctx context.Context) *MQTTBridgeStatus {
 
 	if metrics, err := f.FetchMetrics(ctx); err == nil {
 		status.Metrics = metrics
+		// The bridge's /readyz has no connection count, so the active-client
+		// figure comes from the metrics snapshot (matching the NATS-push path,
+		// which sets this from the same counter). /connz total below is a
+		// fallback for bridges whose metrics endpoint is unavailable.
+		status.Connections = int(metrics.ConnectionsActive)
 	}
 
 	// Check if /connz is available.
 	if connz, err := f.FetchConnz(ctx, 1, 0); err == nil {
 		status.ConnzAvailable = true
 		status.TotalConnections = connz.Total
+		if status.Connections == 0 {
+			status.Connections = int(connz.Total)
+		}
 	}
 
 	return status

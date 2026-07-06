@@ -7,10 +7,12 @@ import {
 } from 'lucide-react'
 
 // Short human reason for a degraded cluster, shown under the cluster picker.
-function degradedReason(c: { collection_mode?: string; last_poll_age_seconds?: number }): string {
+// Prefer the server-computed reason (single source of truth, distinguishes a
+// downed push link from genuinely stale data — which the lightweight fields
+// below can't). Fall back only for older backends that don't send it.
+function degradedReason(c: { degraded_reason?: string; collection_mode?: string }): string {
+  if (c.degraded_reason) return c.degraded_reason
   if (c.collection_mode === 'sys-fallback') return 'Using HTTP fallback ($SYS unavailable)'
-  const age = c.last_poll_age_seconds
-  if (age != null && age > 0) return `Data stale — last poll ${Math.round(age)}s ago`
   return 'Collection degraded'
 }
 

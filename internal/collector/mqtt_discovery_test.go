@@ -16,7 +16,7 @@ func bridgeAdminMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(MQTTReadyz{Status: "ready", Connections: 3, NATSConnected: true})
+		json.NewEncoder(w).Encode(MQTTReadyz{Status: "ready", NATSConnected: true})
 	})
 	mux.HandleFunc("/diag/nats", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(MQTTNATSDiag{Connection: MQTTNATSConnection{Connected: true}})
@@ -44,7 +44,7 @@ func portFromURL(u string) int {
 }
 
 func TestDiscoverMQTTBridgesNilSnap(t *testing.T) {
-	result := DiscoverMQTTBridges(context.Background(), nil, nil, nil, "")
+	result := DiscoverMQTTBridges(context.Background(), nil, nil, nil, "", nil)
 	if result != nil {
 		t.Errorf("expected nil for nil snapshot, got %v", result)
 	}
@@ -55,7 +55,7 @@ func TestDiscoverMQTTBridgesEmptyConnz(t *testing.T) {
 		Varz:  map[string]*Varz{"srv-1": {ServerName: "nats-1"}},
 		Connz: map[string]*Connz{},
 	}
-	result := DiscoverMQTTBridges(context.Background(), snap, nil, nil, "")
+	result := DiscoverMQTTBridges(context.Background(), snap, nil, nil, "", nil)
 	if result != nil {
 		t.Errorf("expected nil when no bridge connections found, got %v", result)
 	}
@@ -70,7 +70,7 @@ func TestDiscoverMQTTBridgesNoMQTTConns(t *testing.T) {
 			}},
 		},
 	}
-	result := DiscoverMQTTBridges(context.Background(), snap, nil, nil, "")
+	result := DiscoverMQTTBridges(context.Background(), snap, nil, nil, "", nil)
 	if result != nil {
 		t.Errorf("expected nil when no bridge-named connections, got %v", result)
 	}
@@ -90,7 +90,7 @@ func TestDiscoverMQTTBridgesProbeSuccess(t *testing.T) {
 			}},
 		},
 	}
-	instances := DiscoverMQTTBridges(context.Background(), snap, nil, []int{port}, "")
+	instances := DiscoverMQTTBridges(context.Background(), snap, nil, []int{port}, "", nil)
 	if len(instances) != 1 {
 		t.Fatalf("got %d instances, want 1", len(instances))
 	}
@@ -113,7 +113,7 @@ func TestDiscoverMQTTBridgesProbeFailure(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	instances := DiscoverMQTTBridges(ctx, snap, nil, []int{18080}, "")
+	instances := DiscoverMQTTBridges(ctx, snap, nil, []int{18080}, "", nil)
 	if len(instances) != 1 {
 		t.Fatalf("got %d instances, want 1 (unreachable bridge still appears)", len(instances))
 	}
@@ -134,7 +134,7 @@ func TestDiscoverMQTTBridgesDefaultPort(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	instances := DiscoverMQTTBridges(ctx, snap, nil, nil, "") // nil ports → default 8080
+	instances := DiscoverMQTTBridges(ctx, snap, nil, nil, "", nil) // nil ports → default 8080
 	if len(instances) != 1 {
 		t.Fatalf("got %d instances, want 1", len(instances))
 	}
@@ -162,7 +162,7 @@ func TestDiscoverMQTTBridgesWithPrevSnapshot(t *testing.T) {
 			}},
 		},
 	}
-	instances := DiscoverMQTTBridges(context.Background(), snap, prev, []int{port}, "")
+	instances := DiscoverMQTTBridges(context.Background(), snap, prev, []int{port}, "", nil)
 	if len(instances) != 1 {
 		t.Fatalf("got %d instances, want 1", len(instances))
 	}
@@ -189,7 +189,7 @@ func TestDiscoverMQTTBridgesIPv6Brackets(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	instances := DiscoverMQTTBridges(ctx, snap, nil, []int{port}, "")
+	instances := DiscoverMQTTBridges(ctx, snap, nil, []int{port}, "", nil)
 	// Should not panic; reachability depends on whether loopback was resolved.
 	_ = instances
 }
@@ -207,6 +207,6 @@ func TestDiscoverMQTTBridgesContextCancelled(t *testing.T) {
 	cancel() // pre-cancel
 
 	// Should return without panicking even with a cancelled context.
-	instances := DiscoverMQTTBridges(ctx, snap, nil, []int{18081}, "")
+	instances := DiscoverMQTTBridges(ctx, snap, nil, []int{18081}, "", nil)
 	_ = instances
 }

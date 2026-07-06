@@ -70,6 +70,10 @@ export interface ClusterInfo {
   name: string
   // Lightweight health for the sidebar badge (from GET /api/environments).
   degraded?: boolean
+  // Precise, server-computed reason a cluster is degraded (single source of
+  // truth, mirrors ClusterHealth.DegradedReason on the backend). Rendered
+  // verbatim; the UI can't re-derive it from the fields below alone.
+  degraded_reason?: string
   collection_mode?: string
   last_poll_age_seconds?: number
 }

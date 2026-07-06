@@ -17,6 +17,56 @@ func makeCluster(name string, serverURLs ...string) *Cluster {
 	return &Cluster{Name: name, Servers: servers}
 }
 
+func TestSeedClusters(t *testing.T) {
+	s := testStore(t)
+
+	envs := []config.Environment{
+		{Name: "prod", Servers: []config.Server{{URL: "http://p:8222"}}},
+		{Name: "staging", Servers: []config.Server{{URL: "http://s:8222"}}},
+		{Name: "", Servers: []config.Server{{URL: "http://x:8222"}}}, // skipped (no name)
+	}
+
+	n, err := s.SeedClusters(envs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("seeded = %d, want 2", n)
+	}
+
+	// Idempotent: a second call creates nothing.
+	n, err = s.SeedClusters(envs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("second seed = %d, want 0", n)
+	}
+
+	// A runtime edit to an existing cluster must not be overwritten by re-seeding.
+	clusters, _ := s.ListClusters()
+	var prod *Cluster
+	for i := range clusters {
+		if clusters[i].Name == "prod" {
+			prod = &clusters[i]
+		}
+	}
+	if prod == nil {
+		t.Fatal("seeded cluster 'prod' not found")
+	}
+	prod.Servers = []config.Server{{URL: "http://edited:8222"}}
+	if err := s.UpdateCluster(prod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SeedClusters(envs); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetCluster(prod.ID)
+	if got.Servers[0].URL != "http://edited:8222" {
+		t.Errorf("re-seed overwrote a runtime edit: %s", got.Servers[0].URL)
+	}
+}
+
 // --- CRUD basics ---
 
 func TestClusterCreateAndGet(t *testing.T) {

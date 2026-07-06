@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,39 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 	"golang.org/x/sync/errgroup"
 )
+
+// superviseGoroutine runs fn and, if it panics, logs the panic with a stack
+// trace and restarts it after a short delay (unless ctx is cancelled). This
+// isolates a fault in one cluster's poll/parse/subscribe loop so it cannot crash
+// the whole process and take down monitoring for every other cluster. A normal
+// return (e.g. ctx cancelled) ends supervision.
+func superviseGoroutine(ctx context.Context, log *slog.Logger, name string, fn func()) {
+	for ctx.Err() == nil {
+		panicked := runGuarded(log, name, fn)
+		if !panicked || ctx.Err() != nil {
+			return
+		}
+		// Throttle restarts so a deterministic panic can't spin in a tight loop.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// runGuarded runs fn, recovering from a panic and reporting whether one occurred.
+func runGuarded(log *slog.Logger, name string, fn func()) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			log.Error("collector goroutine panicked; restarting",
+				"goroutine", name, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	fn()
+	return false
+}
 
 // Collector polls one NATS cluster and maintains a Snapshot.
 type Collector struct {
@@ -144,7 +178,11 @@ func (c *Collector) maybeDiscoverBridges(ctx context.Context, clusterID string) 
 	if c.shouldConnzScan() && c.mqttDiscovering.CompareAndSwap(false, true) {
 		go func() {
 			defer c.mqttDiscovering.Store(false)
-			c.discoverMQTTBridges(ctx, clusterID)
+			// Guard against a panic while grouping/parsing untrusted connz data
+			// so it can't crash the process.
+			runGuarded(c.log, "discovery["+clusterID+"]", func() {
+				c.discoverMQTTBridges(ctx, clusterID)
+			})
 		}()
 	}
 }
@@ -218,7 +256,12 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 	for _, srv := range env.Servers {
 		srvURL := srv.URL
 		g.Go(func() error {
-			c.fetchServer(gCtx, srvURL, snap, &mu, slow, serverURLMap)
+			// Guard each server fetch/parse so a panic on one server doesn't
+			// abort the whole poll cycle (and, via the supervisor, restart the
+			// entire poll loop). The other servers still complete.
+			runGuarded(c.log, "fetchServer["+srvURL+"]", func() {
+				c.fetchServer(gCtx, srvURL, snap, &mu, slow, serverURLMap)
+			})
 			return nil
 		})
 	}
@@ -388,7 +431,7 @@ func (c *Collector) discoverMQTTBridges(ctx context.Context, clusterID string) {
 	c.log.Info("mqtt discovery starting", "connz_servers", len(snap.Connz), "matching_conns", matchingConns)
 
 	env := c.getEnv()
-	bridges := DiscoverMQTTBridges(ctx, snap, prev, env.MQTTDiscoveryPorts(), env.ResolveBridgeToken(""))
+	bridges := DiscoverMQTTBridges(ctx, snap, prev, env.MQTTDiscoveryPorts(), env.ResolveBridgeToken(""), env.DiscoveryTrustedHosts())
 
 	for _, b := range bridges {
 		if b.Reachable {
@@ -448,6 +491,27 @@ type ClusterHealth struct {
 // configured NATS push connection that is currently down).
 func (h ClusterHealth) Degraded() bool {
 	return h.Stale || h.SysFallbackEngaged || (h.NATSPushConfigured && !h.NATSPushConnected)
+}
+
+// DegradedReason returns a short, human-readable explanation of why collection
+// is degraded, or "" when nominal. It is the single source of truth for the
+// sidebar badge text: the UI renders this verbatim rather than re-deriving the
+// reason, which it cannot do precisely from the lightweight fields alone (e.g. a
+// fresh poll whose NATS push link is down is degraded but NOT stale). The branch
+// order mirrors Degraded(), surfacing the most severe condition first: stale data
+// (nothing is flowing) outranks a working HTTP fallback, which outranks a downed
+// push link.
+func (h ClusterHealth) DegradedReason() string {
+	switch {
+	case h.Stale:
+		return fmt.Sprintf("Data stale — last poll %.0fs ago", h.LastPollAgeSeconds)
+	case h.SysFallbackEngaged:
+		return "Using HTTP fallback ($SYS unavailable)"
+	case h.NATSPushConfigured && !h.NATSPushConnected:
+		return "NATS push metrics connection is down"
+	default:
+		return ""
+	}
 }
 
 // Health returns the collector's current operational health. Safe to call from
@@ -516,13 +580,20 @@ func (c *Collector) MQTTBridges() []MQTTBridgeInstance {
 // without restarting the process.
 type Manager struct {
 	mu         sync.RWMutex
-	collectors map[string]*Collector          // keyed by cluster ID
-	cancels    map[string]context.CancelFunc  // per-collector stop func
+	collectors map[string]*Collector         // keyed by cluster ID
+	cancels    map[string]context.CancelFunc // per-collector stop func
 	rootCtx    context.Context               // parent ctx from Start()
 	onChange   func(clusterID string)
 	interval   time.Duration
 	log        *slog.Logger
 	db         *store.Store
+	wg         sync.WaitGroup // tracks all live collector goroutines
+}
+
+// Wait blocks until every collector goroutine has exited. Call after the root
+// context is cancelled to drain in-flight work before closing the store.
+func (m *Manager) Wait() {
+	m.wg.Wait()
 }
 
 // NewManager loads clusters from the database and builds a collector per cluster.
@@ -669,13 +740,23 @@ func (m *Manager) startCollector(cctx context.Context, c *Collector, id string, 
 		}
 	}
 
-	go c.run(cctx, id, m.onChange)
+	m.goSupervised(cctx, c.log, "poll["+id+"]", func() { c.run(cctx, id, m.onChange) })
 	if c.subscriber != nil {
-		go c.subscriber.run(cctx, env.NATSConn)
+		m.goSupervised(cctx, c.log, "mqtt-subscriber["+id+"]", func() { c.subscriber.run(cctx, env.NATSConn) })
 	}
 	if c.sys != nil {
-		go c.sys.run(cctx, env.NATSConn)
+		m.goSupervised(cctx, c.log, "sys-collector["+id+"]", func() { c.sys.run(cctx, env.NATSConn) })
 	}
+}
+
+// goSupervised launches a supervised collector goroutine tracked by the
+// manager's WaitGroup so shutdown can join it.
+func (m *Manager) goSupervised(ctx context.Context, log *slog.Logger, name string, fn func()) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		superviseGoroutine(ctx, log, name, fn)
+	}()
 }
 
 // natsConnHasAuth reports whether any authentication field is set on the NATS
@@ -805,6 +886,20 @@ func (m *Manager) MQTTBridges(clusterID string) []MQTTBridgeInstance {
 		return nil
 	}
 	return c.MQTTBridges()
+}
+
+// SeedMQTTBridgesForTest replaces a cluster collector's cached MQTT bridge list.
+// It lets handler tests exercise push-discovered bridges (no admin URL, Status
+// populated) without standing up a live NATS metrics subscriber. With a long
+// poll interval the seeded value persists for the test's duration.
+func (m *Manager) SeedMQTTBridgesForTest(clusterID string, bridges []MQTTBridgeInstance) {
+	c := m.collector(clusterID)
+	if c == nil {
+		return
+	}
+	c.mqttMu.Lock()
+	c.mqttBridges = bridges
+	c.mqttMu.Unlock()
 }
 
 // Environments returns the cluster IDs of all tracked clusters. The name

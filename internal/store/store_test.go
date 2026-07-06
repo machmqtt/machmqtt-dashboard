@@ -275,14 +275,6 @@ func TestEnsureDefaultAdmin(t *testing.T) {
 
 // ---------- store.go additions ----------
 
-func TestStoreDBGetter(t *testing.T) {
-	s := testStore(t)
-	db := s.DB()
-	if db == nil {
-		t.Fatal("DB() returned nil")
-	}
-}
-
 func TestGetUserNotFound(t *testing.T) {
 	s := testStore(t)
 	_, err := s.GetUser(999)
@@ -463,7 +455,7 @@ func TestAutoStep(t *testing.T) {
 
 func TestMetricsWriterSubmitAndRun(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go w.Run(ctx)
@@ -491,6 +483,10 @@ func TestMetricsWriterSubmitAndRun(t *testing.T) {
 			MsgsRecvQoS1:            7,
 			MsgsSentQoS2:            2,
 			ConsumerPendingMessages: &cpm,
+			SocketsOpen:             9,
+			OpQueueDepth:            4,
+			PoolSlotConnected:       8,
+			GoGoroutines:            120,
 		}},
 	})
 	time.Sleep(100 * time.Millisecond)
@@ -534,11 +530,28 @@ func TestMetricsWriterSubmitAndRun(t *testing.T) {
 	if _, ok := mqttPts[0]["consumer_pending_messages"]; !ok {
 		t.Error("expected consumer_pending_messages key in MQTT metric point")
 	}
+	// New trend-line gauges should round-trip through the write + query path.
+	trendChecks := map[string]float64{
+		"sockets_open":        9,
+		"op_queue_depth":      4,
+		"pool_slot_connected": 8,
+		"go_goroutines":       120,
+	}
+	for key, want := range trendChecks {
+		got, ok := mqttPts[0][key]
+		if !ok {
+			t.Errorf("expected %s key in MQTT metric point", key)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s = %v, want %v", key, got, want)
+		}
+	}
 }
 
 func TestMetricsWriterDeleteOld(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 
 	oldTS := time.Now().Add(-25 * time.Hour)
 	w.writeSample(MetricSample{
@@ -583,7 +596,7 @@ func TestMetricsWriterDeleteOld(t *testing.T) {
 
 func TestQueryEnvMetricsEmpty(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 
 	pts, err := w.QueryEnvMetrics(context.Background(), "no-data-env", 0, time.Now().Unix(), 0)
 	if err != nil {
@@ -596,7 +609,7 @@ func TestQueryEnvMetricsEmpty(t *testing.T) {
 
 func TestQueryServerMetricsWithServerIDFilter(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 
 	now := time.Now()
 	// Write two servers in the same sample.
@@ -629,7 +642,7 @@ func TestQueryServerMetricsWithServerIDFilter(t *testing.T) {
 
 func TestQueryMQTTMetricsNullConsumerPending(t *testing.T) {
 	s := testStore(t)
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 
 	now := time.Now()
 	w.writeSample(MetricSample{
@@ -661,7 +674,7 @@ func TestQueryMQTTMetricsNullConsumerPending(t *testing.T) {
 func TestMetricsWriterSubmitDropsWhenFull(t *testing.T) {
 	s := testStore(t)
 	// Do NOT start Run() — we need the channel to stay full.
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 
 	sample := MetricSample{Timestamp: time.Now(), Env: "drop-env"}
 
@@ -972,7 +985,7 @@ func TestWriteSampleCommitError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 	// writeSample: Begin + INSERT env_metrics succeed (FK check is deferred),
 	// but Commit fails because env_ref has no matching row.
 	w.writeSample(MetricSample{
@@ -989,7 +1002,7 @@ func TestWriteSampleDroppedEnvTable(t *testing.T) {
 	if _, err := s.db.Exec("DROP TABLE env_metrics"); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 	// writeSample: tx.Begin succeeds, env_metrics INSERT fails.
 	w.writeSample(MetricSample{Timestamp: time.Now(), Env: "e", ServerCount: 1})
 }
@@ -1001,11 +1014,11 @@ func TestWriteSampleDroppedServerTable(t *testing.T) {
 	if _, err := s.db.Exec("DROP TABLE server_metrics"); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 	w.writeSample(MetricSample{
 		Timestamp: time.Now(),
 		Env:       "e",
-		Servers: []ServerMetricSample{{ServerID: "srv-1"}},
+		Servers:   []ServerMetricSample{{ServerID: "srv-1"}},
 	})
 }
 
@@ -1015,7 +1028,7 @@ func TestWriteSampleDroppedMQTTTable(t *testing.T) {
 	if _, err := s.db.Exec("DROP TABLE mqtt_bridge_metrics"); err != nil {
 		t.Fatal(err)
 	}
-	w := NewMetricsWriter(s.DB(), slog.Default(), 0)
+	w := NewMetricsWriter(s, slog.Default(), 0)
 	w.writeSample(MetricSample{
 		Timestamp:   time.Now(),
 		Env:         "e",
@@ -1201,23 +1214,22 @@ func TestEnsureDefaultAdminCreateUserError(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultAdminUpdateError(t *testing.T) {
-	// After CreateUser succeeds, block the UPDATE so the must_change_password
-	// SET fails. Install a trigger only for UPDATE.
+func TestEnsureDefaultAdminInsertError(t *testing.T) {
+	// EnsureDefaultAdmin inserts the default admin (with must_change_password set)
+	// in a single statement. Block the INSERT so the error branch is covered.
 	s := testStore(t)
 
-	// First, set up the trigger that blocks UPDATE on must_change_password.
 	_, err := s.db.Exec(`
-		CREATE TRIGGER block_admin_update
-		BEFORE UPDATE OF must_change_password ON users
-		BEGIN SELECT RAISE(ABORT, 'test: update blocked'); END
+		CREATE TRIGGER block_admin_insert
+		BEFORE INSERT ON users
+		BEGIN SELECT RAISE(ABORT, 'test: insert blocked'); END
 	`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.EnsureDefaultAdmin()
 	if err == nil {
-		t.Fatal("expected error from EnsureDefaultAdmin when UPDATE fails")
+		t.Fatal("expected error from EnsureDefaultAdmin when INSERT fails")
 	}
 }
 
@@ -1460,10 +1472,9 @@ func TestMetricsWriterClosedDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := tmp.db // grab the handle before Close
-	tmp.Close()  // close the Store (and therefore the DB)
+	tmp.Close() // close the Store (and therefore the DB) so every op errors
 
-	w := NewMetricsWriter(db, slog.Default(), 0)
+	w := NewMetricsWriter(tmp, slog.Default(), 0)
 
 	// writeSample: Begin will fail — covers the "metrics tx begin" warn + return.
 	w.writeSample(MetricSample{Timestamp: time.Now(), Env: "e"})

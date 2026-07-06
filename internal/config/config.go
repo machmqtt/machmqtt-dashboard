@@ -3,7 +3,9 @@ package config
 import (
 	_ "embed"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -29,6 +31,13 @@ type Config struct {
 	// sits behind a trusted reverse proxy that sets the header — otherwise a
 	// client can spoof it to evade the login rate limiter.
 	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
+	// Environments are clusters seeded into the database on first startup, keyed
+	// by name: an environment whose name is not already present is created; ones
+	// that already exist are left untouched (so runtime edits via the admin UI are
+	// never overwritten). This makes a zero-touch `docker compose up` poll the
+	// configured servers without a manual cluster-creation step. After seeding,
+	// clusters are managed in the DB via the admin UI/API.
+	Environments []Environment `yaml:"environments,omitempty"`
 }
 
 type Environment struct {
@@ -85,6 +94,13 @@ type MQTTBridge struct {
 type MQTTDiscoveryConfig struct {
 	Enabled    *bool `yaml:"enabled,omitempty"      json:"enabled,omitempty"`     // nil = true (default on)
 	AdminPorts []int `yaml:"admin_ports,omitempty"  json:"admin_ports,omitempty"` // default [8080]
+	// TrustedHosts extends the set of hosts the environment's admin_token may be
+	// sent to during auto-discovery. Loopback and any host already named in this
+	// environment's server/bridge/nats_conn URLs are always trusted. A discovered
+	// bridge whose IP/host is not trusted is still probed, but WITHOUT the admin
+	// token — so a connection that merely names itself "machmqtt-bridge" from an
+	// arbitrary address can never capture the shared secret.
+	TrustedHosts []string `yaml:"trusted_hosts,omitempty" json:"trusted_hosts,omitempty"`
 }
 
 // MQTTDiscoveryEnabled returns whether auto-discovery is enabled for this environment.
@@ -110,6 +126,54 @@ func (e *Environment) ResolveBridgeToken(perBridge string) string {
 		return perBridge
 	}
 	return e.AdminToken
+}
+
+// DiscoveryTrustedHosts returns the set of hosts (lowercased) the environment's
+// admin token may be sent to during auto-discovery: every host named in this
+// environment's server, bridge, and nats_conn URLs, plus any operator-supplied
+// trusted_hosts. Loopback is handled separately by the collector. Used to avoid
+// leaking the shared admin token to an arbitrary discovered address.
+func (e *Environment) DiscoveryTrustedHosts() map[string]bool {
+	hosts := make(map[string]bool)
+	add := func(h string) {
+		if h != "" {
+			hosts[strings.ToLower(h)] = true
+		}
+	}
+	for _, s := range e.Servers {
+		add(hostFromURL(s.URL))
+	}
+	for _, b := range e.MQTTBridges {
+		add(hostFromURL(b.URL))
+	}
+	if e.NATSConn != nil {
+		for _, u := range e.NATSConn.URLs {
+			add(hostFromURL(u))
+		}
+	}
+	if e.MQTTDiscovery != nil {
+		for _, h := range e.MQTTDiscovery.TrustedHosts {
+			add(h)
+		}
+	}
+	return hosts
+}
+
+// hostFromURL extracts the host (without port) from a URL that may or may not
+// carry a scheme (e.g. "http://h:8222", "nats://h:4222", "h:4222", "h").
+func hostFromURL(raw string) string {
+	s := raw
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	// Strip any path/query.
+	if i := strings.IndexAny(s, "/?"); i >= 0 {
+		s = s[:i]
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	return s
 }
 
 type Server struct {

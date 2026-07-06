@@ -52,23 +52,36 @@ type ServerMetricSample struct {
 }
 
 type MQTTBridgeMetricSample struct {
-	BridgeID          string
-	ConnectionsActive int64
-	InMsgsRate        float64
-	OutMsgsRate       float64
-	InBytesRate       float64
-	OutBytesRate      float64
-	MsgsRecvQoS0      int64
-	MsgsRecvQoS1      int64
-	MsgsSentQoS0      int64
-	MsgsSentQoS1      int64
-	MsgsRecvQoS2      int64
-	MsgsSentQoS2      int64
+	BridgeID                string
+	ConnectionsActive       int64
+	InMsgsRate              float64
+	OutMsgsRate             float64
+	InBytesRate             float64
+	OutBytesRate            float64
+	MsgsRecvQoS0            int64
+	MsgsRecvQoS1            int64
+	MsgsSentQoS0            int64
+	MsgsSentQoS1            int64
+	MsgsRecvQoS2            int64
+	MsgsSentQoS2            int64
 	SessionWriteBehindDepth int64
 	// ConsumerPendingMessages is nil when JetStream is unavailable (metric absent);
 	// stored as NULL in SQLite so AVG() skips absent-JS samples correctly.
 	ConsumerPendingMessages *int64
 	StalledConsumers        int64
+
+	// Trend-line gauges.
+	SocketsOpen          int64
+	InflightOutMessages  int64
+	OpQueueDepth         int64
+	OpSuspendedConns     int64
+	WorkerPoolQueueDepth int64
+	PoolSlotConnected    int64
+	RetainedMessages     int64
+	SubscriptionsActive  int64
+	GoHeapInuseBytes     int64
+	GoGoroutines         int64
+	ScramSessionsActive  int64
 }
 
 // MetricPoint represents a single time-series data point returned by queries.
@@ -82,6 +95,7 @@ type MetricsWriter struct {
 	retention    time.Duration
 	dropped      atomic.Uint64 // dropped since the last periodic report (reset by Run)
 	droppedTotal atomic.Uint64 // cumulative dropped, never reset (for /api/admin/health)
+	pruning      atomic.Bool   // guards against overlapping retention prunes
 }
 
 // Dropped returns the cumulative number of metric samples dropped because the
@@ -90,13 +104,15 @@ func (w *MetricsWriter) Dropped() uint64 { return w.droppedTotal.Load() }
 
 // NewMetricsWriter creates a new metrics writer that keeps samples for the given
 // retention (<=0 falls back to 24h). Call Run() to start the background goroutine.
-func NewMetricsWriter(db *sql.DB, log *slog.Logger, retention time.Duration) *MetricsWriter {
+// It reads the store's connection directly (same package) so the store need not
+// expose its raw *sql.DB.
+func NewMetricsWriter(s *Store, log *slog.Logger, retention time.Duration) *MetricsWriter {
 	if retention <= 0 {
 		retention = 24 * time.Hour
 	}
 	return &MetricsWriter{
-		db:        db,
-		ch:        make(chan MetricSample, 32),
+		db:        s.db,
+		ch:        make(chan MetricSample, 256),
 		log:       log,
 		retention: retention,
 	}
@@ -126,7 +142,16 @@ func (w *MetricsWriter) Run(ctx context.Context) {
 		case s := <-w.ch:
 			w.writeSample(s)
 		case <-cleanup.C:
-			w.deleteOld()
+			// Prune on a separate goroutine (guarded so at most one runs at a
+			// time) so a large or slow DELETE never blocks the sample-draining
+			// loop above — otherwise the buffer would fill and live samples for
+			// every cluster would be dropped while pruning ran.
+			if w.pruning.CompareAndSwap(false, true) {
+				go func() {
+					defer w.pruning.Store(false)
+					w.deleteOld()
+				}()
+			}
 			if n := w.dropped.Swap(0); n > 0 {
 				w.log.Warn("metrics samples dropped (writer buffer full)", "count", n, "window", "10m")
 			}
@@ -181,13 +206,19 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 			connections_active, in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate,
 			msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1,
 			msgs_recv_qos2, msgs_sent_qos2,
-			session_write_behind_depth, consumer_pending_messages, stalled_consumers)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			session_write_behind_depth, consumer_pending_messages, stalled_consumers,
+			sockets_open, inflight_out_messages, op_queue_depth, op_suspended_conns,
+			worker_pool_queue_depth, pool_slot_connected, retained_messages,
+			subscriptions_active, go_heap_inuse_bytes, go_goroutines, scram_sessions_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ts, s.Env, b.BridgeID,
 			b.ConnectionsActive, b.InMsgsRate, b.OutMsgsRate, b.InBytesRate, b.OutBytesRate,
 			b.MsgsRecvQoS0, b.MsgsRecvQoS1, b.MsgsSentQoS0, b.MsgsSentQoS1,
 			b.MsgsRecvQoS2, b.MsgsSentQoS2,
-			b.SessionWriteBehindDepth, b.ConsumerPendingMessages, b.StalledConsumers)
+			b.SessionWriteBehindDepth, b.ConsumerPendingMessages, b.StalledConsumers,
+			b.SocketsOpen, b.InflightOutMessages, b.OpQueueDepth, b.OpSuspendedConns,
+			b.WorkerPoolQueueDepth, b.PoolSlotConnected, b.RetainedMessages,
+			b.SubscriptionsActive, b.GoHeapInuseBytes, b.GoGoroutines, b.ScramSessionsActive)
 		if err != nil {
 			w.log.Warn("metrics insert mqtt", "bridge", b.BridgeID, "err", err)
 		}
@@ -200,9 +231,24 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 
 func (w *MetricsWriter) deleteOld() {
 	cutoff := time.Now().Add(-w.retention).Unix()
+	freed := false
 	for _, table := range []string{"server_metrics", "env_metrics", "mqtt_bridge_metrics"} {
-		if _, err := w.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ts < ?", table), cutoff); err != nil {
+		res, err := w.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ts < ?", table), cutoff)
+		if err != nil {
 			w.log.Warn("metrics cleanup", "table", table, "err", err)
+			continue
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			freed = true
+		}
+	}
+	// Return the pages freed by the deletes to the OS. Incremental auto_vacuum
+	// keeps them on a freelist (they'd otherwise be reused by future inserts, so
+	// the file plateaus); reclaiming here shrinks the file after a large prune,
+	// e.g. when retention is reduced. Only runs when rows were actually deleted.
+	if freed {
+		if _, err := w.db.Exec("PRAGMA incremental_vacuum"); err != nil {
+			w.log.Warn("metrics incremental_vacuum", "err", err)
 		}
 	}
 }
@@ -337,7 +383,10 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
 		AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1),
 		AVG(msgs_recv_qos2), AVG(msgs_sent_qos2),
-		AVG(session_write_behind_depth), AVG(consumer_pending_messages), AVG(stalled_consumers)`, env, bridgeID, from, to, step)
+		AVG(session_write_behind_depth), AVG(consumer_pending_messages), AVG(stalled_consumers),
+		AVG(sockets_open), AVG(inflight_out_messages), AVG(op_queue_depth), AVG(op_suspended_conns),
+		AVG(worker_pool_queue_depth), AVG(pool_slot_connected), AVG(retained_messages),
+		AVG(subscriptions_active), AVG(go_heap_inuse_bytes), AVG(go_goroutines), AVG(scram_sessions_active)`, env, bridgeID, from, to, step)
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -357,32 +406,57 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 		// consumer_pending_messages is NULL when JetStream was unavailable for the
 		// entire bucket; AVG of NULLs returns NULL, so use a nullable scan target.
 		var pendingMsg sql.NullFloat64
+		// Trend-line gauges. These columns were added later, so pre-migration
+		// buckets are entirely NULL → AVG returns NULL; scan as nullable and omit
+		// the key when absent so the chart shows a gap rather than a false zero.
+		var socketsOpen, inflightOut, opQ, opSusp, workerQ sql.NullFloat64
+		var poolSlot, retained, subsActive, heap, goroutines, scram sql.NullFloat64
 		if err := rows.Scan(&ts, &bid, &connActive,
 			&inMR, &outMR, &inBR, &outBR,
 			&rQ0, &rQ1, &sQ0, &sQ1,
 			&rQ2, &sQ2,
-			&writeBehind, &pendingMsg, &stalledC); err != nil {
+			&writeBehind, &pendingMsg, &stalledC,
+			&socketsOpen, &inflightOut, &opQ, &opSusp,
+			&workerQ, &poolSlot, &retained,
+			&subsActive, &heap, &goroutines, &scram); err != nil {
 			return nil, err
 		}
 		pt := MetricPoint{
-			"ts":                       ts,
-			"bridge_id":                bid,
-			"connections_active":       connActive,
-			"in_msgs_rate":             inMR,
-			"out_msgs_rate":            outMR,
-			"in_bytes_rate":            inBR,
-			"out_bytes_rate":           outBR,
-			"msgs_recv_qos0":           rQ0,
-			"msgs_recv_qos1":           rQ1,
-			"msgs_sent_qos0":           sQ0,
-			"msgs_sent_qos1":           sQ1,
-			"msgs_recv_qos2":           rQ2,
-			"msgs_sent_qos2":           sQ2,
+			"ts":                         ts,
+			"bridge_id":                  bid,
+			"connections_active":         connActive,
+			"in_msgs_rate":               inMR,
+			"out_msgs_rate":              outMR,
+			"in_bytes_rate":              inBR,
+			"out_bytes_rate":             outBR,
+			"msgs_recv_qos0":             rQ0,
+			"msgs_recv_qos1":             rQ1,
+			"msgs_sent_qos0":             sQ0,
+			"msgs_sent_qos1":             sQ1,
+			"msgs_recv_qos2":             rQ2,
+			"msgs_sent_qos2":             sQ2,
 			"session_write_behind_depth": writeBehind,
-			"stalled_consumers":        stalledC,
+			"stalled_consumers":          stalledC,
 		}
 		if pendingMsg.Valid {
 			pt["consumer_pending_messages"] = pendingMsg.Float64
+		}
+		for key, v := range map[string]sql.NullFloat64{
+			"sockets_open":            socketsOpen,
+			"inflight_out_messages":   inflightOut,
+			"op_queue_depth":          opQ,
+			"op_suspended_conns":      opSusp,
+			"worker_pool_queue_depth": workerQ,
+			"pool_slot_connected":     poolSlot,
+			"retained_messages":       retained,
+			"subscriptions_active":    subsActive,
+			"go_heap_inuse_bytes":     heap,
+			"go_goroutines":           goroutines,
+			"scram_sessions_active":   scram,
+		} {
+			if v.Valid {
+				pt[key] = v.Float64
+			}
 		}
 		points = append(points, pt)
 	}

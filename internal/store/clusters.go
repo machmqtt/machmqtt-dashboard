@@ -5,10 +5,28 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
+)
+
+// Typed cluster errors let the API map failures to correct HTTP statuses
+// without matching on error strings, and without leaking raw DB errors.
+var (
+	ErrClusterNotFound        = errors.New("cluster not found")
+	ErrClusterNameRequired    = errors.New("cluster name is required")
+	ErrClusterServersRequired = errors.New("at least one server URL is required")
+)
+
+// jsonMarshal and randRead are indirection seams over json.Marshal and
+// rand.Read. They exist so the otherwise-unreachable encode-failure and
+// entropy-failure error paths below can be exercised in tests; production code
+// always uses the standard-library implementations assigned here.
+var (
+	jsonMarshal = json.Marshal
+	randRead    = rand.Read
 )
 
 // Cluster is a NATS cluster managed via the admin UI.
@@ -41,10 +59,55 @@ func (c *Cluster) ToEnvironment() config.Environment {
 	}
 }
 
+// ClusterFromEnvironment builds a Cluster from a config.Environment (the reverse
+// of ToEnvironment), used to seed config-declared environments into the DB.
+func ClusterFromEnvironment(e config.Environment) *Cluster {
+	return &Cluster{
+		Name:          e.Name,
+		Servers:       e.Servers,
+		MQTTBridges:   e.MQTTBridges,
+		MQTTDiscovery: e.MQTTDiscovery,
+		TLS:           e.TLS,
+		AdminToken:    e.AdminToken,
+		NATSConn:      e.NATSConn,
+	}
+}
+
+// SeedClusters creates any configured environment that does not already exist
+// (matched by name), leaving existing clusters untouched. Returns the number of
+// clusters created. Idempotent: safe to call on every startup.
+func (s *Store) SeedClusters(envs []config.Environment) (int, error) {
+	if len(envs) == 0 {
+		return 0, nil
+	}
+	existing, err := s.ListClusters()
+	if err != nil {
+		return 0, fmt.Errorf("list clusters: %w", err)
+	}
+	byName := make(map[string]bool, len(existing))
+	for _, c := range existing {
+		byName[c.Name] = true
+	}
+
+	created := 0
+	for _, env := range envs {
+		if env.Name == "" || byName[env.Name] {
+			continue
+		}
+		cl := ClusterFromEnvironment(env)
+		if err := s.CreateCluster(cl); err != nil {
+			return created, fmt.Errorf("seed cluster %q: %w", env.Name, err)
+		}
+		byName[env.Name] = true
+		created++
+	}
+	return created, nil
+}
+
 // generateClusterID returns a 12-character hex string from crypto/rand.
 func generateClusterID() (string, error) {
 	b := make([]byte, 6)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		return "", fmt.Errorf("generate cluster id: %w", err)
 	}
 	return hex.EncodeToString(b), nil
@@ -53,10 +116,10 @@ func generateClusterID() (string, error) {
 // CreateCluster persists a new cluster and populates c.ID and c.CreatedAt.
 func (s *Store) CreateCluster(c *Cluster) error {
 	if c.Name == "" {
-		return fmt.Errorf("cluster name is required")
+		return ErrClusterNameRequired
 	}
 	if len(c.Servers) == 0 {
-		return fmt.Errorf("at least one server URL is required")
+		return ErrClusterServersRequired
 	}
 
 	id, err := generateClusterID()
@@ -112,6 +175,9 @@ func (s *Store) GetCluster(id string) (*Cluster, error) {
 		 FROM clusters WHERE id = ?`, id,
 	)
 	c, err := scanCluster(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrClusterNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -121,10 +187,10 @@ func (s *Store) GetCluster(id string) (*Cluster, error) {
 // UpdateCluster updates an existing cluster's mutable fields.
 func (s *Store) UpdateCluster(c *Cluster) error {
 	if c.Name == "" {
-		return fmt.Errorf("cluster name is required")
+		return ErrClusterNameRequired
 	}
 	if len(c.Servers) == 0 {
-		return fmt.Errorf("at least one server URL is required")
+		return ErrClusterServersRequired
 	}
 
 	cols, err := marshalClusterFields(c)
@@ -142,7 +208,7 @@ func (s *Store) UpdateCluster(c *Cluster) error {
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("cluster not found")
+		return ErrClusterNotFound
 	}
 	return nil
 }
@@ -162,7 +228,7 @@ func (s *Store) DeleteCluster(id string) error {
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("cluster not found")
+		return ErrClusterNotFound
 	}
 
 	// Cascade to all tables that key on env = cluster ID.
@@ -242,12 +308,12 @@ type clusterCols struct {
 // CreateCluster and UpdateCluster don't repeat the marshal sequence.
 func marshalClusterFields(c *Cluster) (clusterCols, error) {
 	var cc clusterCols
-	servers, err := json.Marshal(c.Servers)
+	servers, err := jsonMarshal(c.Servers)
 	if err != nil {
 		return cc, fmt.Errorf("marshal servers: %w", err)
 	}
 	cc.servers = string(servers)
-	bridges, err := json.Marshal(nullableSlice(c.MQTTBridges))
+	bridges, err := jsonMarshal(nullableSlice(c.MQTTBridges))
 	if err != nil {
 		return cc, fmt.Errorf("marshal mqtt_bridges: %w", err)
 	}
@@ -270,7 +336,7 @@ func marshalNullable(v any) (sql.NullString, error) {
 	if v == nil {
 		return sql.NullString{}, nil
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonMarshal(v)
 	if err != nil {
 		return sql.NullString{}, err
 	}

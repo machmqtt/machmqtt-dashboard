@@ -441,7 +441,7 @@ func TestMQTTFetchMetricsWithBearerToken(t *testing.T) {
 func TestMQTTFetchStatusSuccess(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(MQTTReadyz{Status: "ready", Connections: 5, NATSConnected: true})
+		json.NewEncoder(w).Encode(MQTTReadyz{Status: "ready", NATSConnected: true})
 	})
 	mux.HandleFunc("/diag/nats", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(MQTTNATSDiag{Connection: MQTTNATSConnection{Connected: true}})
@@ -470,8 +470,10 @@ func TestMQTTFetchStatusSuccess(t *testing.T) {
 	if !status.NATSConnected {
 		t.Error("expected NATSConnected=true")
 	}
-	if status.Connections != 5 {
-		t.Errorf("Connections = %d, want 5", status.Connections)
+	// Connections now comes from the metrics snapshot (connections_active=3),
+	// not /readyz which carries no connection count.
+	if status.Connections != 3 {
+		t.Errorf("Connections = %d, want 3", status.Connections)
 	}
 	if status.NATS == nil {
 		t.Error("expected non-nil NATS diag")
@@ -503,7 +505,7 @@ func TestMQTTFetchStatusReadyzError(t *testing.T) {
 func TestMQTTFetchStatusDrainingState(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(MQTTReadyz{Status: "draining", Connections: 1, NATSConnected: true})
+		json.NewEncoder(w).Encode(MQTTReadyz{Status: "draining", NATSConnected: true})
 	})
 	mux.HandleFunc("/diag/nats", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)

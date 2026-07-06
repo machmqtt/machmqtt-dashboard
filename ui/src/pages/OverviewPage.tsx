@@ -144,7 +144,9 @@ export function OverviewPage() {
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {overview.servers?.map((s) => (
               <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                <td className="px-4 py-3 font-medium">{s.name || s.id}</td>
+                <td className="px-4 py-3 font-medium">
+                  <Link to={`/servers/${s.id}`} className="block max-w-[220px] truncate text-brand-blue hover:underline" title={s.name || s.id}>{s.name || s.id}</Link>
+                </td>
                 <td className="px-4 py-3">{s.version}</td>
                 <td className="px-4 py-3">{fmtNum(s.connections)}</td>
                 <td className="px-4 py-3">{s.cpu.toFixed(1)}%</td>
