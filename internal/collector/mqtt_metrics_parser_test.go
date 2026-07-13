@@ -38,6 +38,12 @@ machmqtt_auth_failure_total{reason="bad_credentials"} 5
 machmqtt_auth_failure_total{reason="enhanced"} 3
 machmqtt_auth_failure_total{reason="locked"} 2
 machmqtt_auth_failure_total{reason="other"} 1
+machmqtt_auth_failure_total{reason="webhook_denied"} 61
+machmqtt_auth_failure_total{reason="webhook_unavailable"} 62
+# TYPE machmqtt_auth_webhook_requests_total counter
+machmqtt_auth_webhook_requests_total 63
+machmqtt_auth_webhook_transport_failures_total 64
+machmqtt_auth_webhook_inflight_rejected_total 65
 # TYPE machmqtt_scram_sessions_active gauge
 machmqtt_scram_sessions_active 2
 # TYPE machmqtt_nats_enforcement_fallback_total counter
@@ -130,6 +136,10 @@ machmqtt_auth_duration_seconds_bucket{le="0.001"} 10
 machmqtt_auth_duration_seconds_bucket{le="+Inf"} 20
 machmqtt_auth_duration_seconds_sum 0.02
 machmqtt_auth_duration_seconds_count 20
+# TYPE machmqtt_auth_webhook_duration_seconds histogram
+machmqtt_auth_webhook_duration_seconds_bucket{le="+Inf"} 25
+machmqtt_auth_webhook_duration_seconds_sum 0.025
+machmqtt_auth_webhook_duration_seconds_count 25
 # TYPE machmqtt_jetstream_publish_duration_seconds histogram
 machmqtt_jetstream_publish_duration_seconds_bucket{le="+Inf"} 30
 machmqtt_jetstream_publish_duration_seconds_sum 0.03
@@ -201,6 +211,15 @@ machmqtt_acl_denied_total{action="subscribe"} 34
 machmqtt_cluster_inspect_timeouts_total 35
 machmqtt_cluster_takeover_dropped_total 36
 machmqtt_cluster_takeover_order_skew_total 37
+# --- session-ownership lease (v1.1) ---
+machmqtt_cluster_lease_acquired_total 66
+machmqtt_cluster_lease_transferred_total 67
+machmqtt_cluster_lease_reclaimed_total 68
+machmqtt_cluster_lease_conflicts_total 69
+machmqtt_cluster_lease_watcher_kicks_total 70
+machmqtt_cluster_lease_release_failed_total 71
+machmqtt_cluster_owned_leases 72
+machmqtt_session_fencing_rejected_total 73
 # --- queue backpressure ---
 machmqtt_worker_pool_queue_depth 38
 machmqtt_op_queue_depth 39
@@ -262,20 +281,25 @@ func TestParsePrometheusMetrics_Connections(t *testing.T) {
 func TestParsePrometheusMetrics_Auth(t *testing.T) {
 	m := parsePrometheusMetrics(sampleMetrics)
 	checks := map[string]struct{ got, want int64 }{
-		"AuthSuccess":             {m.AuthSuccess, 42},
-		"AuthFailure (sum)":       {m.AuthFailure, 41}, // 5+3+2+1 + 4+5+6+7+8
-		"AuthFailBadCreds":        {m.AuthFailBadCreds, 5},
-		"AuthFailEnhanced":        {m.AuthFailEnhanced, 3},
-		"AuthFailLocked":          {m.AuthFailLocked, 2},
-		"AuthFailOther":           {m.AuthFailOther, 1},
-		"AuthFailLicense":         {m.AuthFailLicense, 4},
-		"AuthFailTokenExpired":    {m.AuthFailTokenExpired, 5},
-		"AuthFailBadSignature":    {m.AuthFailBadSignature, 6},
-		"AuthFailClaimMismatch":   {m.AuthFailClaimMismatch, 7},
-		"AuthFailJWKSUnavailable": {m.AuthFailJWKSUnavailable, 8},
-		"ScramSessionsActive":     {m.ScramSessionsActive, 2},
-		"NATSEnforcementFallback": {m.NATSEnforcementFallback, 14},
-		"NATSEnforcementDenied":   {m.NATSEnforcementDenied, 15},
+		"AuthSuccess":                  {m.AuthSuccess, 42},
+		"AuthFailure (sum)":            {m.AuthFailure, 164}, // 5+3+2+1 + 4+5+6+7+8 + 61+62
+		"AuthFailBadCreds":             {m.AuthFailBadCreds, 5},
+		"AuthFailEnhanced":             {m.AuthFailEnhanced, 3},
+		"AuthFailLocked":               {m.AuthFailLocked, 2},
+		"AuthFailOther":                {m.AuthFailOther, 1},
+		"AuthFailLicense":              {m.AuthFailLicense, 4},
+		"AuthFailTokenExpired":         {m.AuthFailTokenExpired, 5},
+		"AuthFailBadSignature":         {m.AuthFailBadSignature, 6},
+		"AuthFailClaimMismatch":        {m.AuthFailClaimMismatch, 7},
+		"AuthFailJWKSUnavailable":      {m.AuthFailJWKSUnavailable, 8},
+		"AuthFailWebhookDenied":        {m.AuthFailWebhookDenied, 61},
+		"AuthFailWebhookUnavailable":   {m.AuthFailWebhookUnavailable, 62},
+		"ScramSessionsActive":          {m.ScramSessionsActive, 2},
+		"NATSEnforcementFallback":      {m.NATSEnforcementFallback, 14},
+		"NATSEnforcementDenied":        {m.NATSEnforcementDenied, 15},
+		"AuthWebhookRequests":          {m.AuthWebhookRequests, 63},
+		"AuthWebhookTransportFailures": {m.AuthWebhookTransportFailures, 64},
+		"AuthWebhookInflightRejected":  {m.AuthWebhookInflightRejected, 65},
 	}
 	for field, c := range checks {
 		if c.got != c.want {
@@ -425,11 +449,12 @@ func TestParsePrometheusMetrics_Histograms(t *testing.T) {
 	m := parsePrometheusMetrics(sampleMetrics)
 	// Buckets must NOT bleed into count or sum.
 	intChecks := map[string]struct{ got, want int64 }{
-		"PublishLatencyCount":    {m.PublishLatencyCount, 100},
-		"AuthDurationCount":      {m.AuthDurationCount, 20},
-		"JSPublishDurationCount": {m.JSPublishDurationCount, 30},
-		"SubscribeDurationCount": {m.SubscribeDurationCount, 40},
-		"DispatchWaitCount":      {m.DispatchWaitCount, 50},
+		"PublishLatencyCount":      {m.PublishLatencyCount, 100},
+		"AuthDurationCount":        {m.AuthDurationCount, 20},
+		"AuthWebhookDurationCount": {m.AuthWebhookDurationCount, 25},
+		"JSPublishDurationCount":   {m.JSPublishDurationCount, 30},
+		"SubscribeDurationCount":   {m.SubscribeDurationCount, 40},
+		"DispatchWaitCount":        {m.DispatchWaitCount, 50},
 	}
 	for field, c := range intChecks {
 		if c.got != c.want {
@@ -439,11 +464,12 @@ func TestParsePrometheusMetrics_Histograms(t *testing.T) {
 	floatChecks := map[string]struct {
 		got, want float64
 	}{
-		"PublishLatencySumSeconds":    {m.PublishLatencySumSeconds, 0.05},
-		"AuthDurationSumSeconds":      {m.AuthDurationSumSeconds, 0.02},
-		"JSPublishDurationSumSeconds": {m.JSPublishDurationSumSeconds, 0.03},
-		"SubscribeDurationSumSeconds": {m.SubscribeDurationSumSeconds, 0.04},
-		"DispatchWaitSumSeconds":      {m.DispatchWaitSumSeconds, 0.005},
+		"PublishLatencySumSeconds":      {m.PublishLatencySumSeconds, 0.05},
+		"AuthDurationSumSeconds":        {m.AuthDurationSumSeconds, 0.02},
+		"AuthWebhookDurationSumSeconds": {m.AuthWebhookDurationSumSeconds, 0.025},
+		"JSPublishDurationSumSeconds":   {m.JSPublishDurationSumSeconds, 0.03},
+		"SubscribeDurationSumSeconds":   {m.SubscribeDurationSumSeconds, 0.04},
+		"DispatchWaitSumSeconds":        {m.DispatchWaitSumSeconds, 0.005},
 	}
 	for field, c := range floatChecks {
 		if c.got != c.want {
@@ -513,6 +539,15 @@ func TestParsePrometheusMetrics_NewObservability(t *testing.T) {
 		"ClusterInspectTimeouts":   {m.ClusterInspectTimeouts, 35},
 		"ClusterTakeoverDropped":   {m.ClusterTakeoverDropped, 36},
 		"ClusterTakeoverOrderSkew": {m.ClusterTakeoverOrderSkew, 37},
+		// Session-ownership lease (v1.1)
+		"ClusterLeaseAcquired":      {m.ClusterLeaseAcquired, 66},
+		"ClusterLeaseTransferred":   {m.ClusterLeaseTransferred, 67},
+		"ClusterLeaseReclaimed":     {m.ClusterLeaseReclaimed, 68},
+		"ClusterLeaseConflicts":     {m.ClusterLeaseConflicts, 69},
+		"ClusterLeaseWatcherKicks":  {m.ClusterLeaseWatcherKicks, 70},
+		"ClusterLeaseReleaseFailed": {m.ClusterLeaseReleaseFailed, 71},
+		"ClusterOwnedLeases":        {m.ClusterOwnedLeases, 72},
+		"SessionFencingRejected":    {m.SessionFencingRejected, 73},
 		// Queue backpressure
 		"WorkerPoolQueueDepth": {m.WorkerPoolQueueDepth, 38},
 		"OpQueueDepth":         {m.OpQueueDepth, 39},

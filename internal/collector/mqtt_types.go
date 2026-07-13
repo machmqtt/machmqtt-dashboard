@@ -77,7 +77,15 @@ type MQTTMetrics struct {
 	AuthFailBadSignature    int64 `json:"auth_fail_bad_signature"`
 	AuthFailClaimMismatch   int64 `json:"auth_fail_claim_mismatch"`
 	AuthFailJWKSUnavailable int64 `json:"auth_fail_jwks_unavailable"`
-	ScramSessionsActive     int64 `json:"scram_sessions_active"`
+	// AuthFailWebhookDenied/Unavailable are only non-zero when auth.type is http.
+	AuthFailWebhookDenied      int64 `json:"auth_fail_webhook_denied"`
+	AuthFailWebhookUnavailable int64 `json:"auth_fail_webhook_unavailable"`
+	ScramSessionsActive        int64 `json:"scram_sessions_active"`
+
+	// --- Auth webhook (auth.type "http"; zero for other auth types) ---
+	AuthWebhookRequests          int64 `json:"auth_webhook_requests"`
+	AuthWebhookTransportFailures int64 `json:"auth_webhook_transport_failures"`
+	AuthWebhookInflightRejected  int64 `json:"auth_webhook_inflight_rejected"`
 
 	// --- Per-client NATS enforcement (OAuth2 CONNECT flow) ---
 	NATSEnforcementFallback int64 `json:"nats_enforcement_fallback"`
@@ -191,6 +199,22 @@ type MQTTMetrics struct {
 	ClusterTakeoverDropped   int64 `json:"cluster_takeover_dropped"`
 	ClusterTakeoverOrderSkew int64 `json:"cluster_takeover_order_skew"`
 
+	// --- Session-ownership lease (epoch-fenced cluster takeover, v1.1) ---
+	// Also emitted only when clustering is enabled, except SessionFencingRejected
+	// which is server-sourced from s.sessions and always present (zero when no
+	// fencing has occurred, which is the case outside a cluster).
+	ClusterLeaseAcquired      int64 `json:"cluster_lease_acquired"`
+	ClusterLeaseTransferred   int64 `json:"cluster_lease_transferred"`
+	ClusterLeaseReclaimed     int64 `json:"cluster_lease_reclaimed"`
+	ClusterLeaseConflicts     int64 `json:"cluster_lease_conflicts"`
+	ClusterLeaseWatcherKicks  int64 `json:"cluster_lease_watcher_kicks"`
+	ClusterLeaseReleaseFailed int64 `json:"cluster_lease_release_failed"`
+	ClusterOwnedLeases        int64 `json:"cluster_owned_leases"`
+	// SessionFencingRejected counts dirty-session KV writes dropped because the
+	// session was fenced (deposed by a higher-epoch lease owner elsewhere in the
+	// cluster); each increment is a clobber the fence prevented, not a failure.
+	SessionFencingRejected int64 `json:"session_fencing_rejected"`
+
 	// --- Queue backpressure ---
 	WorkerPoolQueueDepth int64 `json:"worker_pool_queue_depth"`
 	OpQueueDepth         int64 `json:"op_queue_depth"`
@@ -232,6 +256,8 @@ type MQTTMetrics struct {
 	PublishLatencySumSeconds       float64 `json:"publish_latency_sum_seconds"`
 	AuthDurationCount              int64   `json:"auth_duration_count"`
 	AuthDurationSumSeconds         float64 `json:"auth_duration_sum_seconds"`
+	AuthWebhookDurationCount       int64   `json:"auth_webhook_duration_count"`
+	AuthWebhookDurationSumSeconds  float64 `json:"auth_webhook_duration_sum_seconds"`
 	JSPublishDurationCount         int64   `json:"jetstream_publish_duration_count"`
 	JSPublishDurationSumSeconds    float64 `json:"jetstream_publish_duration_sum_seconds"`
 	SubscribeDurationCount         int64   `json:"subscribe_duration_count"`
