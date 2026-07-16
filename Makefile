@@ -17,6 +17,7 @@ build-all: build-ui
 	GOOS=linux   GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-linux-amd64       ./cmd/machmqtt-dashboard
 	GOOS=darwin  GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-darwin-amd64      ./cmd/machmqtt-dashboard
 	GOOS=darwin  GOARCH=arm64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-darwin-arm64      ./cmd/machmqtt-dashboard
+	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o bin/machmqtt-dashboard-windows-amd64.exe ./cmd/machmqtt-dashboard
 
 dev-backend:
 	$(GO) run ./cmd/machmqtt-dashboard -config config.yaml
