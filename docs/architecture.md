@@ -75,6 +75,28 @@ MachMQTT bridge fleet data uses a separate, independent pair of paths:
   scrapes each bridge's Prometheus-format `/metrics` endpoint and its admin API
   (diagnostics, license, pool, cluster status) on demand for the detail pages.
 
+**MachMQTT version compatibility.** Both bridge ingestion paths are designed to
+work across MachMQTT versions, in both directions:
+
+- *Newer broker, older dashboard (forward):* additive broker changes are safe.
+  The push payload is JSON, so unknown fields at any nesting level are dropped by
+  `encoding/json`; the Prometheus parser ignores metric families it doesn't
+  recognize, and unknown label reasons on known families (e.g. a new
+  `auth_failure_total{reason=...}`) still count toward the family's total. A
+  *breaking* wire change is signaled by the broker bumping the payload's `v`
+  field; the subscriber skips messages with `v` greater than its supported
+  schema (`bridgeMetricsSchemaV`) and logs a one-time "upgrade the dashboard"
+  warning rather than misinterpreting them. Admin endpoints a bridge doesn't
+  expose yet degrade per-tab (the relayed 404/409 is shown as "not supported by
+  this bridge version"), not per-page.
+- *Older broker, newer dashboard (backward):* legacy publishers that omit `v`
+  (`v=0`) are accepted, a payload without an embedded `metrics` object falls
+  back to safe defaults (JetStream-absent sentinel `-1` for consumer pending),
+  and metrics the old broker doesn't emit simply read zero. Scrapes from older
+  Prometheus surfaces parse the same way.
+
+These guarantees are pinned by tests in `internal/collector/mqtt_compat_test.go`.
+
 **Fetcher** — HTTP client with per-request timeouts. Supports optional TLS (custom CA or
 insecure skip). One Fetcher per cluster.
 
