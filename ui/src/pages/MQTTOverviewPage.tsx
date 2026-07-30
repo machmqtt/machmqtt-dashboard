@@ -86,7 +86,18 @@ interface BridgeInstance {
   admin_url: string
   status?: BridgeStatus
   reachable: boolean
+  // RFC3339; absent when the backend has no freshness signal for this entry.
+  last_seen?: string
 }
+
+// Mirrors probePendingReason in internal/api/handlers_mqtt.go: a configured
+// bridge whose first background probe hasn't answered yet. Rendered as a
+// neutral "Probing" state, not as an error.
+const PROBE_PENDING = 'probing the bridge admin API'
+
+// A push bridge republishes every ~10-15s and the backend expires entries at
+// 45s; beyond this the card's counters are shown as stale rather than live.
+const STALE_AFTER_MS = 90_000
 
 // Served from the collector's cached bridge list (no upstream fetch), so a
 // snappy refresh is cheap and surfaces newly discovered bridges quickly.
@@ -107,6 +118,10 @@ export function MQTTOverviewPage() {
   // refreshes update it in place, so the fleet doesn't strobe a skeleton (and
   // lose the user's scroll position) on every poll.
   const [bridges, setBridges] = useState<BridgeInstance[] | null>(null)
+  // Captured when the fleet data lands, so staleness is computed against a
+  // stable timestamp instead of calling Date.now() during render (which the
+  // React compiler's purity rule rejects); the 3s poll keeps it fresh.
+  const [fetchedAt, setFetchedAt] = useState(0)
   const mqttMetrics = useMetrics(activeEnv, 'metrics/mqtt')
 
   const fetchData = useCallback(async () => {
@@ -116,6 +131,7 @@ export function MQTTOverviewPage() {
       if (res.ok) {
         const data = await res.json()
         setBridges(data.bridges || [])
+        setFetchedAt(Date.now())
       }
     } catch { /* ignore */ }
   }, [activeEnv])
@@ -231,9 +247,14 @@ export function MQTTOverviewPage() {
         {bridges.map((b) => {
           const s = b.status
           const healthy = b.reachable && s?.ready && s?.nats_connected
+          // The display name is the cache key server-side, so it is unique per
+          // card; b.ip is empty for push-discovered bridges and would collide.
           const displayName = b.configured_name || b.status?.name || `mqtt@${b.ip}`
+          const probing = s?.error === PROBE_PENDING
+          const staleMs = b.last_seen ? fetchedAt - Date.parse(b.last_seen) : 0
+          const stale = staleMs > STALE_AFTER_MS
           return (
-          <div key={b.ip} className="bg-white dark:bg-gray-800 rounded-lg shadow">
+          <div key={displayName} className={`bg-white dark:bg-gray-800 rounded-lg shadow${stale ? ' opacity-60' : ''}`}>
             <div className="p-4">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div className="flex items-center gap-3 min-w-0">
@@ -256,6 +277,16 @@ export function MQTTOverviewPage() {
                       Not Ready
                     </span>
                   )}
+                  {probing && (
+                    <span className="shrink-0 text-xs font-medium text-gray-600 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded px-2 py-0.5" title="First contact with the bridge admin API is in progress">
+                      Probing…
+                    </span>
+                  )}
+                  {stale && (
+                    <span className="shrink-0 text-xs text-gray-400" title="No fresh data from this bridge; counters below are its last report">
+                      last seen {Math.round(staleMs / 1000)}s ago
+                    </span>
+                  )}
                   <span className="text-xs text-gray-400 truncate" title={b.server_name}>on {b.server_name}</span>
                   {b.admin_url && <span className="shrink-0 text-xs text-gray-400 font-mono">{b.admin_url}</span>}
                 </div>
@@ -276,13 +307,13 @@ export function MQTTOverviewPage() {
                 </div>
               </div>
 
-              {s?.error && (
+              {s?.error && !probing && (
                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 mb-3 text-sm text-red-600 dark:text-red-400">
                   {s.error}
                 </div>
               )}
 
-              {!b.reachable && (
+              {!b.reachable && !probing && (
                 <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 mb-3 text-sm text-yellow-700 dark:text-yellow-400">
                   Bridge admin API not reachable. Showing NATS-side data only.
                 </div>

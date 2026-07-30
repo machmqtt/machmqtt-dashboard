@@ -400,6 +400,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
       <Section title="Connections (established MQTT)">
         <Grid>
           <DI label="Active" value={fmtNum(data.connections_active)} />
+          <DI label="Peak Active" value={fmtNum(data.connections_max)} />
           <DI label="Total CONNECTs" value={fmtNum(data.connections_total)} />
           <DI label="Rejected" value={fmtNum(data.connections_rejected)} />
           <DI label="WS Active" value={fmtNum(data.ws_connections_active)} />
@@ -426,7 +427,9 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Connect Timeout" value={fmtNum(data.rejected_connect_timeout)} />
           <DI label="Auth Timeout" value={fmtNum(data.rejected_auth_timeout)} />
           <DI label="Worker Pool" value={fmtNum(data.rejected_worker_pool)} />
+          <DI label="Memory Budget" value={fmtNum(data.rejected_mem_budget)} />
         </Grid>
+        <p className="text-xs text-gray-400 mt-2">The headline <em>Rejected</em> total above excludes <span className="font-mono">Memory Budget</span> (the broker's deprecated umbrella counter predates it); this breakdown is complete.</p>
       </Section>
       {data.connack_rejected_by_reason && Object.keys(data.connack_rejected_by_reason).length > 0 && (
         <Section title="CONNACK Rejections by Reason Code">
@@ -436,6 +439,16 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
             ))}
           </Grid>
           <p className="text-xs text-gray-400 mt-2">Post-CONNECT failures by MQTT reason code (e.g. <span className="font-mono">0x88</span> ServerUnavailable, <span className="font-mono">0x8C</span> BadAuthenticationMethod).</p>
+        </Section>
+      )}
+      {data.suback_rejected_by_reason && Object.keys(data.suback_rejected_by_reason).length > 0 && (
+        <Section title="SUBACK Rejections by Reason Code">
+          <Grid>
+            {Object.entries(data.suback_rejected_by_reason).map(([code, n]) => (
+              <DI key={code} label={code} value={fmtNum(n as number)} mono />
+            ))}
+          </Grid>
+          <p className="text-xs text-gray-400 mt-2">Per-filter SUBSCRIBE rejections by MQTT reason code (e.g. <span className="font-mono">0x87</span> NotAuthorized, <span className="font-mono">0x8F</span> TopicFilterInvalid).</p>
         </Section>
       )}
       <Section title="Dispatch Pool Saturation">
@@ -466,6 +479,11 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Webhook Requests" value={fmtNum(data.auth_webhook_requests)} />
           <DI label="Webhook Transport Failures" value={fmtNum(data.auth_webhook_transport_failures)} />
           <DI label="Webhook Inflight Rejected" value={fmtNum(data.auth_webhook_inflight_rejected)} />
+          <DI label="Failure Tracker Entries" value={fmtNum(data.auth_failure_tracker_entries)} />
+          <DI label="Credential Expiry Disconnects" value={fmtNum(data.credential_expiry_disconnects)} />
+          <DI label="mTLS Fallback: License" value={fmtNum(data.mtls_identity_fallback_license)} />
+          <DI label="mTLS Fallback: No Match" value={fmtNum(data.mtls_identity_fallback_no_match)} />
+          <DI label="mTLS Fallback: No Cert" value={fmtNum(data.mtls_identity_fallback_no_cert)} />
         </Grid>
         <p className="text-xs text-gray-400 mt-2">Webhook fields are populated only when <span className="font-mono">auth.type</span> is <span className="font-mono">http</span>.</p>
       </Section>
@@ -508,12 +526,17 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Suppressed (Shutdown)" value={fmtNum(data.will_suppressed_shutdown)} />
           <DI label="Pending" value={fmtNum(data.will_pending)} />
           <DI label="Retry Pending" value={fmtNum(data.will_retry_pending)} />
+          <DI label="Verify Failures" value={fmtNum(data.will_verify_failures)} />
+          <DI label="Persist Failed: Write" value={fmtNum(data.will_persist_failed_write)} />
+          <DI label="Persist Failed: Queue Full" value={fmtNum(data.will_persist_failed_queue_full)} />
         </Grid>
+        <p className="text-xs text-gray-400 mt-2">A one-time burst of <em>Verify Failures</em> is expected after upgrading the broker across the signed-wills boundary; a sustained rise means stored wills are failing verification and not firing.</p>
       </Section>
       <Section title="Protocol">
         <Grid>
           <DI label="Subscribes" value={fmtNum(data.subscribes)} />
           <DI label="Unsubscribes" value={fmtNum(data.unsubscribes)} />
+          <DI label="Subscribe Flush Failures" value={fmtNum(data.subscribe_flush_failures)} />
           <DI label="Keepalive Timeouts" value={fmtNum(data.keepalive_timeouts)} />
           <DI label="PINGREQ Rate-Limited" value={fmtNum(data.pingreq_rate_limited)} />
         </Grid>
@@ -534,7 +557,9 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Audit Write Failures" value={fmtNum(data.audit_write_failures)} />
           <DI label="Proxy Protocol Errors" value={fmtNum(data.proxy_protocol_errors)} />
           <DI label="WS Upgrade Failures" value={fmtNum(data.ws_upgrade_failures)} />
+          <DI label="WS Protocol Violations" value={fmtNum(data.ws_protocol_violations)} />
           <DI label="Flow-Control Overflow" value={fmtNum(data.flowcontrol_overflow)} />
+          <DI label="OAuth2 Token Cache Evictions" value={fmtNum(data.oauth2_token_cache_evictions)} />
         </Grid>
       </Section>
       {data.disconnects_sent_by_reason && Object.keys(data.disconnects_sent_by_reason).length > 0 && (
@@ -567,7 +592,11 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Outbound Stall Evictions" value={fmtNum(data.outbound_stall_evictions)} />
           <DI label="Outbound Stalled Conns" value={fmtNum(data.outbound_stalled_conns)} />
           <DI label="Retained Verify Failures" value={fmtNum(data.retained_verify_failures)} />
+          <DI label="Retain Persist Failed: Put" value={fmtNum(data.retain_persist_failed_put)} />
+          <DI label="Retain Persist Failed: Delete" value={fmtNum(data.retain_persist_failed_delete)} />
+          <DI label="QoS 2 Sync-Persist Failed" value={fmtNum(data.qos2_sync_persist_failed)} />
         </Grid>
+        <p className="text-xs text-gray-400 mt-2">A failed QoS 2 sync-persist write defers the delivery until the write succeeds; the counter rising means JetStream writes are failing, not that messages were lost.</p>
       </Section>
       <Section title="Capacity & Memory">
         <Grid>
@@ -575,12 +604,28 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Inflight Out Messages" value={fmtNum(data.inflight_out_messages)} />
           <DI label="Active Subscriptions" value={fmtNum(data.subscriptions_active)} />
           <DI label="Outbound Queue Bytes" value={fmtBytes(data.outbound_bytes)} />
+          <DI label="Inbound Buffer Bytes" value={fmtBytes(data.inbound_bytes)} />
         </Grid>
+      </Section>
+      <Section title="Hooks & $SYS Tree">
+        <Grid>
+          <DI label="Hook Vetoes" value={fmtNum(data.hook_vetoes)} />
+          <DI label="Hook Panics" value={fmtNum(data.hook_panics)} />
+          <DI label="$SYS Messages Published" value={fmtNum(data.sys_tree_published)} />
+          <DI label="$SYS Publishes Blocked" value={fmtNum(data.sys_publish_blocked)} />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">Hook counters stay zero unless the broker binary registers lifecycle hooks. <em>$SYS Publishes Blocked</em> counts client attempts to write into the broker-owned <span className="font-mono">$SYS/</span> tree — a rise is a spoofing attempt or a misconfigured client.</p>
       </Section>
       <Section title="Bridge & Pool Health">
         <Grid>
           <DI label="Pool Slots Connected" value={fmtNum(data.pool_slot_connected)} />
           <DI label="Pool Slot Rebuilds" value={fmtNum(data.pool_slot_rebuilds)} />
+          {data.pool && (
+            <>
+              <DI label="Pool Publish Backlog" value={fmtBytes(data.pool.buffered_bytes)} />
+              <DI label="Pool Backlog Peak" value={fmtBytes(data.pool.buffered_bytes_max)} />
+            </>
+          )}
           <DI label="Primary Rebuilds" value={fmtNum(data.bridge_primary_rebuilds)} />
           <DI label="Rebuilds Degraded (no JS)" value={fmtNum(data.bridge_rebuilds_degraded)} />
           <DI label="Consumer Reattached" value={fmtNum(data.bridge_consumer_reattached)} />
@@ -597,6 +642,20 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="ACL Denied: Subscribe" value={fmtNum(data.acl_denied_subscribe)} />
         </Grid>
       </Section>
+      {data.reactor && (
+        <Section title="I/O Reactor">
+          <Grid>
+            <DI label="Task Queue Depth" value={fmtNum(data.reactor.task_queue_depth)} />
+            <DI label="Task Queue Peak" value={fmtNum(data.reactor.task_queue_depth_max)} />
+            <DI label="Read Continuations" value={fmtNum(data.reactor.read_continuations)} />
+            <DI label="Write Backpressure" value={fmtNum(data.reactor.write_backpressure)} />
+            <DI label="Feed Write Overflows" value={fmtNum(data.reactor.feed_write_overflows)} />
+            <DI label="Loop Panics" value={fmtNum(data.reactor.loop_panics)} />
+            <DI label="Loop Deaths" value={fmtNum(data.reactor.loop_deaths)} />
+          </Grid>
+          <p className="text-xs text-gray-400 mt-2">Non-zero <em>Read Continuations</em> under load is normal read-fairness throttling; a sharp rise correlated with latency points at a flooding connection. Any <em>Loop Deaths</em> means an event loop died and force-closed its connections.</p>
+        </Section>
+      )}
       <Section title="Queue Backpressure">
         <Grid>
           <DI label="Worker Pool Queue" value={fmtNum(data.worker_pool_queue_depth)} />
@@ -615,6 +674,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Session Deletes Dropped" value={fmtNum(data.session_deletes_dropped)} />
           <DI label="Persist Failed: Write" value={fmtNum(data.session_persist_failed_write_failed)} />
           <DI label="Persist Failed: Queue Full" value={fmtNum(data.session_persist_failed_queue_full)} />
+          <DI label="Persist Failed: Panic" value={fmtNum(data.session_persist_panics)} />
         </Grid>
       </Section>
       <Section title="Cluster">
@@ -629,9 +689,11 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Lease Conflicts" value={fmtNum(data.cluster_lease_conflicts)} />
           <DI label="Lease Watcher Kicks" value={fmtNum(data.cluster_lease_watcher_kicks)} />
           <DI label="Lease Release Failed" value={fmtNum(data.cluster_lease_release_failed)} />
+          <DI label="Lease Revision Regressions" value={fmtNum(data.cluster_lease_revision_regressions)} />
+          <DI label="Heartbeat Publish Failures" value={fmtNum(data.cluster_heartbeat_publish_failures)} />
           <DI label="Session Fencing Rejected" value={fmtNum(data.session_fencing_rejected)} />
         </Grid>
-        <p className="text-xs text-gray-400 mt-2">Cluster counters and owned/lease fields are populated only when clustering is enabled. Rising <span className="font-mono">order skew</span> signals inter-node clock divergence; rising <span className="font-mono">lease conflicts</span> or <span className="font-mono">watcher kicks</span> indicate contested session ownership across instances.</p>
+        <p className="text-xs text-gray-400 mt-2">Cluster counters and owned/lease fields are populated only when clustering is enabled. Rising <span className="font-mono">order skew</span> signals inter-node clock divergence; rising <span className="font-mono">lease conflicts</span> or <span className="font-mono">watcher kicks</span> indicate contested session ownership across instances. Any non-zero <span className="font-mono">revision regressions</span> means the session-ownership bucket was rebuilt and stale owners can no longer be fenced — restart the affected instances.</p>
       </Section>
       <Section title="JetStream Health">
         <Grid>
@@ -647,6 +709,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Auth" value={fmtMs(data.auth_duration_sum_seconds, data.auth_duration_count)} />
           <DI label="Auth Webhook" value={fmtMs(data.auth_webhook_duration_sum_seconds, data.auth_webhook_duration_count)} />
           <DI label="JetStream Publish" value={fmtMs(data.jetstream_publish_duration_sum_seconds, data.jetstream_publish_duration_count)} />
+          <DI label="QoS 2 Sync Persist" value={fmtMs(data.qos2_sync_persist_duration_sum_seconds, data.qos2_sync_persist_duration_count)} />
           <DI label="Subscribe" value={fmtMs(data.subscribe_duration_sum_seconds, data.subscribe_duration_count)} />
           <DI label="Dispatch Wait" value={fmtMs(data.dispatch_wait_sum_seconds, data.dispatch_wait_count)} />
           <DI label="TLS Handshake" value={fmtMs(data.tls_handshake_duration_sum_seconds, data.tls_handshake_duration_count)} />

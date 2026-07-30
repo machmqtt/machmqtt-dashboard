@@ -2,16 +2,20 @@
 // and had quietly diverged, so the same value could render differently on
 // different screens. Keep all number/byte/rate formatting here.
 
-/** Compact count: 1.2K, 3.4M, 5.6B; below 1000 uses locale grouping. */
-export function formatNumber(n: number): string {
+/** Compact count: 1.2K, 3.4M, 5.6B; below 1000 uses locale grouping.
+ * Absent fields render as 0: the metric pages pass fields straight off wire
+ * payloads, and one missing field must not take the whole page down. */
+export function formatNumber(n: number | null | undefined): string {
+  if (n == null) return '0'
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
   return n.toLocaleString()
 }
 
-/** Byte size: GB / MB / KB / B. */
-export function formatBytes(b: number): string {
+/** Byte size: GB / MB / KB / B. Absent fields render as 0 B (see formatNumber). */
+export function formatBytes(b: number | null | undefined): string {
+  if (b == null) return '0 B'
   if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
   if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
   if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
