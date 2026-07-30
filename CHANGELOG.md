@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Distinct bridge readiness states** — a broker whose `/readyz` answers 503
+  with a state body is no longer treated as unreachable: `draining`,
+  `jetstream-degraded` and `not ready` are parsed, kept by discovery, counted as
+  reachable, and rendered as amber badges (with a banner explaining that a
+  JetStream-degraded broker still serves MQTT). New relay endpoint
+  `GET /api/environments/{env}/mqtt/{bridge}/readyz`.
+- **License status severity** — `tampered` and `expired` render red with a
+  banner, `grace` amber, `valid` green.
+- **Fleet freshness** — every fleet entry carries `last_seen` (push receipt,
+  connz snapshot, or probe time); stale cards are flagged in the UI. Push
+  bridges now report real in/out byte rates derived from pool-slot byte deltas.
+- **Honest connection totals** — `/connz` reports the server-reported total and
+  a `truncated` flag when the per-server fetch cap was hit; the Connections page
+  says "showing first N of M" instead of presenting the cap as the total. The
+  subscriptions detail path carries the same flag.
 - **Full MachMQTT v1.2 metrics parity** — `MQTTMetrics` now mirrors the broker's
   metrics snapshot field-for-field on both ingestion paths. New on the collector:
   the license, I/O-reactor and NATS-connection-pool groups (including per-slot
@@ -27,6 +42,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `source_instance_id`), accepts every exposition float form for counters
   (`1e+06`, `1.5`), and ignores an optional trailing sample timestamp. Unknown
   metric families are still ignored, unchanged.
+- Drained bridges stay on the fleet as **Draining** (with their live session
+  counts) until their metrics publishes stop, instead of vanishing the moment
+  the drain begins.
+- MQTT fleet trend charts aggregate one point per time bucket across bridges
+  (sum of per-bridge bucket averages) instead of drawing every bridge's row on
+  one line.
+- Fleet listing cost no longer scales with viewers: the response body is cached
+  per environment, and probes of configured-but-undiscovered bridges run in the
+  background (single-flight, bounded timeout) so an unreachable bridge cannot
+  stall the fleet page. A configured bridge whose broker reports a different
+  instance name merges into the discovered entry instead of double-counting.
+
+### Fixed
+- A data race in the bridge cache: the fleet read path mutated cached metrics
+  under a read lock while API handlers marshalled the same structs. Envelope
+  fixups now happen once at ingest; cached messages are immutable.
+- Link health for the metrics subscriber and the `$SYS` collector reported
+  "connected" whenever a client existed, even while NATS was unreachable.
+- NATS server rate computations clamp counter resets, so a server restart no
+  longer writes large negative rates into charts and stored history.
+- Subscription callbacks are panic-contained and the initial subscribe retries
+  with backoff instead of dying permanently.
+
+### Security
+- Content-Security-Policy `connect-src` no longer allows WebSocket connections
+  to arbitrary hosts; the data directory (SQLite with credential material) is
+  created and re-secured as `0700`; requires Go 1.26.5 (crypto/tls fix for
+  GO-2026-5856 — govulncheck reports zero reachable vulnerabilities).
 
 ## [1.0.0] - 2026-07-13
 
