@@ -1,0 +1,634 @@
+# HELP machmqtt_instance_info Static instance identity.
+# TYPE machmqtt_instance_info gauge
+machmqtt_instance_info{instance_id="fixture-bridge-1"} 1
+# HELP machmqtt_connections_active Current established MQTT connections (TCP + WebSocket), counted once the CONNECT handshake completes. Pre-CONNECT sockets such as load-balancer TCP health checks are excluded — see machmqtt_sockets_open.
+# TYPE machmqtt_connections_active gauge
+machmqtt_connections_active 1001
+# HELP machmqtt_connections_total Cumulative successful MQTT CONNECTs since process start. Excludes sockets that never completed CONNECT (e.g. health-check probes) — see machmqtt_sockets_accepted_total for the raw transport accept count.
+# TYPE machmqtt_connections_total counter
+machmqtt_connections_total 1008
+# HELP machmqtt_connections_max Peak concurrent established MQTT connections since process start (high-water of machmqtt_connections_active). Also published as $SYS/.../clients/maximum.
+# TYPE machmqtt_connections_max gauge
+machmqtt_connections_max 1015
+# HELP machmqtt_sockets_open Current open client transport sockets, including connections that have not completed (or never send) an MQTT CONNECT — e.g. load-balancer TCP health checks. This is the count enforced against mqtt.max_connections.
+# TYPE machmqtt_sockets_open gauge
+machmqtt_sockets_open 1036
+# HELP machmqtt_sockets_accepted_total Cumulative client transport sockets accepted since process start, including non-MQTT probes (e.g. health checks). Compare rate() against machmqtt_connections_total to quantify pre-CONNECT churn.
+# TYPE machmqtt_sockets_accepted_total counter
+machmqtt_sockets_accepted_total 1043
+# HELP machmqtt_ws_sockets_open Current open MQTT-over-WebSocket transport sockets, including pre-upgrade/pre-CONNECT connections.
+# TYPE machmqtt_ws_sockets_open gauge
+machmqtt_ws_sockets_open 1050
+# HELP machmqtt_ws_sockets_accepted_total Cumulative MQTT-over-WebSocket transport sockets accepted since process start, including connections that never completed CONNECT.
+# TYPE machmqtt_ws_sockets_accepted_total counter
+machmqtt_ws_sockets_accepted_total 1057
+# HELP machmqtt_connections_rejected_total DEPRECATED — use machmqtt_connections_rejected_by_reason_total. Total MQTT connections rejected at accept (sum of all reasons).
+# TYPE machmqtt_connections_rejected_total counter
+machmqtt_connections_rejected_total 8757
+# HELP machmqtt_connections_rejected_by_reason_total MQTT connections rejected at accept, labelled by remediation path.
+# TYPE machmqtt_connections_rejected_by_reason_total counter
+machmqtt_connections_rejected_by_reason_total{reason="max_conns"} 1064
+machmqtt_connections_rejected_by_reason_total{reason="mem_budget"} 1071
+machmqtt_connections_rejected_by_reason_total{reason="license"} 1078
+machmqtt_connections_rejected_by_reason_total{reason="per_ip_conns"} 1085
+machmqtt_connections_rejected_by_reason_total{reason="per_ip_accept"} 1092
+machmqtt_connections_rejected_by_reason_total{reason="pool_full"} 1099
+machmqtt_connections_rejected_by_reason_total{reason="connect_timeout"} 1106
+machmqtt_connections_rejected_by_reason_total{reason="auth_timeout"} 1113
+machmqtt_connections_rejected_by_reason_total{reason="worker_pool"} 1120
+# HELP machmqtt_tls_cert_reload_failures_total Total mtime-triggered TLS certificate reload failures across all listeners (broker is serving a stale cert while this is non-zero; fix the key pair before the cert expires).
+# TYPE machmqtt_tls_cert_reload_failures_total counter
+machmqtt_tls_cert_reload_failures_total 2044
+# HELP machmqtt_license_feature_rejected_total Operations rejected because the active license tier does not permit the feature.
+# TYPE machmqtt_license_feature_rejected_total counter
+machmqtt_license_feature_rejected_total{feature="auth_method"} 1274
+machmqtt_license_feature_rejected_total{feature="retain"} 1281
+machmqtt_license_feature_rejected_total{feature="proxy_protocol"} 1288
+# HELP machmqtt_publish_throttled_total Inbound PUBLISH packets rejected by a publish-rate ceiling, by scope.
+# TYPE machmqtt_publish_throttled_total counter
+machmqtt_publish_throttled_total{scope="per_client"} 1806
+machmqtt_publish_throttled_total{scope="aggregate"} 1813
+# HELP machmqtt_aggregate_publish_limit_msgs_per_sec Effective deployment-wide inbound-PUBLISH ceiling enforced on this instance (msg/s); 0 = no aggregate limit (Fleet tier).
+# TYPE machmqtt_aggregate_publish_limit_msgs_per_sec gauge
+machmqtt_aggregate_publish_limit_msgs_per_sec 1799
+# HELP machmqtt_dispatch_slots_active Concurrently-held dispatch slots per pool (TLS handshake / WebSocket upgrade).
+# TYPE machmqtt_dispatch_slots_active gauge
+machmqtt_dispatch_slots_active{pool="tls"} 1127
+machmqtt_dispatch_slots_active{pool="websocket"} 1134
+# HELP machmqtt_ws_connections_active Current established MQTT-over-WebSocket connections (CONNECT handshake completed). Pre-CONNECT WebSocket sockets are excluded — see machmqtt_ws_sockets_open.
+# TYPE machmqtt_ws_connections_active gauge
+machmqtt_ws_connections_active 1022
+# HELP machmqtt_ws_connections_total Cumulative successful MQTT-over-WebSocket CONNECTs since process start. Excludes sockets that never completed CONNECT — see machmqtt_ws_sockets_accepted_total.
+# TYPE machmqtt_ws_connections_total counter
+machmqtt_ws_connections_total 1029
+# HELP machmqtt_auth_success_total Successful MQTT client authentications.
+# TYPE machmqtt_auth_success_total counter
+machmqtt_auth_success_total 1141
+# HELP machmqtt_auth_failure_total Failed MQTT client authentication attempts by reason. OAuth2-specific reasons (token_expired, bad_signature, claim_mismatch, jwks_unavailable) are always 0 for non-OAuth2 deployments; webhook reasons (webhook_denied = the webhook rejected the credentials, webhook_unavailable = no trustworthy webhook decision, CONNACK 0x88) are always 0 unless auth.type is http.
+# TYPE machmqtt_auth_failure_total counter
+machmqtt_auth_failure_total{reason="bad_credentials"} 1148
+machmqtt_auth_failure_total{reason="enhanced"} 1155
+machmqtt_auth_failure_total{reason="locked"} 1162
+machmqtt_auth_failure_total{reason="other"} 1169
+machmqtt_auth_failure_total{reason="token_expired"} 1183
+machmqtt_auth_failure_total{reason="bad_signature"} 1190
+machmqtt_auth_failure_total{reason="claim_mismatch"} 1197
+machmqtt_auth_failure_total{reason="jwks_unavailable"} 1204
+machmqtt_auth_failure_total{reason="license"} 1176
+machmqtt_auth_failure_total{reason="webhook_denied"} 1211
+machmqtt_auth_failure_total{reason="webhook_unavailable"} 1218
+# HELP machmqtt_oauth2_jwks_fetch_failures_total OAuth2 JWKS endpoint fetch failures since startup (includes forced-refresh failures). Non-zero indicates IdP connectivity or DNS issues.
+# TYPE machmqtt_oauth2_jwks_fetch_failures_total counter
+machmqtt_oauth2_jwks_fetch_failures_total 2051
+# HELP machmqtt_oauth2_token_cache_evictions_total OAuth2 token-cache entries evicted at capacity since startup. Sustained growth means auth.oauth2.token_cache_max_size is undersized for the active client population, so CONNECTs pay full JWT verification cost.
+# TYPE machmqtt_oauth2_token_cache_evictions_total counter
+machmqtt_oauth2_token_cache_evictions_total 2058
+# HELP machmqtt_scram_sessions_active Number of in-progress SCRAM-SHA-256 enhanced-auth sessions (step-0 sent, step-1 not yet received or timed out).
+# TYPE machmqtt_scram_sessions_active gauge
+machmqtt_scram_sessions_active 1225
+# HELP machmqtt_auth_failure_tracker_entries Live per-source entries in the credential-lockout tracker. The tracker is bounded and evicts unlocked entries at its cap (locked-out entries are never evicted), so a value pinned at the cap indicates eviction pressure — a credential flood using fresh usernames, or a cap too small for this deployment.
+# TYPE machmqtt_auth_failure_tracker_entries gauge
+machmqtt_auth_failure_tracker_entries 1232
+# HELP machmqtt_nats_enforcement_fallback_total Per-client NATS connection creation failed and the client fell back to the shared bridge connection with MQTT-layer-only enforcement (nats.nats_enforcement_fallback_allowed=true) — a deliberate, degraded security posture; alert on sustained non-zero.
+# TYPE machmqtt_nats_enforcement_fallback_total counter
+machmqtt_nats_enforcement_fallback_total 1260
+# HELP machmqtt_nats_enforcement_denied_total Clients refused (CONNACK ServerUnavailable) because per-client NATS connection creation failed and nats.nats_enforcement_fallback_allowed is false (default). Non-zero indicates NATS-side signing or connectivity trouble is blocking new OAuth2 clients.
+# TYPE machmqtt_nats_enforcement_denied_total counter
+machmqtt_nats_enforcement_denied_total 1267
+# HELP machmqtt_disconnects_sent_by_reason_total Server-initiated DISCONNECT packets sent, labelled by reason code (hex). 0x93=ReceiveMaximumExceeded; 0x82=ProtocolError; 0x8E=SessionTakenOver; 0x8B=ServerShuttingDown; etc.
+# TYPE machmqtt_disconnects_sent_by_reason_total counter
+machmqtt_disconnects_sent_by_reason_total{reason="0x82"} 51
+machmqtt_disconnects_sent_by_reason_total{reason="0x8E"} 52
+machmqtt_disconnects_sent_by_reason_total{reason="0x93"} 53
+# HELP machmqtt_connack_rejected_by_reason_total CONNECT attempts rejected via a failure CONNACK, labelled by reason code (hex). 0x81=MalformedPacket; 0x82=ProtocolError; 0x84=UnsupportedProtocolVersion; 0x8C=BadAuthenticationMethod; 0x88=ServerUnavailable; 0x85=ClientIdentifierNotValid; etc.
+# TYPE machmqtt_connack_rejected_by_reason_total counter
+machmqtt_connack_rejected_by_reason_total{reason="0x81"} 31
+machmqtt_connack_rejected_by_reason_total{reason="0x88"} 32
+machmqtt_connack_rejected_by_reason_total{reason="0x8C"} 33
+# HELP machmqtt_suback_rejected_by_reason_total SUBSCRIBE topic filters refused via a failure SUBACK, labelled by reason code (hex), counted per rejected filter. 0x87=NotAuthorized; 0x8F=TopicFilterInvalid; 0x97=QuotaExceeded; 0x9E=SharedSubscriptionsNotSupported; 0xA1=SubscriptionIdentifiersNotSupported; 0xA2=WildcardSubscriptionsNotSupported.
+# TYPE machmqtt_suback_rejected_by_reason_total counter
+machmqtt_suback_rejected_by_reason_total{reason="0x87"} 41
+machmqtt_suback_rejected_by_reason_total{reason="0x8F"} 42
+machmqtt_suback_rejected_by_reason_total{reason="0xA2"} 43
+# HELP machmqtt_credential_expiry_disconnects_total Clients disconnected because their authentication credential (e.g. an OAuth2 JWT exp) elapsed mid-session. Distinct from keepalive timeouts; a spike indicates a broken token-refresh flow or IdP misconfiguration.
+# TYPE machmqtt_credential_expiry_disconnects_total counter
+machmqtt_credential_expiry_disconnects_total 2009
+# HELP machmqtt_mtls_identity_fallback_total Connections that fell back to the CONNECT-supplied username while mqtt.tls.identity_source was configured. reason="license": mqtt.tls.identity_source requires a Scale-band license. reason="no_match": the verified certificate carried no usable or an ambiguous CN/SAN. reason="no_cert": the client presented no client certificate at all (plain/WS listener, or TLS without a client cert) — the security-relevant case, as no certificate identity was verified.
+# TYPE machmqtt_mtls_identity_fallback_total counter
+machmqtt_mtls_identity_fallback_total{reason="license"} 2016
+machmqtt_mtls_identity_fallback_total{reason="no_match"} 2023
+machmqtt_mtls_identity_fallback_total{reason="no_cert"} 2030
+# HELP machmqtt_otel_histogram_skew_clamped_total OTLP exports in which a histogram's +Inf/_count was clamped up to its observed bucket total. Occasional single increments are a benign sampling race; a steadily rising rate indicates a metrics-renderer bug.
+# TYPE machmqtt_otel_histogram_skew_clamped_total counter
+machmqtt_otel_histogram_skew_clamped_total 2037
+# HELP machmqtt_client_messages_received_total Inbound PUBLISH packets from MQTT clients (client → broker).
+# TYPE machmqtt_client_messages_received_total counter
+machmqtt_client_messages_received_total{qos="0"} 1295
+machmqtt_client_messages_received_total{qos="1"} 1302
+machmqtt_client_messages_received_total{qos="2"} 1309
+# HELP machmqtt_client_messages_sent_total Outbound PUBLISH packets to MQTT clients (broker → client).
+# TYPE machmqtt_client_messages_sent_total counter
+machmqtt_client_messages_sent_total{qos="0"} 1316
+machmqtt_client_messages_sent_total{qos="1"} 1323
+machmqtt_client_messages_sent_total{qos="2"} 1330
+# HELP machmqtt_client_messages_redelivered_total Outbound QoS 1/2 PUBLISH packets sent to clients with DUP=1 (redelivered after disconnect or restart).
+# TYPE machmqtt_client_messages_redelivered_total counter
+machmqtt_client_messages_redelivered_total 1337
+# HELP machmqtt_server_messages_published_total Messages published from broker to NATS (broker → server), including LWT fires.
+# TYPE machmqtt_server_messages_published_total counter
+machmqtt_server_messages_published_total{qos="0"} 1344
+machmqtt_server_messages_published_total{qos="1"} 1351
+machmqtt_server_messages_published_total{qos="2"} 1358
+# HELP machmqtt_server_messages_consumed_total Messages consumed from NATS by the broker for delivery to MQTT subscribers (server → broker).
+# TYPE machmqtt_server_messages_consumed_total counter
+machmqtt_server_messages_consumed_total{qos="0"} 1365
+machmqtt_server_messages_consumed_total{qos="1"} 1372
+machmqtt_server_messages_consumed_total{qos="2"} 1379
+# HELP machmqtt_will_published_total Last-Will-and-Testament messages successfully published to NATS.
+# TYPE machmqtt_will_published_total counter
+machmqtt_will_published_total 1386
+# HELP machmqtt_will_dropped_total Last-Will-and-Testament messages dropped before publication; non-zero indicates lost LWT deliveries.
+# TYPE machmqtt_will_dropped_total counter
+machmqtt_will_dropped_total{reason="queue_full"} 1393
+machmqtt_will_dropped_total{reason="publish_error"} 1400
+machmqtt_will_dropped_total{reason="invalid_topic"} 1407
+machmqtt_will_dropped_total{reason="shutdown"} 1414
+# HELP machmqtt_will_suppressed_total Last-Will-and-Testament messages correctly suppressed: client reconnected in time [MQTT-3.1.3-9], or server shutdown with mqtt.suppress_wills_on_shutdown enabled. Neither reason is a failure.
+# TYPE machmqtt_will_suppressed_total counter
+machmqtt_will_suppressed_total{reason="reconnected"} 1421
+machmqtt_will_suppressed_total{reason="shutdown"} 1428
+# HELP machmqtt_will_pending Current number of pending delayed will messages awaiting their delay timer.
+# TYPE machmqtt_will_pending gauge
+machmqtt_will_pending 1435
+# HELP machmqtt_will_retry_pending Will messages parked for retry on next NATS reconnect.
+# TYPE machmqtt_will_retry_pending gauge
+machmqtt_will_retry_pending 1442
+# HELP machmqtt_will_persist_failed_total Will KV-envelope persist failures by reason. A non-zero value means the crash-durability write for a will did not land: the will still fires from memory on this process, but is lost if the broker crashes first.
+# TYPE machmqtt_will_persist_failed_total counter
+machmqtt_will_persist_failed_total{reason="write_failed"} 2114
+machmqtt_will_persist_failed_total{reason="queue_full"} 2121
+# HELP machmqtt_retain_persist_failed_total Retained-message KV operation failures by op. put: the retained message is served from memory but is not durable (lost on restart). delete: a deleted/evicted retained message's KV entry remains and resurrects on the next restart's load.
+# TYPE machmqtt_retain_persist_failed_total counter
+machmqtt_retain_persist_failed_total{op="put"} 2128
+machmqtt_retain_persist_failed_total{op="delete"} 2135
+# HELP machmqtt_subscriptions_total SUBSCRIBE packets successfully processed.
+# TYPE machmqtt_subscriptions_total counter
+machmqtt_subscriptions_total 1449
+# HELP machmqtt_unsubscriptions_total UNSUBSCRIBE packets successfully processed.
+# TYPE machmqtt_unsubscriptions_total counter
+machmqtt_unsubscriptions_total 1456
+# HELP machmqtt_keepalive_timeouts_total Clients disconnected by the keepalive sweeper.
+# TYPE machmqtt_keepalive_timeouts_total counter
+machmqtt_keepalive_timeouts_total 1463
+# HELP machmqtt_nats_disconnects_total Number of times the NATS connection was lost.
+# TYPE machmqtt_nats_disconnects_total counter
+machmqtt_nats_disconnects_total 1477
+# HELP machmqtt_nats_reconnects_total Number of times the NATS connection was re-established.
+# TYPE machmqtt_nats_reconnects_total counter
+machmqtt_nats_reconnects_total 1484
+# HELP machmqtt_bridge_primary_rebuilds_total Total completed supervisor rebuilds of the primary NATS connection after terminal CLOSED.
+# TYPE machmqtt_bridge_primary_rebuilds_total counter
+machmqtt_bridge_primary_rebuilds_total 1764
+# HELP machmqtt_bridge_consumer_reattach_total Per-client durable consumers re-attached or force-disconnected after a primary bridge rebuild.
+# TYPE machmqtt_bridge_consumer_reattach_total counter
+machmqtt_bridge_consumer_reattach_total{result="reattached"} 1778
+machmqtt_bridge_consumer_reattach_total{result="force_disconnected"} 1785
+machmqtt_bridge_consumer_reattach_total{result="push_force_disconnected"} 1792
+# HELP machmqtt_bridge_rebuilds_degraded_total Rebuilds where JetStream was unavailable; consumer re-attach skipped (clients remain connected in QoS-0-only mode until a non-degraded rebuild occurs).
+# TYPE machmqtt_bridge_rebuilds_degraded_total counter
+machmqtt_bridge_rebuilds_degraded_total 1771
+# HELP machmqtt_panics_recovered_total Panics caught and logged by long-lived goroutine recovery wrappers.
+# TYPE machmqtt_panics_recovered_total counter
+machmqtt_panics_recovered_total 1498
+# HELP machmqtt_hook_panics_total Lifecycle-hook handler panics recovered by the hook registry. The panicking handler counts as allow (fail-open) and the chain continues; a non-zero value means a registered hook handler is broken.
+# TYPE machmqtt_hook_panics_total counter
+machmqtt_hook_panics_total 1505
+# HELP machmqtt_hook_vetoes_total Operations denied by a registered lifecycle hook (authenticate, subscribe, or publish handler returned a reason code >= 0x80). Distinguishes hook-policy rejections from ACL/rate-limit rejections.
+# TYPE machmqtt_hook_vetoes_total counter
+machmqtt_hook_vetoes_total 1512
+# HELP machmqtt_sys_tree_published_total Total $SYS/ broker-stat-tree messages published (per publish tick times the number of topics). Zero when observability.sys_tree is disabled.
+# TYPE machmqtt_sys_tree_published_total counter
+machmqtt_sys_tree_published_total 1519
+# HELP machmqtt_sys_publish_blocked_total Client PUBLISH or Will messages to a $SYS topic rejected with reason code 0x87 (Not authorized) by the spoof-block. A non-zero value means a client is attempting to spoof the broker stat tree.
+# TYPE machmqtt_sys_publish_blocked_total counter
+machmqtt_sys_publish_blocked_total 1526
+# HELP machmqtt_tls_handshake_failures_total TLS handshake failures (includes certificate errors, protocol mismatches).
+# TYPE machmqtt_tls_handshake_failures_total counter
+machmqtt_tls_handshake_failures_total 1533
+# HELP machmqtt_proxy_protocol_errors_total PROXY protocol header parse failures (connection rejected).
+# TYPE machmqtt_proxy_protocol_errors_total counter
+machmqtt_proxy_protocol_errors_total 1540
+# HELP machmqtt_ws_upgrade_failures_total WebSocket upgrade failures (HTTP upgrade rejected or parse error).
+# TYPE machmqtt_ws_upgrade_failures_total counter
+machmqtt_ws_upgrade_failures_total 1547
+# HELP machmqtt_ws_protocol_violations_total WebSocket framing-layer protocol violations (RFC 6455: unmasked frame, reserved bits, bad opcode, oversized or illegally fragmented frame). The offending connection is closed; without this counter such closes are indistinguishable from ordinary disconnects.
+# TYPE machmqtt_ws_protocol_violations_total counter
+machmqtt_ws_protocol_violations_total 2142
+# HELP machmqtt_qos2_server_publish_failed_total QoS 2 PUBREL-stage forward-to-NATS failure, transient or permanent (PUBCOMP withheld; the client is disconnected and must retransmit the PUBREL). Store-time QoS 2 failures are counted in machmqtt_server_publish_failed_total{qos="2"} (transient) and machmqtt_server_publish_dropped_total (permanent) instead.
+# TYPE machmqtt_qos2_server_publish_failed_total counter
+machmqtt_qos2_server_publish_failed_total 1561
+# HELP machmqtt_qos1_client_send_failed_total QoS 1 broker→client TCP delivery failure (JetStream redelivers after AckWait).
+# TYPE machmqtt_qos1_client_send_failed_total counter
+machmqtt_qos1_client_send_failed_total 1568
+# HELP machmqtt_qos2_client_send_failed_total QoS 2 broker→client TCP delivery failure (JetStream redelivers after AckWait).
+# TYPE machmqtt_qos2_client_send_failed_total counter
+machmqtt_qos2_client_send_failed_total 1575
+# HELP machmqtt_qos2_sync_persist_failed_total qos2_sync_persist binding writes that failed (message NOT sent — no duplicate risk; JetStream redelivers after AckWait and the fresh path retries).
+# TYPE machmqtt_qos2_sync_persist_failed_total counter
+machmqtt_qos2_sync_persist_failed_total 1582
+# HELP machmqtt_server_publish_dropped_total Inbound QoS 1/2 PUBLISH dropped due to non-transient NATS publish error (client received QuotaExceeded PUBACK).
+# TYPE machmqtt_server_publish_dropped_total counter
+machmqtt_server_publish_dropped_total 1589
+# HELP machmqtt_messages_dead_lettered_total Poison QoS 1/2 messages moved to the dead-letter stream after repeated genuine delivery failures.
+# TYPE machmqtt_messages_dead_lettered_total counter
+machmqtt_messages_dead_lettered_total 1638
+# HELP machmqtt_poison_messages_terminated_total Poison QoS 1/2 messages terminated (Term) after exceeding poison_max_deliveries genuine failures.
+# TYPE machmqtt_poison_messages_terminated_total counter
+machmqtt_poison_messages_terminated_total 1645
+# HELP machmqtt_dead_letter_write_failed_total Dead-letter writes that failed; the original message was NAK'd (not lost) and will be retried.
+# TYPE machmqtt_dead_letter_write_failed_total counter
+machmqtt_dead_letter_write_failed_total 1652
+# HELP machmqtt_server_publish_failed_total Inbound PUBLISH messages that could not be stored/forwarded to NATS due to a transient error (outage / reconnect window), counted once per failed PUBLISH. QoS 0 messages are lost (at-most-once); QoS 1/2 clients are force-disconnected without an ack so the message is retransmitted on reconnect (at-least-once recovery). Non-transient rejections are counted in machmqtt_server_publish_dropped_total instead; PUBREL-stage QoS 2 forward failures are counted in machmqtt_qos2_server_publish_failed_total.
+# TYPE machmqtt_server_publish_failed_total counter
+machmqtt_server_publish_failed_total{qos="0"} 1596
+machmqtt_server_publish_failed_total{qos="1"} 1603
+machmqtt_server_publish_failed_total{qos="2"} 1610
+# HELP machmqtt_publish_outage_disconnects_total Already-connected QoS 1/2 clients force-disconnected (without PUBACK/PUBREC) because NATS was unreachable at publish time (retry-window then disconnect-for-retransmit). The PUBLISH remains UNACKED so the client retransmits on reconnect, preserving at-least-once. Non-zero during a NATS outage is expected; sustained non-zero after reconnect indicates a recurring outage.
+# TYPE machmqtt_publish_outage_disconnects_total counter
+machmqtt_publish_outage_disconnects_total 1631
+# HELP machmqtt_qos0_messages_shed_total QoS 0 messages dropped per-message (outbound queue full, policy=drop). Distinct from machmqtt_outbound_queue_dropped_total which counts connection kills (policy=disconnect).
+# TYPE machmqtt_qos0_messages_shed_total counter
+machmqtt_qos0_messages_shed_total 1617
+# HELP machmqtt_oversized_dropped_total QoS 1/2 outbound PUBLISH packets permanently dropped because the encoded packet exceeds the client's MaximumPacketSize (MQTT 5.0 §3.1.2.11.5). The JetStream consumer advances (ACK'd); no redelivery occurs. Non-zero indicates clients with a MaximumPacketSize too small for some messages.
+# TYPE machmqtt_oversized_dropped_total counter
+machmqtt_oversized_dropped_total 1624
+# HELP machmqtt_acl_denied_total MQTT operations denied by the topic ACL (unauthorized publish or subscribe).
+# TYPE machmqtt_acl_denied_total counter
+machmqtt_acl_denied_total{action="publish"} 1820
+machmqtt_acl_denied_total{action="subscribe"} 1827
+# HELP machmqtt_outbound_queue_dropped_total Connections killed because the outbound write queue exceeded max_outbound_queue_bytes (policy=disconnect). For per-message drops (policy=drop), see machmqtt_qos0_messages_shed_total.
+# TYPE machmqtt_outbound_queue_dropped_total counter
+machmqtt_outbound_queue_dropped_total 1659
+# HELP machmqtt_outbound_bytes Broker-wide sum of all per-connection outbound write-queue bytes (updated every 1–2 s by the outbound-memory sweep). Always populated; use this gauge to size mqtt.max_total_outbound_bytes.
+# TYPE machmqtt_outbound_bytes gauge
+machmqtt_outbound_bytes 1736
+# HELP machmqtt_bytes_received_total Cumulative application PUBLISH payload bytes received from clients since process start. Also published as $SYS/.../bytes/received.
+# TYPE machmqtt_bytes_received_total counter
+machmqtt_bytes_received_total 1743
+# HELP machmqtt_outbound_evictions_total Connections evicted by the aggregate outbound-memory backstop (QuotaExceeded) since startup. Non-zero only when mqtt.max_total_outbound_bytes is set.
+# TYPE machmqtt_outbound_evictions_total counter
+machmqtt_outbound_evictions_total 1666
+# HELP machmqtt_outbound_stall_evictions_total Connections evicted because their outbound buffer stayed non-empty and undrainable longer than mqtt.write_timeout — an individual stuck slow consumer (non-blocking write path). Distinct from machmqtt_outbound_evictions_total, which is the aggregate-memory-ceiling backstop.
+# TYPE machmqtt_outbound_stall_evictions_total counter
+machmqtt_outbound_stall_evictions_total 1673
+# HELP machmqtt_outbound_stalled_connections Connections whose outbound buffer is currently non-empty and undrainable (under write backpressure), sampled each outbound sweep (non-blocking write path). A sustained rising value means consumers are not keeping up with delivery.
+# TYPE machmqtt_outbound_stalled_connections gauge
+machmqtt_outbound_stalled_connections 1680
+# HELP machmqtt_session_write_behind_depth Current total number of sessions queued in the async write-behind channel (sum across all shards). Sustained high values indicate KV write pressure.
+# TYPE machmqtt_session_write_behind_depth gauge
+machmqtt_session_write_behind_depth 2065
+# HELP machmqtt_consumer_pending_messages Total number of messages currently in the MQTT5_msgs JetStream stream (aggregate QoS 1/2 delivery backlog). Updated every 15 s; absent when JetStream is unavailable.
+# TYPE machmqtt_consumer_pending_messages gauge
+machmqtt_consumer_pending_messages 4242
+# HELP machmqtt_stalled_consumers Connected subscribers whose outbound QoS 1/2 delivery window has stayed pinned at its cap while the aggregate JetStream backlog (machmqtt_consumer_pending_messages) is rising — i.e. the broker is delivering faster than they acknowledge (application-level over-subscription / silent slow consumers). A pinned window with a steady/draining backlog is healthy saturation and is not counted. Detects significant over-subscription robustly; because the backlog signal is stream-global, a sustained load ramp may transiently flag a healthy consumer (false positive) and a marginally slow consumer in a high-churn fleet may be masked by aggregate jitter (false negative). Updated every 15 s.
+# TYPE machmqtt_stalled_consumers gauge
+machmqtt_stalled_consumers 2072
+# HELP machmqtt_worker_pool_queue_depth Current number of tasks queued in the CONNECT worker pool. Sustained near nats.worker_pool_queue_size indicates pool starvation; consider raising nats.worker_pool_size. Updated every 15 s.
+# TYPE machmqtt_worker_pool_queue_depth gauge
+machmqtt_worker_pool_queue_depth 1918
+# HELP machmqtt_retained_messages Current number of retained messages in the broker's KV store. Updated every 15 s.
+# TYPE machmqtt_retained_messages gauge
+machmqtt_retained_messages 1715
+# HELP machmqtt_inflight_out_messages Sum of per-client outbound in-flight message counts across all connected clients. Updated every 15 s.
+# TYPE machmqtt_inflight_out_messages gauge
+machmqtt_inflight_out_messages 1722
+# HELP machmqtt_subscriptions_active Sum of per-client active MQTT subscription counts across all connected clients. Updated every 15 s.
+# TYPE machmqtt_subscriptions_active gauge
+machmqtt_subscriptions_active 1729
+# HELP machmqtt_pingreq_rate_limited_total PINGREQ packets silently dropped for arriving faster than keepalive/2 interval.
+# TYPE machmqtt_pingreq_rate_limited_total counter
+machmqtt_pingreq_rate_limited_total 1470
+# HELP machmqtt_flowcontrol_overflow_total Reactor flow-control waiter queue overflows: client disconnected with QuotaExceeded.
+# TYPE machmqtt_flowcontrol_overflow_total counter
+machmqtt_flowcontrol_overflow_total 1554
+# HELP machmqtt_nats_slow_consumer_total NATS slow-consumer events: per-subscription pending limit exceeded.
+# TYPE machmqtt_nats_slow_consumer_total counter
+machmqtt_nats_slow_consumer_total 1491
+# HELP machmqtt_op_queue_depth Packets currently queued on per-connection op queues awaiting a worker (live count).
+# TYPE machmqtt_op_queue_depth gauge
+machmqtt_op_queue_depth 1925
+# HELP machmqtt_op_queue_bytes Bytes held by queued (copied) packets across all per-connection op queues (live count).
+# TYPE machmqtt_op_queue_bytes gauge
+machmqtt_op_queue_bytes 1932
+# HELP machmqtt_op_suspended_conns Connections whose reads are suspended by the op-queue depth backstop (live count). Sustained values indicate clients pipelining faster than JetStream round-trips complete.
+# TYPE machmqtt_op_suspended_conns gauge
+machmqtt_op_suspended_conns 1939
+# HELP machmqtt_op_pool_rejected_total Connections shed with QuotaExceeded because the op pool queue was full. Raise nats.op_worker_queue_size / nats.op_worker_pool_size if this fires outside overload.
+# TYPE machmqtt_op_pool_rejected_total counter
+machmqtt_op_pool_rejected_total 1953
+# HELP machmqtt_op_pool_queue_depth Current number of tasks queued in the op pool. Sustained near nats.op_worker_queue_size indicates pool starvation; consider raising nats.op_worker_pool_size. Updated every 15 s.
+# TYPE machmqtt_op_pool_queue_depth gauge
+machmqtt_op_pool_queue_depth 1946
+# HELP machmqtt_publish_latency_seconds End-to-end PUBLISH latency from packet receipt to bridge store completion, in seconds.
+# TYPE machmqtt_publish_latency_seconds histogram
+machmqtt_publish_latency_seconds_bucket{le="0.0005"} 11
+machmqtt_publish_latency_seconds_bucket{le="0.001"} 23
+machmqtt_publish_latency_seconds_bucket{le="0.005"} 38
+machmqtt_publish_latency_seconds_bucket{le="0.01"} 38
+machmqtt_publish_latency_seconds_bucket{le="0.05"} 65
+machmqtt_publish_latency_seconds_bucket{le="0.1"} 101
+machmqtt_publish_latency_seconds_bucket{le="0.5"} 148
+machmqtt_publish_latency_seconds_bucket{le="1"} 208
+machmqtt_publish_latency_seconds_bucket{le="5"} 283
+machmqtt_publish_latency_seconds_bucket{le="+Inf"} 285
+machmqtt_publish_latency_seconds_sum 3.5
+machmqtt_publish_latency_seconds_count 285
+# HELP machmqtt_auth_duration_seconds Duration of the password-path Authenticate() call (simple bcrypt, OAuth2 token fetch/verify, HTTP webhook), in seconds. SCRAM enhanced-auth AUTH exchanges are not recorded in this histogram.
+# TYPE machmqtt_auth_duration_seconds histogram
+machmqtt_auth_duration_seconds_bucket{le="0.0005"} 22
+machmqtt_auth_duration_seconds_bucket{le="0.001"} 46
+machmqtt_auth_duration_seconds_bucket{le="0.005"} 76
+machmqtt_auth_duration_seconds_bucket{le="0.01"} 76
+machmqtt_auth_duration_seconds_bucket{le="0.05"} 130
+machmqtt_auth_duration_seconds_bucket{le="0.1"} 202
+machmqtt_auth_duration_seconds_bucket{le="0.5"} 296
+machmqtt_auth_duration_seconds_bucket{le="1"} 416
+machmqtt_auth_duration_seconds_bucket{le="5"} 566
+machmqtt_auth_duration_seconds_bucket{le="+Inf"} 569
+machmqtt_auth_duration_seconds_sum 7.25
+machmqtt_auth_duration_seconds_count 569
+# HELP machmqtt_auth_webhook_duration_seconds Duration of each auth-webhook HTTP attempt in seconds (a CONNECT that retries a connect error contributes one observation per attempt; semaphore rejections and cache hits make no network call and are not observed). Only populated when auth.type is http; a rising p99 approaching auth.http.timeout precedes webhook_unavailable failures.
+# TYPE machmqtt_auth_webhook_duration_seconds histogram
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.0005"} 33
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.001"} 69
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.005"} 114
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.01"} 114
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.05"} 195
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.1"} 303
+machmqtt_auth_webhook_duration_seconds_bucket{le="0.5"} 444
+machmqtt_auth_webhook_duration_seconds_bucket{le="1"} 624
+machmqtt_auth_webhook_duration_seconds_bucket{le="5"} 849
+machmqtt_auth_webhook_duration_seconds_bucket{le="+Inf"} 853
+machmqtt_auth_webhook_duration_seconds_sum 11.125
+machmqtt_auth_webhook_duration_seconds_count 853
+# HELP machmqtt_jetstream_publish_duration_seconds Duration of the JetStream publish call for QoS 1/2 messages (includes network RTT to NATS), in seconds.
+# TYPE machmqtt_jetstream_publish_duration_seconds histogram
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.0005"} 44
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.001"} 92
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.005"} 152
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.01"} 152
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.05"} 260
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.1"} 404
+machmqtt_jetstream_publish_duration_seconds_bucket{le="0.5"} 592
+machmqtt_jetstream_publish_duration_seconds_bucket{le="1"} 832
+machmqtt_jetstream_publish_duration_seconds_bucket{le="5"} 1132
+machmqtt_jetstream_publish_duration_seconds_bucket{le="+Inf"} 1137
+machmqtt_jetstream_publish_duration_seconds_sum 1.2345675e+06
+machmqtt_jetstream_publish_duration_seconds_count 1137
+# HELP machmqtt_qos2_sync_persist_duration_seconds Duration of the qos2_sync_persist binding write (one blocking JetStream RTT per fresh outbound QoS 2 message — the feature's advertised cost), in seconds.
+# TYPE machmqtt_qos2_sync_persist_duration_seconds histogram
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.0005"} 55
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.001"} 115
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.005"} 190
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.01"} 190
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.05"} 325
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.1"} 505
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="0.5"} 740
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="1"} 1040
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="5"} 1415
+machmqtt_qos2_sync_persist_duration_seconds_bucket{le="+Inf"} 1421
+machmqtt_qos2_sync_persist_duration_seconds_sum 0.5
+machmqtt_qos2_sync_persist_duration_seconds_count 1421
+# HELP machmqtt_subscribe_duration_seconds Duration of SUBSCRIBE packet processing from receipt to SUBACK sent, in seconds.
+# TYPE machmqtt_subscribe_duration_seconds histogram
+machmqtt_subscribe_duration_seconds_bucket{le="0.0005"} 66
+machmqtt_subscribe_duration_seconds_bucket{le="0.001"} 138
+machmqtt_subscribe_duration_seconds_bucket{le="0.005"} 228
+machmqtt_subscribe_duration_seconds_bucket{le="0.01"} 228
+machmqtt_subscribe_duration_seconds_bucket{le="0.05"} 390
+machmqtt_subscribe_duration_seconds_bucket{le="0.1"} 606
+machmqtt_subscribe_duration_seconds_bucket{le="0.5"} 888
+machmqtt_subscribe_duration_seconds_bucket{le="1"} 1248
+machmqtt_subscribe_duration_seconds_bucket{le="5"} 1698
+machmqtt_subscribe_duration_seconds_bucket{le="+Inf"} 1705
+machmqtt_subscribe_duration_seconds_sum 19.75
+machmqtt_subscribe_duration_seconds_count 1705
+# HELP machmqtt_dispatch_wait_seconds Wait time for a TLS-handshake or WS-upgrade dispatch-pool slot, in seconds; samples ~2s correspond to pool-full timeouts.
+# TYPE machmqtt_dispatch_wait_seconds histogram
+machmqtt_dispatch_wait_seconds_bucket{le="0.0005"} 77
+machmqtt_dispatch_wait_seconds_bucket{le="0.001"} 161
+machmqtt_dispatch_wait_seconds_bucket{le="0.005"} 266
+machmqtt_dispatch_wait_seconds_bucket{le="0.01"} 266
+machmqtt_dispatch_wait_seconds_bucket{le="0.05"} 455
+machmqtt_dispatch_wait_seconds_bucket{le="0.1"} 707
+machmqtt_dispatch_wait_seconds_bucket{le="0.5"} 1036
+machmqtt_dispatch_wait_seconds_bucket{le="1"} 1456
+machmqtt_dispatch_wait_seconds_bucket{le="5"} 1981
+machmqtt_dispatch_wait_seconds_bucket{le="+Inf"} 1989
+machmqtt_dispatch_wait_seconds_sum 23.125
+machmqtt_dispatch_wait_seconds_count 1989
+# HELP machmqtt_tls_handshake_duration_seconds TLS handshake duration in seconds (measured from Handshake() entry to return). High p99 indicates certificate or handshake performance issues.
+# TYPE machmqtt_tls_handshake_duration_seconds histogram
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.0005"} 88
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.001"} 184
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.005"} 304
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.01"} 304
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.05"} 520
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.1"} 808
+machmqtt_tls_handshake_duration_seconds_bucket{le="0.5"} 1184
+machmqtt_tls_handshake_duration_seconds_bucket{le="1"} 1664
+machmqtt_tls_handshake_duration_seconds_bucket{le="5"} 2264
+machmqtt_tls_handshake_duration_seconds_bucket{le="+Inf"} 2273
+machmqtt_tls_handshake_duration_seconds_sum 31.0625
+machmqtt_tls_handshake_duration_seconds_count 2273
+# HELP machmqtt_go_goroutines Number of goroutines currently active in the process.
+# TYPE machmqtt_go_goroutines gauge
+machmqtt_go_goroutines 2079
+# HELP machmqtt_go_heap_inuse_bytes Bytes of allocated heap objects currently in use.
+# TYPE machmqtt_go_heap_inuse_bytes gauge
+machmqtt_go_heap_inuse_bytes 2086
+# HELP machmqtt_go_gc_cycles_total Total number of completed GC cycles.
+# TYPE machmqtt_go_gc_cycles_total counter
+machmqtt_go_gc_cycles_total 2093
+# HELP machmqtt_go_gc_pause_ns_total Cumulative nanoseconds spent in GC stop-the-world pauses.
+# TYPE machmqtt_go_gc_pause_ns_total counter
+machmqtt_go_gc_pause_ns_total 2100
+# HELP machmqtt_license_valid Whether the license is valid (1) or not (0).
+# TYPE machmqtt_license_valid gauge
+machmqtt_license_valid 1
+# HELP machmqtt_license_status License status code (0=unlicensed/free, 1=valid, 2=grace, 3=expired, 4=tampered).
+# TYPE machmqtt_license_status gauge
+machmqtt_license_status 4
+# HELP machmqtt_license_expires_timestamp Unix timestamp when the license expires.
+# TYPE machmqtt_license_expires_timestamp gauge
+machmqtt_license_expires_timestamp 1893456000
+# HELP machmqtt_license_connections_limit Maximum connections allowed by the license (0=unlimited).
+# TYPE machmqtt_license_connections_limit gauge
+machmqtt_license_connections_limit 5000
+# HELP machmqtt_license_connections_global Total connections across all instances.
+# TYPE machmqtt_license_connections_global gauge
+machmqtt_license_connections_global 4321
+# HELP machmqtt_license_max_qos Maximum QoS level allowed by the license.
+# TYPE machmqtt_license_max_qos gauge
+machmqtt_license_max_qos 2
+# HELP machmqtt_license_instances Number of known instances in the cluster.
+# TYPE machmqtt_license_instances gauge
+machmqtt_license_instances 3
+# HELP machmqtt_license_degraded 1 when peer discovery is disabled (subscribe failed or subject blocked).
+# TYPE machmqtt_license_degraded gauge
+machmqtt_license_degraded 1
+# HELP machmqtt_license_block_confirmed 1 when the license coordination subject is confirmed blocked by a permission violation or loopback silence.
+# TYPE machmqtt_license_block_confirmed gauge
+machmqtt_license_block_confirmed 1
+# HELP machmqtt_license_capacity_clamped 1 when new connections are clamped to clamp_floor due to a confirmed subject block.
+# TYPE machmqtt_license_capacity_clamped gauge
+machmqtt_license_capacity_clamped 1
+# HELP machmqtt_license_clamp_floor Connection ceiling applied while capacity is clamped (block_response=clamp).
+# TYPE machmqtt_license_clamp_floor gauge
+machmqtt_license_clamp_floor 250
+# HELP machmqtt_license_peer_discrepancy 1 when cluster coordinator sees peers but the license heartbeat channel sees none (requires cluster.enabled=true).
+# TYPE machmqtt_license_peer_discrepancy gauge
+machmqtt_license_peer_discrepancy 1
+# HELP machmqtt_license_permission_violations_total Cumulative NATS permission-violation events on license coordination subjects.
+# TYPE machmqtt_license_permission_violations_total counter
+machmqtt_license_permission_violations_total 77
+# HELP machmqtt_license_heartbeat_publish_failures_total License heartbeat publishes that errored. A sustained non-zero rate means this instance cannot report its connection count to peers and fleet capacity sharing is degraded.
+# TYPE machmqtt_license_heartbeat_publish_failures_total counter
+machmqtt_license_heartbeat_publish_failures_total 88
+# HELP machmqtt_audit_write_failures_total Audit-record writes rejected by the underlying writer (primary log or dedicated audit file). Audit writes never propagate errors, so a non-zero value is the only signal that audit records are being lost — check disk space and the audit-file path.
+# TYPE machmqtt_audit_write_failures_total counter
+machmqtt_audit_write_failures_total 1708
+# HELP machmqtt_auth_webhook_requests_total Outbound HTTP attempts to the auth webhook (a retried call counts as two attempts; max-inflight rejections are not attempts). Compare rate() against machmqtt_connections_total to gauge per-CONNECT webhook cost.
+# TYPE machmqtt_auth_webhook_requests_total counter
+machmqtt_auth_webhook_requests_total 1239
+# HELP machmqtt_auth_webhook_transport_failures_total Auth-webhook HTTP attempts that failed before a usable response was received (dial, TLS, timeout, blocked redirect, or a response-body read error). Non-zero indicates webhook connectivity/DNS/TLS trouble; affected CONNECTs are refused with CONNACK 0x88.
+# TYPE machmqtt_auth_webhook_transport_failures_total counter
+machmqtt_auth_webhook_transport_failures_total 1246
+# HELP machmqtt_auth_webhook_inflight_rejected_total CONNECTs refused instantly with CONNACK 0x88 because auth.http.max_inflight webhook requests were already in flight. Sustained non-zero means the webhook is too slow for the connect rate — speed up the webhook or raise auth.http.max_inflight.
+# TYPE machmqtt_auth_webhook_inflight_rejected_total counter
+machmqtt_auth_webhook_inflight_rejected_total 1253
+# HELP machmqtt_consumer_seq_map_entries Current number of entries in the consumer create-sequence map; grows with unique client IDs and is reaped periodically by the KV purge sweep.
+# TYPE machmqtt_consumer_seq_map_entries gauge
+machmqtt_consumer_seq_map_entries 1960
+# HELP machmqtt_consumer_deletes_dropped_total Consumer delete requests dropped because the queue was full; these consumers expire via InactiveThreshold.
+# TYPE machmqtt_consumer_deletes_dropped_total counter
+machmqtt_consumer_deletes_dropped_total 1967
+# HELP machmqtt_consumer_delete_races_total Consumer delete requests that won the check-then-act race window and destroyed a consumer belonging to a new owner; non-zero values indicate a NATS cluster under high reconnect load.
+# TYPE machmqtt_consumer_delete_races_total counter
+machmqtt_consumer_delete_races_total 1974
+# HELP machmqtt_retained_verify_failures_total Stored retained-message entries that failed envelope verification (HMAC mismatch, topic-binding mismatch, or decode error) and were silently dropped (treated as absent). Sustained non-zero indicates KV tampering, a cluster HMAC-key mismatch, or store corruption.
+# TYPE machmqtt_retained_verify_failures_total counter
+machmqtt_retained_verify_failures_total 1687
+# HELP machmqtt_will_verify_failures_total Pending delayed-will entries skipped because their signed envelope did not verify (unsigned pre-v1.2 record, client-id/KV-key mismatch, or HMAC mismatch). Those wills are NOT fired. A burst right after upgrading to v1.2 is expected and self-clearing; sustained non-zero means a cluster HMAC-key mismatch or tampering with the will bucket.
+# TYPE machmqtt_will_verify_failures_total counter
+machmqtt_will_verify_failures_total 1694
+# HELP machmqtt_subscribe_flush_failures_total Subscriptions whose post-subscribe NATS Flush failed, so the server-side registration was UNCONFIRMED when SUBACK was sent. Messages published between SUBACK and the reconnect replay are not delivered, with no error surfaced to the client. Expect brief bursts during a NATS reconnect or rolling restart; sustained non-zero means subscriptions are being acknowledged that the NATS server may not have.
+# TYPE machmqtt_subscribe_flush_failures_total counter
+machmqtt_subscribe_flush_failures_total 1701
+# HELP machmqtt_pool_slot_connected Number of NATS pool slot connections currently CONNECTED (out of the configured pool size).
+# TYPE machmqtt_pool_slot_connected gauge
+machmqtt_pool_slot_connected 1750
+# HELP machmqtt_pool_slot_rebuilds_total Pool slot connections rebuilt after reaching terminal CLOSED; each rebuild disconnects the slot's bound clients so reconnect restores their state.
+# TYPE machmqtt_pool_slot_rebuilds_total counter
+machmqtt_pool_slot_rebuilds_total 1757
+# HELP machmqtt_pool_buffered_bytes Total unflushed nats.go publish backlog summed across all pool slots.
+# TYPE machmqtt_pool_buffered_bytes gauge
+machmqtt_pool_buffered_bytes 920
+# HELP machmqtt_pool_buffered_bytes_max Publish backlog on the hottest pool slot (head-of-line indicator for delivery latency).
+# TYPE machmqtt_pool_buffered_bytes_max gauge
+machmqtt_pool_buffered_bytes_max 921
+# HELP machmqtt_pool_size Configured number of NATS connection-pool slots.
+# TYPE machmqtt_pool_size gauge
+machmqtt_pool_size 4
+# HELP machmqtt_pool_slot_buffered_bytes Per-slot unflushed publish backlog (nc.Buffered).
+# TYPE machmqtt_pool_slot_buffered_bytes gauge
+# HELP machmqtt_pool_slot_out_msgs_total Per-slot NATS messages sent (dominated by QoS 0 publishes on this connection). Monotonic across slot rebuilds (a rebuilt slot's counter continues from its predecessor's final value).
+# TYPE machmqtt_pool_slot_out_msgs_total counter
+# HELP machmqtt_pool_slot_in_msgs_total Per-slot NATS messages received (dominated by subscription deliveries on this connection). Monotonic across slot rebuilds.
+# TYPE machmqtt_pool_slot_in_msgs_total counter
+machmqtt_pool_slot_buffered_bytes{slot="0"} 930
+machmqtt_pool_slot_out_msgs_total{slot="0"} 931
+machmqtt_pool_slot_in_msgs_total{slot="0"} 932
+machmqtt_pool_slot_buffered_bytes{slot="1"} 940
+machmqtt_pool_slot_out_msgs_total{slot="1"} 941
+machmqtt_pool_slot_in_msgs_total{slot="1"} 942
+machmqtt_pool_slot_buffered_bytes{slot="3"} 950
+machmqtt_pool_slot_out_msgs_total{slot="3"} 951
+machmqtt_pool_slot_in_msgs_total{slot="3"} 952
+# HELP machmqtt_session_deletes_dropped_total Session delete requests dropped because the queue was full; these sessions expire via their SessionExpiryInterval.
+# TYPE machmqtt_session_deletes_dropped_total counter
+machmqtt_session_deletes_dropped_total 1981
+# HELP machmqtt_reactor_task_queue_depth Summed pending reactor tasks across all event loops; predominantly delivery flush tasks, so a rising value signals the egress side backing up behind reads on the loop goroutines.
+# TYPE machmqtt_reactor_task_queue_depth gauge
+machmqtt_reactor_task_queue_depth 910
+# HELP machmqtt_reactor_task_queue_depth_max Pending reactor tasks on the busiest single event loop.
+# TYPE machmqtt_reactor_task_queue_depth_max gauge
+machmqtt_reactor_task_queue_depth_max 911
+# HELP machmqtt_reactor_loop_panics_total Panics recovered in an event-loop iteration (the loop survived and continued). Non-zero signals a bug in packet/flush handling and warrants investigation.
+# TYPE machmqtt_reactor_loop_panics_total counter
+machmqtt_reactor_loop_panics_total 912
+# HELP machmqtt_reactor_read_continuations_total Reads deferred to a later event-loop pass because the connection hit the per-call read budget. This is the read-fairness mechanism engaging: it rises when one or more connections push sustained heavy read load, and is the signal that distinguishes "a flooder is being throttled" from generic CPU or latency symptoms. Non-zero is normal under load.
+# TYPE machmqtt_reactor_read_continuations_total counter
+machmqtt_reactor_read_continuations_total 913
+# HELP machmqtt_reactor_loop_deaths_total Event loops that exited permanently on a fatal epoll error. The dead loop's connections are force-closed and new connections are steered to surviving loops; any non-zero value warrants investigation and a restart during the next maintenance window.
+# TYPE machmqtt_reactor_loop_deaths_total counter
+machmqtt_reactor_loop_deaths_total 916
+# HELP machmqtt_reactor_write_backpressure_total Times a connection entered outbound write backpressure (a flush could not fully drain the kernel send buffer and EPOLLOUT was armed) since startup; non-blocking write path. Counts distinct stall episodes, not every partial re-flush — the primary signal for how often slow consumers stall the send path under load.
+# TYPE machmqtt_reactor_write_backpressure_total counter
+machmqtt_reactor_write_backpressure_total 914
+# HELP machmqtt_reactor_feed_write_overflows_total TLS/WS connections torn down because their cipher write buffer hit the hard cap (a slow consumer the per-connection enqueue cap did not catch first). Expected ~0; a rising value flags an outbound-cap tuning gap.
+# TYPE machmqtt_reactor_feed_write_overflows_total counter
+machmqtt_reactor_feed_write_overflows_total 915
+# HELP machmqtt_session_persist_failed_total Total session write-behind persist failures by reason label.
+# TYPE machmqtt_session_persist_failed_total counter
+machmqtt_session_persist_failed_total{reason="write_failed"} 1988
+machmqtt_session_persist_failed_total{reason="queue_full"} 1995
+machmqtt_session_persist_failed_total{reason="panic"} 2002
+# HELP machmqtt_session_fencing_rejected_total Dirty-session KV writes dropped because the session was fenced (deposed by a higher-epoch owner on another instance); each increment is a clobber the fence prevented, not a failure.
+# TYPE machmqtt_session_fencing_rejected_total counter
+machmqtt_session_fencing_rejected_total 1911
+# HELP machmqtt_drained 1 when the instance is operator-drained (POST /admin/drain), else 0.
+# TYPE machmqtt_drained gauge
+machmqtt_drained 2107
+# HELP machmqtt_cluster_hmac_failures_total HMAC envelope verification failures by source instance; incremented on bad HMAC, replayed nonce, expired/future timestamp, or malformed envelope.
+# TYPE machmqtt_cluster_hmac_failures_total counter
+machmqtt_cluster_hmac_failures_total{source_instance_id="peer-a"} 61
+machmqtt_cluster_hmac_failures_total{source_instance_id="peer-b\\"} 62
+machmqtt_cluster_hmac_failures_total{source_instance_id="peer-c\"q\\z"} 63
+machmqtt_cluster_hmac_failures_total{source_instance_id="peer-d\ntail"} 64
+# HELP machmqtt_cluster_takeover_dropped_total NotifyTakeover calls dropped because the async publish queue was full; each drop leaves peers with a stale registration until keepalive sweep.
+# TYPE machmqtt_cluster_takeover_dropped_total counter
+machmqtt_cluster_takeover_dropped_total 1841
+# HELP machmqtt_cluster_inspect_timeouts_total Cluster inspect queries that found no responder before the deadline.
+# TYPE machmqtt_cluster_inspect_timeouts_total counter
+machmqtt_cluster_inspect_timeouts_total 1834
+# HELP machmqtt_cluster_takeover_order_skew_total Cross-node takeovers where the local and remote connect timestamps differed by less than the clock-skew window (~1s); a rising value indicates inter-node clock divergence that, under wall-clock last-writer-wins takeover ordering, could evict a legitimately-newer owner (CLUSTER-1).
+# TYPE machmqtt_cluster_takeover_order_skew_total counter
+machmqtt_cluster_takeover_order_skew_total 1848
+# HELP machmqtt_cluster_heartbeat_publish_failures_total Cluster heartbeat publishes that errored. A sustained non-zero rate means peers will evict this instance from their peer tables and cluster-wide operations skip it.
+# TYPE machmqtt_cluster_heartbeat_publish_failures_total counter
+machmqtt_cluster_heartbeat_publish_failures_total 2149
+# HELP machmqtt_cluster_lease_acquired_total Session-ownership leases claimed fresh or refreshed by a same-instance reconnect.
+# TYPE machmqtt_cluster_lease_acquired_total counter
+machmqtt_cluster_lease_acquired_total 1855
+# HELP machmqtt_cluster_lease_transferred_total Session-ownership leases stolen from another live instance (client roamed) or from an unverifiable holder.
+# TYPE machmqtt_cluster_lease_transferred_total counter
+machmqtt_cluster_lease_transferred_total 1862
+# HELP machmqtt_cluster_lease_reclaimed_total Session-ownership leases re-acquired from a previous incarnation of this instance (post-restart, matched by instance_name).
+# TYPE machmqtt_cluster_lease_reclaimed_total counter
+machmqtt_cluster_lease_reclaimed_total 1869
+# HELP machmqtt_cluster_lease_conflicts_total Lease acquisitions that exhausted the CAS retry budget and refused the CONNECT with CONNACK 0x88.
+# TYPE machmqtt_cluster_lease_conflicts_total counter
+machmqtt_cluster_lease_conflicts_total 1876
+# HELP machmqtt_cluster_lease_watcher_kicks_total Local clients deposed by the lease watcher (a foreign lease write with a higher epoch was observed); nonzero alongside rising takeover_dropped_total means the durable lease closed a would-be split-brain window.
+# TYPE machmqtt_cluster_lease_watcher_kicks_total counter
+machmqtt_cluster_lease_watcher_kicks_total 1883
+# HELP machmqtt_cluster_lease_revision_regressions_total Lease acquisitions seen at a KV revision below one already held for the same client — the signature of an owner-bucket rebuild. Any non-zero value means epoch ordering can no longer fence a stale owner on this instance; restart it to clear the cached epoch.
+# TYPE machmqtt_cluster_lease_revision_regressions_total counter
+machmqtt_cluster_lease_revision_regressions_total 1890
+# HELP machmqtt_cluster_lease_release_failed_total Lease releases that errored (revision-mismatch misses are benign and not counted).
+# TYPE machmqtt_cluster_lease_release_failed_total counter
+machmqtt_cluster_lease_release_failed_total 1897
+# HELP machmqtt_cluster_owned_leases Session-ownership leases this instance currently holds.
+# TYPE machmqtt_cluster_owned_leases gauge
+machmqtt_cluster_owned_leases 1904

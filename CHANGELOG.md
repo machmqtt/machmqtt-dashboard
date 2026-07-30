@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Full MachMQTT v1.2 metrics parity** — `MQTTMetrics` now mirrors the broker's
+  metrics snapshot field-for-field on both ingestion paths. New on the collector:
+  the license, I/O-reactor and NATS-connection-pool groups (including per-slot
+  publish backlog and message counts) as nested objects; per-source cluster HMAC
+  verification failures; raw histogram bucket arrays for all eight latency
+  histograms; the `suback_rejected_by_reason` code map; the `qos2_sync_persist`
+  histogram; and the new counters and gauges for peak connections, memory-budget
+  rejections, hook panics/vetoes, `$SYS` tree publishes and spoof blocks, inbound
+  byte volume, credential-expiry disconnects, mTLS identity fallbacks, WebSocket
+  protocol violations, will/retain persistence failures, will and subscribe
+  verification failures, lease revision regressions, cluster heartbeat publish
+  failures, session-persist panics, OAuth2 token-cache evictions, and the
+  credential-lockout tracker size.
+
+### Changed
+- The bridge `/metrics` parser now resolves Prometheus label escapes (`\\`, `\"`,
+  `\n`), matches label keys whole (so `instance_id` no longer matches
+  `source_instance_id`), accepts every exposition float form for counters
+  (`1e+06`, `1.5`), and ignores an optional trailing sample timestamp. Unknown
+  metric families are still ignored, unchanged.
+
 ## [1.0.0] - 2026-07-13
 
 First stable release. Read-only monitoring for NATS clusters and MachMQTT

@@ -75,6 +75,34 @@ MachMQTT bridge fleet data uses a separate, independent pair of paths:
   scrapes each bridge's Prometheus-format `/metrics` endpoint and its admin API
   (diagnostics, license, pool, cluster status) on demand for the detail pages.
 
+**MachMQTT metric parity.** `MQTTMetrics` (`internal/collector/mqtt_types.go`)
+mirrors the broker's `connector/metrics.Snapshot` field-for-field: as of MachMQTT
+v1.2 the two carry an identical set of JSON tags, sub-objects included. That
+single struct is what the broker renders to both its Prometheus `/metrics` text
+and its NATS push payload, so the dashboard's two ingestion paths cannot disagree
+about what a metric means. Three consequences worth knowing:
+
+- The license, reactor and pool groups arrive on **both** paths (they were
+  HTTP-only admin appends before v1.2). Each is a nested object that is absent —
+  a nil pointer — when its subsystem is not configured, and the poll parser
+  reproduces that by leaving the pointer nil unless it saw at least one of the
+  group's families. The same holds for the four booleans (`auth_webhook_active`,
+  `cluster_enabled`, `bridge_up`, `sessions_up`) that gate whole families: the
+  push path carries them directly, while the poll path infers them from family
+  presence, since the broker exposes no metric line for a gate itself.
+- Histogram buckets are stored as **raw** per-bucket counts but rendered
+  cumulatively, so the poll parser differences the `le=` series back to raw.
+  Observations above the last bound live only in the histogram's `_count` in both
+  representations, so `sum(buckets) <= count` by design and the last bucket is
+  never back-filled from `+Inf`.
+- `connections_rejected` is the broker's deprecated umbrella counter and is the
+  sum of eight rejection reasons only; `rejected_mem_budget` is deliberately
+  outside it and is read on its own.
+
+Parity is pinned by `internal/collector/mqtt_metrics_v12_test.go` against
+`testdata/machmqtt_v12_metrics.txt` — a fixture rendered by the broker's own
+exposition writers from a fully-populated snapshot.
+
 **MachMQTT version compatibility.** Both bridge ingestion paths are designed to
 work across MachMQTT versions, in both directions:
 

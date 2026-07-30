@@ -35,17 +35,21 @@ type MQTTBridgeStatus struct {
 //
 // This struct mirrors machmqtt's connector/metrics.Snapshot, the single source for
 // both the HTTP /metrics core and the NATS push payload, so push and poll cannot
-// drift. The Phase-0 pool/reactor backpressure metrics (machmqtt_pool_buffered_bytes,
-// reactor_task_queue_depth, pool_slot_buffered_bytes, etc.) are deliberately NOT
-// here: they are HTTP-only admin appends, absent from the push Snapshot, so adding
-// them would break push/poll parity.
+// drift. The json tags here are an exact mirror of that Snapshot's tags — the
+// pool/reactor backpressure families (machmqtt_pool_buffered_bytes,
+// machmqtt_reactor_task_queue_depth, machmqtt_pool_slot_buffered_bytes, …) now
+// arrive on BOTH paths: they live on the broker's Snapshot, so the push payload
+// carries them as nested objects and the Prometheus exposition renders them from
+// the same capture.
 type MQTTMetrics struct {
 	// --- Connections (established MQTT, post-CONNECT) ---
-	// As of machmqtt's socket-split (commit 11d2ebc) these count connections that
-	// completed the MQTT CONNECT handshake. Pre-CONNECT transport sockets (e.g.
-	// load-balancer TCP probes) are NOT counted here — see Sockets* below.
-	ConnectionsActive   int64 `json:"connections_active"`
-	ConnectionsTotal    int64 `json:"connections_total"`
+	// These count connections that completed the MQTT CONNECT handshake.
+	// Pre-CONNECT transport sockets (e.g. load-balancer TCP probes) are NOT
+	// counted here — see Sockets* below.
+	ConnectionsActive int64 `json:"connections_active"`
+	ConnectionsTotal  int64 `json:"connections_total"`
+	// ConnectionsMax is the high-water mark of ConnectionsActive since broker start.
+	ConnectionsMax      int64 `json:"connections_max"`
 	ConnectionsRejected int64 `json:"connections_rejected"`
 	WSConnectionsActive int64 `json:"ws_connections_active"`
 	WSConnectionsTotal  int64 `json:"ws_connections_total"`
@@ -60,7 +64,11 @@ type MQTTMetrics struct {
 
 	// Connection rejections broken out by remediation path
 	// (machmqtt_connections_rejected_by_reason_total{reason=...}).
-	RejectedMaxConns       int64 `json:"rejected_max_conns"`
+	RejectedMaxConns int64 `json:"rejected_max_conns"`
+	// RejectedMemBudget is NOT part of the ConnectionsRejected umbrella above:
+	// the broker sums only the other eight reasons into
+	// machmqtt_connections_rejected_total, so this one must be read separately.
+	RejectedMemBudget      int64 `json:"rejected_mem_budget"`
 	RejectedLicense        int64 `json:"rejected_license"`
 	RejectedPerIPConns     int64 `json:"rejected_per_ip_conns"`
 	RejectedPerIPAccept    int64 `json:"rejected_per_ip_accept"`
@@ -90,6 +98,10 @@ type MQTTMetrics struct {
 	AuthFailWebhookDenied      int64 `json:"auth_fail_webhook_denied"`
 	AuthFailWebhookUnavailable int64 `json:"auth_fail_webhook_unavailable"`
 	ScramSessionsActive        int64 `json:"scram_sessions_active"`
+	// AuthFailureTrackerEntries is the live entry count of the bounded
+	// credential-lockout tracker; a value pinned at the configured cap means
+	// eviction pressure, not merely activity.
+	AuthFailureTrackerEntries int64 `json:"auth_failure_tracker_entries"`
 
 	// --- Auth webhook (auth.type "http"; zero for other auth types) ---
 	AuthWebhookRequests          int64 `json:"auth_webhook_requests"`
@@ -101,9 +113,6 @@ type MQTTMetrics struct {
 	NATSEnforcementDenied   int64 `json:"nats_enforcement_denied"`
 
 	// --- License feature-gate rejections ---
-	// The bridge snapshot also defines a packet_size feature counter, but it is
-	// always 0 and is not emitted on the Prometheus (/metrics) path; it is omitted
-	// here until it carries real data (add the field + a parser branch then).
 	LicenseRejectedAuthMethod    int64 `json:"license_rejected_auth_method"`
 	LicenseRejectedRetain        int64 `json:"license_rejected_retain"`
 	LicenseRejectedProxyProtocol int64 `json:"license_rejected_proxy_protocol"`
@@ -136,6 +145,17 @@ type MQTTMetrics struct {
 	WillPending             int64 `json:"will_pending"`
 	WillRetryPending        int64 `json:"will_retry_pending"`
 
+	// --- Will / retain persistence failures ---
+	// Non-zero WillPersistFailed* means a will's crash-durability write did not
+	// land: it still fires from memory on this process, but is lost if the broker
+	// crashes first. RetainPersistFailedPut means a retained message is served
+	// from memory but is not durable; RetainPersistFailedDelete means a deleted
+	// retained message's KV entry survives and resurrects on the next restart.
+	WillPersistFailedWrite     int64 `json:"will_persist_failed_write"`
+	WillPersistFailedQueueFull int64 `json:"will_persist_failed_queue_full"`
+	RetainPersistFailedPut     int64 `json:"retain_persist_failed_put"`
+	RetainPersistFailedDelete  int64 `json:"retain_persist_failed_delete"`
+
 	// --- Protocol ops ---
 	Subscribes         int64 `json:"subscribes"`
 	Unsubscribes       int64 `json:"unsubscribes"`
@@ -148,20 +168,43 @@ type MQTTMetrics struct {
 	NATSSlowConsumer int64 `json:"nats_slow_consumer"`
 
 	// --- Reliability ---
-	PanicsRecovered      int64 `json:"panics_recovered"`
+	PanicsRecovered int64 `json:"panics_recovered"`
+	// HookPanics counts lifecycle-hook handler panics recovered by the hook
+	// registry (the panicking handler counts as allow and the chain continues),
+	// so non-zero means a registered hook handler is broken. HookVetoes counts
+	// operations a hook deliberately denied — policy, not failure.
+	HookPanics int64 `json:"hook_panics"`
+	HookVetoes int64 `json:"hook_vetoes"`
+	// SysTreePublished is zero when observability.sys_tree is disabled.
+	// SysPublishBlocked counts client PUBLISH/will packets to a $SYS topic
+	// refused by the spoof-block, so non-zero means a client is attempting to
+	// forge the broker stat tree.
+	SysTreePublished     int64 `json:"sys_tree_published"`
+	SysPublishBlocked    int64 `json:"sys_publish_blocked"`
 	TLSHandshakeFailures int64 `json:"tls_handshake_failures"`
 	ProxyProtocolErrors  int64 `json:"proxy_protocol_errors"`
 	WSUpgradeFailures    int64 `json:"ws_upgrade_failures"`
+	// WSProtocolViolations counts WebSocket framing-layer violations (RFC 6455);
+	// the offending connection is closed, which is otherwise indistinguishable
+	// from an ordinary disconnect.
+	WSProtocolViolations int64 `json:"ws_protocol_violations"`
 	FlowcontrolOverflow  int64 `json:"flowcontrol_overflow"`
 
 	// --- Durability / DLQ ---
+	// QoS2ServerPublishFailed is the PUBREL-stage forward-to-NATS failure only.
+	// Store-time QoS 2 failures are counted elsewhere — transient ones in
+	// ServerPublishFailedQoS2 and permanent ones in ServerPublishDropped — so
+	// the two are distinct events, never the same increment seen twice.
 	QoS2ServerPublishFailed int64 `json:"qos2_server_publish_failed"`
 	QoS1ClientSendFailed    int64 `json:"qos1_client_send_failed"`
 	QoS2ClientSendFailed    int64 `json:"qos2_client_send_failed"`
-	ServerPublishDropped    int64 `json:"server_publish_dropped"`
+	// QoS2SyncPersistFailed counts qos2_sync_persist binding writes that failed;
+	// the message was NOT sent, so there is no duplicate risk.
+	QoS2SyncPersistFailed int64 `json:"qos2_sync_persist_failed"`
+	ServerPublishDropped  int64 `json:"server_publish_dropped"`
 	// ServerPublishFailedQoS* is the machmqtt_server_publish_failed_total{qos=...}
-	// family (transient NATS publish failures); the qos="2" series mirrors
-	// QoS2ServerPublishFailed so SUM over the family covers all QoS levels.
+	// family: inbound PUBLISH that could not be stored/forwarded to NATS because
+	// of a transient error, counted once per failed PUBLISH.
 	ServerPublishFailedQoS0  int64 `json:"server_publish_failed_qos0"`
 	ServerPublishFailedQoS1  int64 `json:"server_publish_failed_qos1"`
 	ServerPublishFailedQoS2  int64 `json:"server_publish_failed_qos2"`
@@ -180,12 +223,24 @@ type MQTTMetrics struct {
 	OutboundStallEvictions int64 `json:"outbound_stall_evictions"`
 	OutboundStalledConns   int64 `json:"outbound_stalled_conns"`
 	RetainVerifyFailures   int64 `json:"retained_verify_failures"`
+	// WillVerifyFailures counts pending-will entries skipped because their
+	// envelope did not verify (unsigned legacy record, client-id/key mismatch, or
+	// HMAC mismatch). Those wills are NOT fired.
+	WillVerifyFailures int64 `json:"will_verify_failures"`
+	// SubscribeFlushFailures counts subscriptions whose registration with the
+	// NATS server was unconfirmed when SUBACK was sent, so messages published
+	// before the reconnect replay are not delivered and no error reaches the
+	// client.
+	SubscribeFlushFailures int64 `json:"subscribe_flush_failures"`
 
 	// --- Capacity & memory gauges ---
 	RetainedMessages    int64 `json:"retained_messages"`
 	InflightOutMessages int64 `json:"inflight_out_messages"`
 	SubscriptionsActive int64 `json:"subscriptions_active"`
 	OutboundBytes       int64 `json:"outbound_bytes"`
+	// InboundBytes is machmqtt_bytes_received_total: cumulative application
+	// PUBLISH payload bytes received from clients.
+	InboundBytes int64 `json:"inbound_bytes"`
 
 	// --- Bridge / pool health ---
 	PoolSlotConnected                   int64 `json:"pool_slot_connected"`
@@ -207,18 +262,26 @@ type MQTTMetrics struct {
 	ClusterInspectTimeouts   int64 `json:"cluster_inspect_timeouts"`
 	ClusterTakeoverDropped   int64 `json:"cluster_takeover_dropped"`
 	ClusterTakeoverOrderSkew int64 `json:"cluster_takeover_order_skew"`
+	// ClusterHeartbeatPublishFailures counts cluster heartbeat publishes that
+	// errored; while it rises, peers evict this instance from their peer tables
+	// and cluster-wide operations skip it.
+	ClusterHeartbeatPublishFailures int64 `json:"cluster_heartbeat_publish_failures,omitempty"`
 
-	// --- Session-ownership lease (epoch-fenced cluster takeover, v1.1) ---
+	// --- Session-ownership lease (epoch-fenced cluster takeover) ---
 	// Also emitted only when clustering is enabled, except SessionFencingRejected
 	// which is server-sourced from s.sessions and always present (zero when no
 	// fencing has occurred, which is the case outside a cluster).
-	ClusterLeaseAcquired      int64 `json:"cluster_lease_acquired"`
-	ClusterLeaseTransferred   int64 `json:"cluster_lease_transferred"`
-	ClusterLeaseReclaimed     int64 `json:"cluster_lease_reclaimed"`
-	ClusterLeaseConflicts     int64 `json:"cluster_lease_conflicts"`
-	ClusterLeaseWatcherKicks  int64 `json:"cluster_lease_watcher_kicks"`
-	ClusterLeaseReleaseFailed int64 `json:"cluster_lease_release_failed"`
-	ClusterOwnedLeases        int64 `json:"cluster_owned_leases"`
+	ClusterLeaseAcquired     int64 `json:"cluster_lease_acquired"`
+	ClusterLeaseTransferred  int64 `json:"cluster_lease_transferred"`
+	ClusterLeaseReclaimed    int64 `json:"cluster_lease_reclaimed"`
+	ClusterLeaseConflicts    int64 `json:"cluster_lease_conflicts"`
+	ClusterLeaseWatcherKicks int64 `json:"cluster_lease_watcher_kicks"`
+	// ClusterLeaseRevisionRegressions counts lease acquisitions observed at a KV
+	// revision below one already cached. Any non-zero value means epoch ordering
+	// can no longer fence a stale owner on that instance.
+	ClusterLeaseRevisionRegressions int64 `json:"cluster_lease_revision_regressions"`
+	ClusterLeaseReleaseFailed       int64 `json:"cluster_lease_release_failed"`
+	ClusterOwnedLeases              int64 `json:"cluster_owned_leases"`
 	// SessionFencingRejected counts dirty-session KV writes dropped because the
 	// session was fenced (deposed by a higher-epoch lease owner elsewhere in the
 	// cluster); each increment is a clobber the fence prevented, not a failure.
@@ -239,10 +302,32 @@ type MQTTMetrics struct {
 	SessionDeletesDropped           int64 `json:"session_deletes_dropped"`
 	SessionPersistFailedWriteFailed int64 `json:"session_persist_failed_write_failed"`
 	SessionPersistFailedQueueFull   int64 `json:"session_persist_failed_queue_full"`
+	// SessionPersistPanics counts write-behind flushes that panicked and were
+	// recovered per-session; it arrives under the same
+	// machmqtt_session_persist_failed_total family with reason="panic".
+	SessionPersistPanics int64 `json:"session_persist_panics"`
 
 	// --- Reliability extras ---
-	TLSCertReloadFailures   int64 `json:"tls_cert_reload_failures"`
-	OAuth2JWKSFetchFailures int64 `json:"oauth2_jwks_fetch_failures"`
+	// CredentialExpiryDisconnects counts clients disconnected because their
+	// authentication credential elapsed mid-session — distinct from a keepalive
+	// timeout, and a spike means a broken token-refresh flow.
+	CredentialExpiryDisconnects int64 `json:"credential_expiry_disconnects"`
+	// MTLSIdentityFallback* count connections that fell back to the
+	// CONNECT-supplied username while mqtt.tls.identity_source was configured.
+	// NoCert is the security-relevant case: no certificate identity was verified
+	// at all.
+	MTLSIdentityFallbackLicense int64 `json:"mtls_identity_fallback_license"`
+	MTLSIdentityFallbackNoMatch int64 `json:"mtls_identity_fallback_no_match"`
+	MTLSIdentityFallbackNoCert  int64 `json:"mtls_identity_fallback_no_cert"`
+	// OTelHistogramSkewClamped counts OTLP exports whose histogram +Inf/_count
+	// was clamped up to the observed bucket total; a steady rate is a renderer
+	// bug rather than a benign sampling race.
+	OTelHistogramSkewClamped int64 `json:"otel_histogram_skew_clamped"`
+	TLSCertReloadFailures    int64 `json:"tls_cert_reload_failures"`
+	OAuth2JWKSFetchFailures  int64 `json:"oauth2_jwks_fetch_failures"`
+	// OAuth2TokenCacheEvictions counts token-cache entries evicted at capacity;
+	// sustained growth means CONNECTs are paying full JWT verification cost.
+	OAuth2TokenCacheEvictions int64 `json:"oauth2_token_cache_evictions"`
 	// AuditWriteFailures counts audit records lost because the underlying writer
 	// rejected the write (audit writes never surface errors otherwise) — a
 	// non-zero value means audit records are being dropped (disk/path problem).
@@ -251,6 +336,9 @@ type MQTTMetrics struct {
 	// --- Sparse hex-coded families, keyed by MQTT reason code (e.g. "0x88") ---
 	// Only non-zero reason codes are emitted, so these are maps; nil when absent.
 	ConnackRejectedByReason map[string]int64 `json:"connack_rejected_by_reason,omitempty"`
+	// SubackRejectedByReason is counted per rejected topic filter, so one
+	// SUBSCRIBE packet can contribute several increments.
+	SubackRejectedByReason  map[string]int64 `json:"suback_rejected_by_reason,omitempty"`
 	DisconnectsSentByReason map[string]int64 `json:"disconnects_sent_by_reason,omitempty"`
 
 	// --- JetStream / consumer gauges ---
@@ -259,22 +347,39 @@ type MQTTMetrics struct {
 	ConsumerPendingMessages int64 `json:"consumer_pending_messages"`
 	StalledConsumers        int64 `json:"stalled_consumers"`
 
-	// --- Histograms: count + sum only; buckets deliberately skipped ---
+	// --- Histograms: count + sum ---
 	// Average latency = SumSeconds / Count (computed in UI).
-	PublishLatencyCount            int64   `json:"publish_latency_count"`
-	PublishLatencySumSeconds       float64 `json:"publish_latency_sum_seconds"`
-	AuthDurationCount              int64   `json:"auth_duration_count"`
-	AuthDurationSumSeconds         float64 `json:"auth_duration_sum_seconds"`
-	AuthWebhookDurationCount       int64   `json:"auth_webhook_duration_count"`
-	AuthWebhookDurationSumSeconds  float64 `json:"auth_webhook_duration_sum_seconds"`
-	JSPublishDurationCount         int64   `json:"jetstream_publish_duration_count"`
-	JSPublishDurationSumSeconds    float64 `json:"jetstream_publish_duration_sum_seconds"`
-	SubscribeDurationCount         int64   `json:"subscribe_duration_count"`
-	SubscribeDurationSumSeconds    float64 `json:"subscribe_duration_sum_seconds"`
-	DispatchWaitCount              int64   `json:"dispatch_wait_count"`
-	DispatchWaitSumSeconds         float64 `json:"dispatch_wait_sum_seconds"`
-	TLSHandshakeDurationCount      int64   `json:"tls_handshake_duration_count"`
-	TLSHandshakeDurationSumSeconds float64 `json:"tls_handshake_duration_sum_seconds"`
+	PublishLatencyCount               int64   `json:"publish_latency_count"`
+	PublishLatencySumSeconds          float64 `json:"publish_latency_sum_seconds"`
+	AuthDurationCount                 int64   `json:"auth_duration_count"`
+	AuthDurationSumSeconds            float64 `json:"auth_duration_sum_seconds"`
+	AuthWebhookDurationCount          int64   `json:"auth_webhook_duration_count"`
+	AuthWebhookDurationSumSeconds     float64 `json:"auth_webhook_duration_sum_seconds"`
+	JSPublishDurationCount            int64   `json:"jetstream_publish_duration_count"`
+	JSPublishDurationSumSeconds       float64 `json:"jetstream_publish_duration_sum_seconds"`
+	QoS2SyncPersistDurationCount      int64   `json:"qos2_sync_persist_duration_count"`
+	QoS2SyncPersistDurationSumSeconds float64 `json:"qos2_sync_persist_duration_sum_seconds"`
+	SubscribeDurationCount            int64   `json:"subscribe_duration_count"`
+	SubscribeDurationSumSeconds       float64 `json:"subscribe_duration_sum_seconds"`
+	DispatchWaitCount                 int64   `json:"dispatch_wait_count"`
+	DispatchWaitSumSeconds            float64 `json:"dispatch_wait_sum_seconds"`
+	TLSHandshakeDurationCount         int64   `json:"tls_handshake_duration_count"`
+	TLSHandshakeDurationSumSeconds    float64 `json:"tls_handshake_duration_sum_seconds"`
+
+	// --- Histogram buckets ---
+	// RAW (non-cumulative) per-bucket observation counts, aligned with
+	// MQTTHistogramBounds. The push payload carries these raw counts directly;
+	// the Prometheus exposition renders them cumulatively, so the poll parser
+	// differences the le= series back to raw. Observations above the last bound
+	// appear only in the *Count total, so sum(buckets) <= Count by design.
+	PublishLatencyBuckets          [MQTTHistogramBucketCount]int64 `json:"publish_latency_buckets"`
+	AuthDurationBuckets            [MQTTHistogramBucketCount]int64 `json:"auth_duration_buckets"`
+	AuthWebhookDurationBuckets     [MQTTHistogramBucketCount]int64 `json:"auth_webhook_duration_buckets"`
+	JSPublishDurationBuckets       [MQTTHistogramBucketCount]int64 `json:"jetstream_publish_duration_buckets"`
+	QoS2SyncPersistDurationBuckets [MQTTHistogramBucketCount]int64 `json:"qos2_sync_persist_duration_buckets"`
+	SubscribeDurationBuckets       [MQTTHistogramBucketCount]int64 `json:"subscribe_duration_buckets"`
+	DispatchWaitBuckets            [MQTTHistogramBucketCount]int64 `json:"dispatch_wait_buckets"`
+	TLSHandshakeDurationBuckets    [MQTTHistogramBucketCount]int64 `json:"tls_handshake_duration_buckets"`
 
 	// --- Go runtime ---
 	GoGoroutines     int64 `json:"go_goroutines"`
@@ -289,6 +394,114 @@ type MQTTMetrics struct {
 
 	// Drained is 1 when the instance is operator-drained (machmqtt_drained).
 	Drained int64 `json:"drained"`
+
+	// --- Sub-objects for the family-gated metric groups ---
+	// Nil when the corresponding subsystem is not configured, exactly as the
+	// broker gates them: the push payload omits the object, and the Prometheus
+	// exposition omits the whole family, so the poll parser leaves the pointer
+	// nil unless it saw at least one of that group's families.
+	License *MQTTMetricsLicense `json:"license,omitempty"`
+	Reactor *MQTTMetricsReactor `json:"reactor,omitempty"`
+	Pool    *MQTTMetricsPool    `json:"pool,omitempty"`
+
+	// ClusterHMACFailures carries the per-source HMAC verification failure
+	// counters, sorted by source ID. Nil when clustering is off or no failures
+	// have been seen.
+	ClusterHMACFailures []MQTTHMACFailure `json:"cluster_hmac_failures,omitempty"`
+
+	// Family gates. On the push path these arrive as booleans; on the poll path
+	// they are inferred from the presence of the families each one gates, since
+	// the broker exposes no metric line for the gate itself.
+	AuthWebhookActive bool `json:"auth_webhook_active,omitempty"`
+	ClusterEnabled    bool `json:"cluster_enabled,omitempty"`
+	BridgeUp          bool `json:"bridge_up,omitempty"`
+	SessionsUp        bool `json:"sessions_up,omitempty"`
+}
+
+// MQTTHistogramBucketCount is the number of explicit histogram buckets every
+// machmqtt latency histogram uses; MQTTHistogramBounds holds their upper bounds
+// in seconds. The +Inf bucket is not stored — it equals the histogram's *Count.
+const MQTTHistogramBucketCount = 9
+
+// MQTTHistogramBounds are the upper bounds (seconds) of the explicit buckets, in
+// ascending order, matching the bridge's histogram configuration.
+var MQTTHistogramBounds = [MQTTHistogramBucketCount]float64{
+	0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5,
+}
+
+// MQTTMetricsLicense is the license-manager gauge/counter group
+// (machmqtt_license_*), absent entirely when no license manager is configured.
+// It does not include the license feature-gate rejection counters, which are
+// core metrics present in every deployment (LicenseRejected* above).
+type MQTTMetricsLicense struct {
+	Valid  int64 `json:"valid"`
+	Status int64 `json:"status"`
+	// HasExpiry is false for a license with no expiry, in which case
+	// ExpiresTimestamp is absent and must not be read. On the poll path it is
+	// inferred from the presence of machmqtt_license_expires_timestamp.
+	HasExpiry        bool  `json:"has_expiry,omitempty"`
+	ExpiresTimestamp int64 `json:"expires_timestamp,omitempty"`
+	// ConnectionsLimit is 0 for unlimited.
+	ConnectionsLimit  int64 `json:"connections_limit"`
+	ConnectionsGlobal int64 `json:"connections_global"`
+	MaxQoS            int64 `json:"max_qos"`
+	Instances         int64 `json:"instances"`
+	Degraded          int64 `json:"degraded"`
+	BlockConfirmed    int64 `json:"block_confirmed"`
+	// CapacityClamped is the operative alarm: new connections are being held at
+	// ClampFloor.
+	CapacityClamped          int64 `json:"capacity_clamped"`
+	ClampFloor               int64 `json:"clamp_floor"`
+	PeerDiscrepancy          int64 `json:"peer_discrepancy"`
+	PermissionViolations     int64 `json:"permission_violations"`
+	HeartbeatPublishFailures int64 `json:"heartbeat_publish_failures"`
+}
+
+// MQTTMetricsReactor is the I/O-reactor diagnostic group (machmqtt_reactor_*).
+type MQTTMetricsReactor struct {
+	TaskQueueDepth    int64 `json:"task_queue_depth"`
+	TaskQueueDepthMax int64 `json:"task_queue_depth_max"`
+	LoopPanics        int64 `json:"loop_panics"`
+	// ReadContinuations counts reads deferred to a later event-loop pass because
+	// the connection hit its per-call read budget. Non-zero is normal under load;
+	// it is the read-fairness mechanism engaging.
+	ReadContinuations int64 `json:"read_continuations"`
+	WriteBackpressure int64 `json:"write_backpressure"`
+	// FeedWriteOverflows counts TLS/WS connections torn down because their cipher
+	// write buffer hit its hard cap; expect ~0.
+	FeedWriteOverflows int64 `json:"feed_write_overflows"`
+	// LoopDeaths counts event loops that exited permanently on a fatal poller
+	// error; their connections are force-closed and new ones steered elsewhere.
+	LoopDeaths int64 `json:"loop_deaths"`
+}
+
+// MQTTMetricsPool is the NATS connection-pool group (machmqtt_pool_*), including
+// the pre-aggregated buffered-bytes gauges. A high BufferedBytesMax with an idle
+// broker is the head-of-line signature: deliveries queued behind publishes on
+// one slot's single TCP connection.
+type MQTTMetricsPool struct {
+	Size             int64                 `json:"size"`
+	BufferedBytes    int64                 `json:"buffered_bytes"`
+	BufferedBytesMax int64                 `json:"buffered_bytes_max"`
+	Slots            []MQTTMetricsPoolSlot `json:"slots,omitempty"`
+}
+
+// MQTTMetricsPoolSlot is one NATS connection-pool slot's stats. OutMsgs/InMsgs
+// are monotonic across slot rebuilds. This is the metrics-path per-slot view;
+// MQTTPoolSlot is the richer /pool admin-endpoint view.
+type MQTTMetricsPoolSlot struct {
+	Slot          int64 `json:"slot"`
+	BufferedBytes int64 `json:"buffered_bytes"`
+	OutMsgs       int64 `json:"out_msgs"`
+	InMsgs        int64 `json:"in_msgs"`
+}
+
+// MQTTHMACFailure is one source instance's cluster-HMAC verification failure
+// count. Source IDs can embed client-derived strings, so on the poll path the
+// label value arrives escaped and must be unescaped.
+type MQTTHMACFailure struct {
+	SourceInstanceID string `json:"source_instance_id"`
+	Count            int64  `json:"count"`
 }
 
 // MQTTDiag mirrors the bridge /diag response.
