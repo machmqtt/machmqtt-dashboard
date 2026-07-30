@@ -72,6 +72,8 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   const [diag, setDiag] = useState<any>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [cluster, setCluster] = useState<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [readyz, setReadyz] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   // Inline error banner shown when NO source (admin HTTP or push) returns data —
   // replaces a toast that previously fired on every 5s poll.
@@ -96,6 +98,10 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
       fetchWithTimeout(`${base}/license`).then(r => r.ok ? r.json() : null),
       fetchWithTimeout(`${base}/diag/config`).then(r => r.ok ? r.json() : null),
       fetchWithTimeout(`${base}/cluster`).then(r => r.ok ? r.json() : null),
+      // Readiness state (draining / JetStream-degraded) for the header label.
+      // Deliberately last: it is excluded from the all-sources-failed check
+      // below, since it decorates the page rather than populating a tab.
+      fetchWithTimeout(`${base}/readyz`).then(r => r.ok ? r.json() : null),
     ])
     // Ignore a late response if the bridge changed or a newer refresh started.
     if (seq !== fetchSeq.current) return
@@ -105,10 +111,11 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
     setLicense(val(results[3]))
     setDiag(val(results[4]))
     setCluster(val(results[5]))
+    setReadyz(val(results[6]))
     loadedOnce.current = true
     setLoading(false)
     // Banner only when every source failed; clears as soon as one recovers.
-    setLoadError(results.every((r) => val(r) == null)
+    setLoadError(results.slice(0, 6).every((r) => val(r) == null)
       ? 'Could not load any details for this bridge. Its admin HTTP API is unreachable and no NATS push metrics are currently available — check that the bridge is running and either reachable on its admin port or publishing metrics to $MQTT5.metrics.>.'
       : null)
   }, [activeEnv, bridge])
@@ -150,6 +157,11 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
         {metrics?.drained === 1 && (
           <span className="text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="Operator-drained: not accepting new connections (POST /admin/drain)">
             Draining
+          </span>
+        )}
+        {readyz?.jetstream_degraded && (
+          <span className="text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="MQTT service is up; JetStream is currently unavailable, so QoS 1/2 persistence is affected">
+            JS Degraded
           </span>
         )}
       </div>
@@ -958,15 +970,55 @@ function summarizeAction(d: any): string {
   return 'done'
 }
 
+// Severity styling for the broker's license status string. "tampered" and
+// "expired" are the two states that need operator action, so both render danger;
+// "grace" is a warning (still licensed, running out); "valid" is healthy. Any
+// other/unknown string stays neutral rather than guessing a severity.
+const LICENSE_STATUS_TONES: Record<string, string> = {
+  tampered: 'text-red-600 dark:text-red-400',
+  expired: 'text-red-600 dark:text-red-400',
+  grace: 'text-amber-600 dark:text-amber-400',
+  valid: 'text-green-600 dark:text-green-400',
+}
+
+// Banner copy for the license statuses that need action. Same keys as the tones
+// above; anything else gets no banner.
+const LICENSE_STATUS_BANNERS: Record<string, { tone: 'danger' | 'warning'; text: string }> = {
+  tampered: {
+    tone: 'danger',
+    text: 'Status "tampered" — investigate a possibly tampered binary. The broker is enforcing reduced limits.',
+  },
+  expired: {
+    tone: 'danger',
+    text: 'License expired — the broker is enforcing reduced limits until a valid license is installed.',
+  },
+  grace: {
+    tone: 'warning',
+    text: 'License in grace period — renew before it expires; enforcement tightens once grace runs out.',
+  },
+}
+
+const BANNER_TONES = {
+  danger: 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300',
+  warning: 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function LicenseTab({ data }: { data: any }) {
   if (!data) return <Empty msg="License information not available" />
   if (data.available === false) return <Empty msg={data.reason || 'License information not available'} />
   const hasRateLimits =
     data.effective_aggregate_msgs_per_sec || data.aggregate_msgs_per_sec || data.max_client_msgs_per_sec
+  const statusKey = typeof data.status === 'string' ? data.status : ''
+  const statusBanner = LICENSE_STATUS_BANNERS[statusKey]
   return (
     <div className="space-y-6">
       <Section title="License">
+        {statusBanner && (
+          <div className={`mb-3 rounded border px-3 py-2 text-sm ${BANNER_TONES[statusBanner.tone]}`}>
+            {statusBanner.text}
+          </div>
+        )}
         {(data.capacity_clamped || data.block_confirmed) && (
           <div className="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300">
             {data.capacity_clamped
@@ -984,7 +1036,7 @@ function LicenseTab({ data }: { data: any }) {
           </div>
         )}
         <Grid>
-          <DI label="Status" value={data.status} />
+          <DI label="Status" value={data.status} valueClass={LICENSE_STATUS_TONES[statusKey]} />
           <DI label="License ID" value={data.license_id || '-'} />
           <DI label="Company" value={data.company || '-'} />
           <DI label="Contact" value={data.contact || '-'} />
@@ -1062,11 +1114,13 @@ function Grid({ children }: { children: React.ReactNode }) {
   return <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 text-sm">{children}</div>
 }
 
-function DI({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+// valueClass carries severity styling for values that have one (see the license
+// status tones); it is appended so callers can only add to the base classes.
+function DI({ label, value, mono, valueClass }: { label: string; value: string; mono?: boolean; valueClass?: string }) {
   return (
     <div className="min-w-0">
       <div className="text-gray-500 dark:text-gray-400 text-xs">{label}</div>
-      <div className={`font-medium truncate ${mono ? 'font-mono text-xs' : ''}`} title={value || '-'}>{value || '-'}</div>
+      <div className={`font-medium truncate ${mono ? 'font-mono text-xs' : ''} ${valueClass ?? ''}`} title={value || '-'}>{value || '-'}</div>
     </div>
   )
 }

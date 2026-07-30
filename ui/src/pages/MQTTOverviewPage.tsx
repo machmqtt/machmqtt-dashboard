@@ -55,6 +55,9 @@ interface BridgeStatus {
   url: string
   ready: boolean
   draining?: boolean
+  // MQTT service up, JetStream currently unavailable (bridge readyz state
+  // "jetstream-degraded"). Distinct from unreachable: the admin API answered.
+  jetstream_degraded?: boolean
   connections: number
   nats_connected: boolean
   connz_available: boolean
@@ -241,6 +244,18 @@ export function MQTTOverviewPage() {
                       Draining
                     </span>
                   )}
+                  {s?.jetstream_degraded && (
+                    <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="MQTT service is up; JetStream is currently unavailable">
+                      JS Degraded
+                    </span>
+                  )}
+                  {/* Reachable but in none of the named states (e.g. still starting,
+                      or NATS down): label it rather than leaving only a yellow dot. */}
+                  {b.reachable && s && !s.ready && !s.draining && !s.jetstream_degraded && (
+                    <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="The bridge reports it is not ready to accept MQTT connections">
+                      Not Ready
+                    </span>
+                  )}
                   <span className="text-xs text-gray-400 truncate" title={b.server_name}>on {b.server_name}</span>
                   {b.admin_url && <span className="shrink-0 text-xs text-gray-400 font-mono">{b.admin_url}</span>}
                 </div>
@@ -270,6 +285,12 @@ export function MQTTOverviewPage() {
               {!b.reachable && (
                 <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 mb-3 text-sm text-yellow-700 dark:text-yellow-400">
                   Bridge admin API not reachable. Showing NATS-side data only.
+                </div>
+              )}
+
+              {s?.jetstream_degraded && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded p-2 mb-3 text-sm text-amber-700 dark:text-amber-400">
+                  JetStream unavailable — MQTT is still serving clients; QoS 1/2 persistence is affected until JetStream recovers.
                 </div>
               )}
 

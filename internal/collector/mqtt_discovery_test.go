@@ -102,6 +102,44 @@ func TestDiscoverMQTTBridgesProbeSuccess(t *testing.T) {
 	}
 }
 
+// A discovered bridge whose /readyz answers 503 "jetstream-degraded" answered
+// the probe, so discovery must keep its admin URL (and the degraded state)
+// instead of discarding both as an unreachable bridge.
+func TestDiscoverMQTTBridgesJetStreamDegradedKeepsAdminURL(t *testing.T) {
+	srv := httptest.NewServer(mqttStatusMux(http.StatusServiceUnavailable, readyzJSDegrade))
+	defer srv.Close()
+	port := portFromURL(srv.URL)
+
+	snap := &Snapshot{
+		Varz: map[string]*Varz{"srv-1": {ServerName: "nats-1"}},
+		Connz: map[string]*Connz{
+			"srv-1": {Conns: []ConnInfo{
+				{Name: "machmqtt-bridge", IP: "127.0.0.1"},
+			}},
+		},
+	}
+	instances := DiscoverMQTTBridges(context.Background(), snap, nil, []int{port}, "", nil)
+	if len(instances) != 1 {
+		t.Fatalf("got %d instances, want 1", len(instances))
+	}
+	inst := instances[0]
+	if !inst.Reachable {
+		t.Error("expected Reachable=true (the probe was answered)")
+	}
+	if inst.AdminURL != srv.URL {
+		t.Errorf("AdminURL = %q, want %q", inst.AdminURL, srv.URL)
+	}
+	if inst.Status == nil {
+		t.Fatal("expected a Status snapshot")
+	}
+	if !inst.Status.JetStreamDegraded {
+		t.Error("expected Status.JetStreamDegraded=true")
+	}
+	if inst.Status.Error != "" {
+		t.Errorf("Status.Error = %q, want empty", inst.Status.Error)
+	}
+}
+
 func TestDiscoverMQTTBridgesProbeFailure(t *testing.T) {
 	snap := &Snapshot{
 		Varz: map[string]*Varz{"srv-1": {ServerName: "nats-1"}},

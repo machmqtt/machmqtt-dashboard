@@ -386,6 +386,47 @@ func (s *Server) handleMQTTLicense(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, license)
 }
 
+// handleMQTTReadyz relays the bridge's readiness state so the detail page can
+// label a draining or JetStream-degraded broker. The bridge answers 503 for
+// those states, which the fetcher decodes rather than failing, so a non-ready
+// answer is a successful read here. Push-only bridges carry no readyz state
+// (the metrics snapshot doesn't include it), hence the "available:false" reason.
+// A bridge that can't be reached at all reports the same way instead of a 502:
+// unreachability is already surfaced by the fleet card and the detail page's
+// load-error banner, and this read only decorates the page with a state label.
+func (s *Server) handleMQTTReadyz(w http.ResponseWriter, r *http.Request) {
+	env := r.PathValue("env")
+	bridgeName := r.PathValue("bridge")
+
+	bridge := s.findBridge(env, bridgeName)
+	if bridge == nil {
+		if s.findBridgePush(env, bridgeName) != nil {
+			writeJSON(w, map[string]any{"available": false, "reason": pushUnavailableReason})
+			return
+		}
+		http.Error(w, `{"error":"bridge not found"}`, http.StatusNotFound)
+		return
+	}
+
+	s.serveCachedBridgeJSON(w, "readyz|"+bridge.URL, func() (any, bool) {
+		f := collector.NewMQTTBridgeFetcher(bridge.URL, bridge.Name, bridge.BearerToken)
+		readyz, err := f.FetchReadyz(r.Context())
+		if err != nil {
+			s.log.Warn("mqtt bridge request failed", "err", err)
+			return map[string]any{"available": false, "reason": "bridge request failed"}, false
+		}
+		ready, draining, jsDegraded := collector.ReadyzState(readyz.Status)
+		return map[string]any{
+			"available":          true,
+			"status":             readyz.Status,
+			"ready":              ready,
+			"draining":           draining,
+			"jetstream_degraded": jsDegraded,
+			"nats_connected":     readyz.NATSConnected,
+		}, true
+	})
+}
+
 func (s *Server) handleMQTTMetrics(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	bridgeName := r.PathValue("bridge")

@@ -3,20 +3,29 @@ package collector
 import "time"
 
 // MQTTBridgeStatus is the aggregated status of one MQTT bridge instance.
+// Ready, Draining and JetStreamDegraded are mutually exclusive: they mirror the
+// bridge's /readyz status string, which reports exactly one state per response.
+// A bridge that answers /readyz at all is reachable, whatever the state — only a
+// transport failure or an unexpected HTTP status sets Error.
 type MQTTBridgeStatus struct {
-	Name             string        `json:"name"`
-	URL              string        `json:"url"`
-	Ready            bool          `json:"ready"`
-	Draining         bool          `json:"draining"`
-	Connections      int           `json:"connections"`
-	NATSConnected    bool          `json:"nats_connected"`
-	ConnzAvailable   bool          `json:"connz_available"`
-	TotalConnections int64         `json:"total_connections"`
-	NATS             *MQTTNATSDiag `json:"nats,omitempty"`
-	Connz            *MQTTConnz    `json:"connz,omitempty"`
-	Pool             *MQTTPool     `json:"pool,omitempty"`
-	Metrics          *MQTTMetrics  `json:"metrics,omitempty"`
-	Error            string        `json:"error,omitempty"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Ready    bool   `json:"ready"`
+	Draining bool   `json:"draining"`
+	// JetStreamDegraded is the bridge's "jetstream-degraded" readyz state: MQTT
+	// service is up but JetStream is currently unavailable, so QoS 1/2
+	// persistence is affected. Only the HTTP poll path can observe it — push
+	// snapshots carry no readyz status.
+	JetStreamDegraded bool          `json:"jetstream_degraded"`
+	Connections       int           `json:"connections"`
+	NATSConnected     bool          `json:"nats_connected"`
+	ConnzAvailable    bool          `json:"connz_available"`
+	TotalConnections  int64         `json:"total_connections"`
+	NATS              *MQTTNATSDiag `json:"nats,omitempty"`
+	Connz             *MQTTConnz    `json:"connz,omitempty"`
+	Pool              *MQTTPool     `json:"pool,omitempty"`
+	Metrics           *MQTTMetrics  `json:"metrics,omitempty"`
+	Error             string        `json:"error,omitempty"`
 }
 
 // MQTTMetrics holds parsed Prometheus metrics from the bridge /metrics endpoint.
@@ -303,9 +312,17 @@ type MQTTLicense struct {
 // MQTTReadyz mirrors the bridge /readyz response. The endpoint reports
 // readiness only; it carries no connection count (that comes from the metrics
 // snapshot in FetchStatus).
+//
+// Status is one of "ready" (HTTP 200), "draining", "jetstream-degraded" or
+// "not ready" (all HTTP 503) — the non-ready bodies are the state itself, so
+// FetchReadyz decodes them instead of failing (see fetchAccepting).
 type MQTTReadyz struct {
 	Status        string `json:"status"`
 	NATSConnected bool   `json:"nats_connected"`
+	// JetStreamReady is only present on the "jetstream-degraded" body; it is
+	// absent (and therefore false) on every other status, so never read it
+	// without checking Status first.
+	JetStreamReady bool `json:"jetstream_ready"`
 }
 
 // MQTTConnz mirrors the bridge /connz response.

@@ -15,6 +15,7 @@ so they exercise the Go server + embedded assets exactly as deployed.
 | `05-mqtt-fleet-detail` | Exactly one fleet card per bridge (merge guard); every detail tab loads with no error banner |
 | `06-mqtt-connections` | Per-bridge connections list clients, or shows the "not available" reason |
 | `07-fleet-refresh` | MachMQTT Fleet page refreshes its bridge cards in place on each poll, without collapsing the page or resetting scroll position |
+| `08-mqtt-degraded-and-license-severity` | A `jetstream-degraded` bridge renders as "JS Degraded" (not unreachable) on the fleet card and detail header; license status `tampered`/`expired` render danger, `grace` warning, `valid` healthy, unknown neutral. **Bridge reads are route-mocked in the browser** (a JetStream outage and a tampered/expired license can't be produced on demand), so this spec needs no broker — only a running dashboard |
 | `99-mqtt-admin-actions` | **Destructive** — fires drain → undrain → reload → kick-all; force-undrains afterward |
 
 Specs run serially (`workers: 1`) in filename order; the destructive spec is last.
@@ -33,6 +34,8 @@ npm run test:e2e:report     # open the last HTML report
 The suite assumes a running stack with MachMQTT admin features enabled. The
 defaults match the local dev stack (env `local-dev`, bridge `edge-broker-1`), but
 nothing is hardcoded — the env and bridge are discovered from the live API.
+(`08-*` is the exception: it mocks the bridge reads and needs only the dashboard
+plus a configured environment, so it can run with no broker at all.)
 
 1. **NATS + MachMQTT + dashboard running**, dashboard on `http://127.0.0.1:8090`.
 2. **MachMQTT admin endpoints enabled** in `machmqtt.yaml` (otherwise the admin

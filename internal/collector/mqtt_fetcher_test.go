@@ -535,3 +535,181 @@ func TestMQTTFetchStatusDrainingState(t *testing.T) {
 		t.Error("expected Ready=false for draining status")
 	}
 }
+
+// --- /readyz non-200 states ---
+
+// Verbatim MachMQTT v1.2 /readyz bodies. "ready" answers 200; every other state
+// answers 503 with the state in the body.
+const (
+	readyzReady     = `{"status":"ready","nats_connected":true}`
+	readyzDraining  = `{"status":"draining","nats_connected":true}`
+	readyzJSDegrade = `{"status":"jetstream-degraded","nats_connected":true,"jetstream_ready":false}`
+	readyzNotReady  = `{"status":"not ready","nats_connected":false}`
+)
+
+// mqttStatusMux serves every endpoint FetchStatus reads, with a caller-supplied
+// /readyz response. The non-readyz endpoints always answer 200 so a non-ready
+// state can be asserted without losing them — the whole point of decoding a 503
+// readyz body is that the rest of the bridge data still populates.
+func mqttStatusMux(readyzCode int, readyzBody string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(readyzCode)
+		w.Write([]byte(readyzBody))
+	})
+	mux.HandleFunc("/diag/nats", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(MQTTNATSDiag{Connection: MQTTNATSConnection{Connected: true}})
+	})
+	mux.HandleFunc("/pool", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(MQTTPool{Size: 2})
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("machmqtt_connections_active 3\n"))
+	})
+	mux.HandleFunc("/connz", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(MQTTConnz{Total: 10})
+	})
+	return mux
+}
+
+func TestMQTTFetchReadyzDecodes503Body(t *testing.T) {
+	cases := []struct {
+		name       string
+		code       int
+		body       string
+		wantStatus string
+		wantNATS   bool
+	}{
+		{"ready", http.StatusOK, readyzReady, "ready", true},
+		{"draining", http.StatusServiceUnavailable, readyzDraining, "draining", true},
+		{"jetstream degraded", http.StatusServiceUnavailable, readyzJSDegrade, "jetstream-degraded", true},
+		{"not ready", http.StatusServiceUnavailable, readyzNotReady, "not ready", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(mqttStatusMux(tc.code, tc.body))
+			defer srv.Close()
+
+			r, err := newMQTTTestFetcher(srv).FetchReadyz(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", tc.name, err)
+			}
+			if r.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", r.Status, tc.wantStatus)
+			}
+			if r.NATSConnected != tc.wantNATS {
+				t.Errorf("NATSConnected = %v, want %v", r.NATSConnected, tc.wantNATS)
+			}
+		})
+	}
+}
+
+// The 503-with-body relaxation is scoped to /readyz: every other endpoint keeps
+// the strict 200-only contract, so a 503 there is still a fetch error.
+func TestMQTTFetchNonReadyzRejects503(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"status":"unavailable"}`))
+	}))
+	defer srv.Close()
+
+	f := newMQTTTestFetcher(srv)
+	if _, err := f.FetchLicense(context.Background()); err == nil {
+		t.Error("expected error for 503 on /license")
+	}
+	if _, err := f.FetchPool(context.Background()); err == nil {
+		t.Error("expected error for 503 on /pool")
+	}
+}
+
+// --- FetchStatus readiness-state mapping ---
+
+func TestMQTTFetchStatusJetStreamDegraded(t *testing.T) {
+	srv := httptest.NewServer(mqttStatusMux(http.StatusServiceUnavailable, readyzJSDegrade))
+	defer srv.Close()
+
+	status := newMQTTTestFetcher(srv).FetchStatus(context.Background())
+	// A 503 readyz is an answer, not a failure: the bridge is reachable and the
+	// rest of the status must still be filled in.
+	if status.Error != "" {
+		t.Fatalf("unexpected error: %s", status.Error)
+	}
+	if !status.JetStreamDegraded {
+		t.Error("expected JetStreamDegraded=true")
+	}
+	if status.Ready {
+		t.Error("expected Ready=false for jetstream-degraded status")
+	}
+	if status.Draining {
+		t.Error("expected Draining=false for jetstream-degraded status")
+	}
+	if !status.NATSConnected {
+		t.Error("expected NATSConnected=true (MQTT service is up)")
+	}
+	if !status.ConnzAvailable {
+		t.Error("expected ConnzAvailable=true")
+	}
+	if status.Connections != 3 {
+		t.Errorf("Connections = %d, want 3", status.Connections)
+	}
+	if status.NATS == nil || status.Pool == nil || status.Metrics == nil {
+		t.Error("expected NATS, Pool and Metrics to be populated")
+	}
+}
+
+func TestMQTTFetchStatusReadyzStateMapping(t *testing.T) {
+	cases := []struct {
+		name         string
+		code         int
+		body         string
+		wantReady    bool
+		wantDraining bool
+		wantDegraded bool
+	}{
+		{"ready", http.StatusOK, readyzReady, true, false, false},
+		{"draining", http.StatusServiceUnavailable, readyzDraining, false, true, false},
+		{"jetstream degraded", http.StatusServiceUnavailable, readyzJSDegrade, false, false, true},
+		{"not ready", http.StatusServiceUnavailable, readyzNotReady, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(mqttStatusMux(tc.code, tc.body))
+			defer srv.Close()
+
+			status := newMQTTTestFetcher(srv).FetchStatus(context.Background())
+			if status.Error != "" {
+				t.Fatalf("unexpected error: %s", status.Error)
+			}
+			if status.Ready != tc.wantReady {
+				t.Errorf("Ready = %v, want %v", status.Ready, tc.wantReady)
+			}
+			if status.Draining != tc.wantDraining {
+				t.Errorf("Draining = %v, want %v", status.Draining, tc.wantDraining)
+			}
+			if status.JetStreamDegraded != tc.wantDegraded {
+				t.Errorf("JetStreamDegraded = %v, want %v", status.JetStreamDegraded, tc.wantDegraded)
+			}
+			// Every state above answered /readyz, so none of them is an error.
+			if !status.ConnzAvailable {
+				t.Error("expected ConnzAvailable=true")
+			}
+		})
+	}
+}
+
+func TestMQTTFetchStatusConnectionRefused(t *testing.T) {
+	srv := httptest.NewServer(mqttStatusMux(http.StatusOK, readyzReady))
+	srv.Close() // nothing listening → transport error, the real unreachable case
+
+	status := newMQTTTestFetcher(srv).FetchStatus(context.Background())
+	if status.Error == "" {
+		t.Fatal("expected non-empty Error when the bridge is not listening")
+	}
+	if status.Ready || status.Draining || status.JetStreamDegraded {
+		t.Errorf("expected no readiness state for an unreachable bridge: %+v", status)
+	}
+	if status.ConnzAvailable {
+		t.Error("expected ConnzAvailable=false for an unreachable bridge")
+	}
+}

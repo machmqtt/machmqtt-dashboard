@@ -201,6 +201,53 @@ func TestHandleMQTTBridges(t *testing.T) {
 	}
 }
 
+// A bridge whose /readyz answers 503 "jetstream-degraded" is up and answering
+// its admin API — the fleet listing must report it reachable (with the degraded
+// state) instead of the "admin API not reachable" render.
+func TestHandleMQTTBridgesJetStreamDegradedIsReachable(t *testing.T) {
+	ok := okBridgeHandler(bridgeConfig{})
+	bSrv := bridgeMock(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"jetstream-degraded","nats_connected":true,"jetstream_ready":false}`))
+			return
+		}
+		ok(w, r)
+	})
+	srv, _, token, id := polledServer(t, natsMockConfig{},
+		withBridges(config.MQTTBridge{Name: "degraded", URL: bSrv.URL}))
+
+	w := do(t, srv, "GET", "/api/environments/"+id+"/mqtt/bridges", token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	bridges := decodeJSON(t, w)["bridges"].([]any)
+	if len(bridges) != 1 {
+		t.Fatalf("bridges = %d, want 1", len(bridges))
+	}
+	b := bridges[0].(map[string]any)
+	if b["reachable"] != true {
+		t.Errorf("reachable = %v, want true (readyz answered, with a 503 state)", b["reachable"])
+	}
+	st, ok2 := b["status"].(map[string]any)
+	if !ok2 {
+		t.Fatalf("missing status object: %s", w.Body.String())
+	}
+	if st["jetstream_degraded"] != true {
+		t.Errorf("jetstream_degraded = %v, want true", st["jetstream_degraded"])
+	}
+	if st["ready"] != false {
+		t.Errorf("ready = %v, want false", st["ready"])
+	}
+	if st["error"] != nil {
+		t.Errorf("error = %v, want absent", st["error"])
+	}
+	if st["connz_available"] != true {
+		t.Errorf("connz_available = %v, want true (the other endpoints still answer)", st["connz_available"])
+	}
+}
+
 func TestHandleMQTTBridgesUnknownEnv(t *testing.T) {
 	srv, _, token, _ := polledServer(t, natsMockConfig{})
 	w := do(t, srv, "GET", "/api/environments/missing/mqtt/bridges", token, "")
@@ -310,6 +357,63 @@ func TestMQTTSimpleProxyHandlers(t *testing.T) {
 			if w.Code != http.StatusNotFound {
 				t.Errorf("%s status = %d, want 404", sfx, w.Code)
 			}
+		}
+	})
+}
+
+// The readyz proxy feeds the detail page's state label: a 503 "jetstream-degraded"
+// broker is a successful read reporting the degraded state, not a failure.
+func TestHandleMQTTReadyz(t *testing.T) {
+	t.Run("ready", func(t *testing.T) {
+		srv, token, id := bridgeServerWith(t, bridgeConfig{})
+		w := do(t, srv, "GET", mqttPath(id, "b1", "/readyz"), token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+		}
+		m := decodeJSON(t, w)
+		if m["ready"] != true || m["jetstream_degraded"] != false {
+			t.Errorf("got %v, want ready=true jetstream_degraded=false", m)
+		}
+	})
+
+	t.Run("jetstream degraded", func(t *testing.T) {
+		ok := okBridgeHandler(bridgeConfig{})
+		bSrv := bridgeMock(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/readyz" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"status":"jetstream-degraded","nats_connected":true,"jetstream_ready":false}`))
+				return
+			}
+			ok(w, r)
+		})
+		srv, _, token, id := polledServer(t, natsMockConfig{},
+			withBridges(config.MQTTBridge{Name: "b1", URL: bSrv.URL}))
+
+		w := do(t, srv, "GET", mqttPath(id, "b1", "/readyz"), token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+		}
+		m := decodeJSON(t, w)
+		if m["available"] != true {
+			t.Errorf("available = %v, want true", m["available"])
+		}
+		if m["jetstream_degraded"] != true {
+			t.Errorf("jetstream_degraded = %v, want true", m["jetstream_degraded"])
+		}
+		if m["ready"] != false || m["draining"] != false {
+			t.Errorf("got %v, want ready=false draining=false", m)
+		}
+		if m["status"] != "jetstream-degraded" {
+			t.Errorf("status = %v, want jetstream-degraded", m["status"])
+		}
+	})
+
+	t.Run("bridge not found", func(t *testing.T) {
+		srv, token, id := bridgeServerWith(t, bridgeConfig{})
+		w := do(t, srv, "GET", mqttPath(id, "nope", "/readyz"), token, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", w.Code)
 		}
 	})
 }

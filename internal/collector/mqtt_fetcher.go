@@ -42,6 +42,15 @@ func NewMQTTBridgeFetcher(baseURL, name, bearerToken string) *MQTTBridgeFetcher 
 }
 
 func (f *MQTTBridgeFetcher) fetch(ctx context.Context, path string, out any) error {
+	return f.fetchAccepting(ctx, path, out)
+}
+
+// fetchAccepting performs a GET and decodes the body on 200 or on any status in
+// alsoDecode; every other status is an error. Only /readyz passes alsoDecode:
+// its non-ready states answer 503 with the state in the body, so treating that
+// as a failure would report a live bridge as unreachable. All other endpoints
+// go through fetch and keep the strict 200-only contract.
+func (f *MQTTBridgeFetcher) fetchAccepting(ctx context.Context, path string, out any, alsoDecode ...int) error {
 	ctx, cancel := context.WithTimeout(ctx, mqttFetchTimeout)
 	defer cancel()
 
@@ -59,7 +68,14 @@ func (f *MQTTBridgeFetcher) fetch(ctx context.Context, path string, out any) err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	decodable := resp.StatusCode == http.StatusOK
+	for _, code := range alsoDecode {
+		if resp.StatusCode == code {
+			decodable = true
+			break
+		}
+	}
+	if !decodable {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("fetch %s: status %d: %s", path, resp.StatusCode, body)
 	}
@@ -155,9 +171,21 @@ func (f *MQTTBridgeFetcher) FetchClusterInspect(ctx context.Context, clientID st
 	return &ins, code, nil
 }
 
+// ReadyzState maps a bridge /readyz status string onto the mutually exclusive
+// states the dashboard renders. An unrecognised status (including "not ready")
+// yields all-false: the bridge answered, it just isn't in a state this build
+// names. Shared by the poll path and the per-bridge readyz proxy so the two
+// cannot drift.
+func ReadyzState(status string) (ready, draining, jetStreamDegraded bool) {
+	return status == "ready", status == "draining", status == "jetstream-degraded"
+}
+
+// FetchReadyz reads the bridge's readiness state. A 503 is a valid, decodable
+// answer here — "draining", "jetstream-degraded" and "not ready" all report it —
+// so only a transport failure or an unexpected status yields an error.
 func (f *MQTTBridgeFetcher) FetchReadyz(ctx context.Context) (*MQTTReadyz, error) {
 	var r MQTTReadyz
-	return &r, f.fetch(ctx, "/readyz", &r)
+	return &r, f.fetchAccepting(ctx, "/readyz", &r, http.StatusServiceUnavailable)
 }
 
 func (f *MQTTBridgeFetcher) FetchConnz(ctx context.Context, limit, offset int) (*MQTTConnz, error) {
@@ -232,8 +260,7 @@ func (f *MQTTBridgeFetcher) FetchStatus(ctx context.Context) *MQTTBridgeStatus {
 		status.Error = err.Error()
 		return status
 	}
-	status.Ready = readyz.Status == "ready"
-	status.Draining = readyz.Status == "draining"
+	status.Ready, status.Draining, status.JetStreamDegraded = ReadyzState(readyz.Status)
 	status.NATSConnected = readyz.NATSConnected
 
 	if diag, err := f.FetchDiagNATS(ctx); err == nil {
