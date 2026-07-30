@@ -115,9 +115,22 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.AuthFailClaimMismatch = v
 			case "jwks_unavailable":
 				m.AuthFailJWKSUnavailable = v
+			case "webhook_denied":
+				m.AuthFailWebhookDenied = v
+			case "webhook_unavailable":
+				m.AuthFailWebhookUnavailable = v
 			}
 		case name == "machmqtt_scram_sessions_active":
 			m.ScramSessionsActive = parseInt(value)
+
+		// --- Auth webhook (auth.type "http"; zero for other auth types) ---
+		case name == "machmqtt_auth_webhook_requests_total":
+			m.AuthWebhookRequests = parseInt(value)
+		case name == "machmqtt_auth_webhook_transport_failures_total":
+			m.AuthWebhookTransportFailures = parseInt(value)
+		case name == "machmqtt_auth_webhook_inflight_rejected_total":
+			m.AuthWebhookInflightRejected = parseInt(value)
+
 		case name == "machmqtt_nats_enforcement_fallback_total":
 			m.NATSEnforcementFallback = parseInt(value)
 		case name == "machmqtt_nats_enforcement_denied_total":
@@ -328,6 +341,24 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		case name == "machmqtt_cluster_takeover_order_skew_total":
 			m.ClusterTakeoverOrderSkew = parseInt(value)
 
+		// --- Session-ownership lease (epoch-fenced cluster takeover, v1.1) ---
+		case name == "machmqtt_cluster_lease_acquired_total":
+			m.ClusterLeaseAcquired = parseInt(value)
+		case name == "machmqtt_cluster_lease_transferred_total":
+			m.ClusterLeaseTransferred = parseInt(value)
+		case name == "machmqtt_cluster_lease_reclaimed_total":
+			m.ClusterLeaseReclaimed = parseInt(value)
+		case name == "machmqtt_cluster_lease_conflicts_total":
+			m.ClusterLeaseConflicts = parseInt(value)
+		case name == "machmqtt_cluster_lease_watcher_kicks_total":
+			m.ClusterLeaseWatcherKicks = parseInt(value)
+		case name == "machmqtt_cluster_lease_release_failed_total":
+			m.ClusterLeaseReleaseFailed = parseInt(value)
+		case name == "machmqtt_cluster_owned_leases":
+			m.ClusterOwnedLeases = parseInt(value)
+		case name == "machmqtt_session_fencing_rejected_total":
+			m.SessionFencingRejected = parseInt(value)
+
 		// --- Queue backpressure ---
 		case name == "machmqtt_worker_pool_queue_depth":
 			m.WorkerPoolQueueDepth = parseInt(value)
@@ -385,6 +416,10 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.AuthDurationCount = parseInt(value)
 		case name == "machmqtt_auth_duration_seconds_sum":
 			m.AuthDurationSumSeconds = parseFloat(value)
+		case name == "machmqtt_auth_webhook_duration_seconds_count":
+			m.AuthWebhookDurationCount = parseInt(value)
+		case name == "machmqtt_auth_webhook_duration_seconds_sum":
+			m.AuthWebhookDurationSumSeconds = parseFloat(value)
 		case name == "machmqtt_jetstream_publish_duration_seconds_count":
 			m.JSPublishDurationCount = parseInt(value)
 		case name == "machmqtt_jetstream_publish_duration_seconds_sum":

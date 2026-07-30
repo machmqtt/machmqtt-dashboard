@@ -457,11 +457,17 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Bad Signature" value={fmtNum(data.auth_fail_bad_signature)} />
           <DI label="Claim Mismatch" value={fmtNum(data.auth_fail_claim_mismatch)} />
           <DI label="JWKS Unavailable" value={fmtNum(data.auth_fail_jwks_unavailable)} />
+          <DI label="Webhook Denied" value={fmtNum(data.auth_fail_webhook_denied)} />
+          <DI label="Webhook Unavailable" value={fmtNum(data.auth_fail_webhook_unavailable)} />
           <DI label="Other" value={fmtNum(data.auth_fail_other)} />
           <DI label="SCRAM Sessions Active" value={fmtNum(data.scram_sessions_active)} />
           <DI label="NATS Enforcement Fallback" value={fmtNum(data.nats_enforcement_fallback)} />
           <DI label="NATS Enforcement Denied" value={fmtNum(data.nats_enforcement_denied)} />
+          <DI label="Webhook Requests" value={fmtNum(data.auth_webhook_requests)} />
+          <DI label="Webhook Transport Failures" value={fmtNum(data.auth_webhook_transport_failures)} />
+          <DI label="Webhook Inflight Rejected" value={fmtNum(data.auth_webhook_inflight_rejected)} />
         </Grid>
+        <p className="text-xs text-gray-400 mt-2">Webhook fields are populated only when <span className="font-mono">auth.type</span> is <span className="font-mono">http</span>.</p>
       </Section>
       <Section title="License Rejections">
         <Grid>
@@ -616,8 +622,16 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Inspect Timeouts" value={fmtNum(data.cluster_inspect_timeouts)} />
           <DI label="Takeover Dropped" value={fmtNum(data.cluster_takeover_dropped)} />
           <DI label="Takeover Order Skew" value={fmtNum(data.cluster_takeover_order_skew)} />
+          <DI label="Owned Leases" value={fmtNum(data.cluster_owned_leases)} />
+          <DI label="Lease Acquired" value={fmtNum(data.cluster_lease_acquired)} />
+          <DI label="Lease Transferred" value={fmtNum(data.cluster_lease_transferred)} />
+          <DI label="Lease Reclaimed" value={fmtNum(data.cluster_lease_reclaimed)} />
+          <DI label="Lease Conflicts" value={fmtNum(data.cluster_lease_conflicts)} />
+          <DI label="Lease Watcher Kicks" value={fmtNum(data.cluster_lease_watcher_kicks)} />
+          <DI label="Lease Release Failed" value={fmtNum(data.cluster_lease_release_failed)} />
+          <DI label="Session Fencing Rejected" value={fmtNum(data.session_fencing_rejected)} />
         </Grid>
-        <p className="text-xs text-gray-400 mt-2">Populated only when clustering is enabled. Rising <span className="font-mono">order skew</span> signals inter-node clock divergence.</p>
+        <p className="text-xs text-gray-400 mt-2">Cluster counters and owned/lease fields are populated only when clustering is enabled. Rising <span className="font-mono">order skew</span> signals inter-node clock divergence; rising <span className="font-mono">lease conflicts</span> or <span className="font-mono">watcher kicks</span> indicate contested session ownership across instances.</p>
       </Section>
       <Section title="JetStream Health">
         <Grid>
@@ -631,6 +645,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
         <Grid>
           <DI label="Publish" value={fmtMs(data.publish_latency_sum_seconds, data.publish_latency_count)} />
           <DI label="Auth" value={fmtMs(data.auth_duration_sum_seconds, data.auth_duration_count)} />
+          <DI label="Auth Webhook" value={fmtMs(data.auth_webhook_duration_sum_seconds, data.auth_webhook_duration_count)} />
           <DI label="JetStream Publish" value={fmtMs(data.jetstream_publish_duration_sum_seconds, data.jetstream_publish_duration_count)} />
           <DI label="Subscribe" value={fmtMs(data.subscribe_duration_sum_seconds, data.subscribe_duration_count)} />
           <DI label="Dispatch Wait" value={fmtMs(data.dispatch_wait_sum_seconds, data.dispatch_wait_count)} />
