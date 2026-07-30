@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -256,8 +257,8 @@ func (w *MetricsWriter) deleteOld() {
 // buildMetricsQuery assembles the bucketed-average query shared by all three
 // metric queries: a `(ts/step)*step` time bucket, an env+time-range predicate,
 // an optional id (server_id/bridge_id) predicate, and GROUP BY/ORDER BY. The
-// table, idCol, and aggCols fragments are constant literals supplied by the
-// caller (never user input); env and idVal are bound as parameters.
+// table, idCol, and aggCols fragments are built from constant literals in this
+// package (never user input); env and idVal are bound as parameters.
 func buildMetricsQuery(table, idCol, aggCols, env, idVal string, from, to, step int64) (string, []any) {
 	q := "SELECT (ts / ? ) * ? AS bucket"
 	if idCol != "" {
@@ -275,6 +276,34 @@ func buildMetricsQuery(table, idCol, aggCols, env, idVal string, from, to, step 
 	}
 	q += " ORDER BY bucket"
 	return q, args
+}
+
+// mqttMetricCols lists the mqtt_bridge_metrics value columns exposed as time
+// series, in the order QueryMQTTMetrics scans them. Both the per-bridge AVG
+// fragment and the fleet-wide SUM wrapper are generated from this slice so the
+// two can never drift out of sync. Constant literals, never user input.
+var mqttMetricCols = []string{
+	"connections_active",
+	"in_msgs_rate", "out_msgs_rate", "in_bytes_rate", "out_bytes_rate",
+	"msgs_recv_qos0", "msgs_recv_qos1", "msgs_sent_qos0", "msgs_sent_qos1",
+	"msgs_recv_qos2", "msgs_sent_qos2",
+	"session_write_behind_depth", "consumer_pending_messages", "stalled_consumers",
+	"sockets_open", "inflight_out_messages", "op_queue_depth", "op_suspended_conns",
+	"worker_pool_queue_depth", "pool_slot_connected", "retained_messages",
+	"subscriptions_active", "go_heap_inuse_bytes", "go_goroutines", "scram_sessions_active",
+}
+
+// aggList renders `fn(col), ...` for the given columns. With alias, each term is
+// aliased back to its column name so an enclosing aggregate can reference it.
+func aggList(fn string, cols []string, alias bool) string {
+	parts := make([]string, len(cols))
+	for i, c := range cols {
+		parts[i] = fn + "(" + c + ")"
+		if alias {
+			parts[i] += " AS " + c
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // autoStep calculates a step size to return approximately targetPoints data points.
@@ -373,20 +402,28 @@ func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID st
 	return points, rows.Err()
 }
 
-// QueryMQTTMetrics returns per-bridge time series.
+// QueryMQTTMetrics returns a per-bridge time series when bridgeID is set, and a
+// fleet-wide series (one point per bucket, values summed across bridges) when it
+// is empty.
 func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID string, from, to, step int64) ([]MetricPoint, error) {
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
 
-	query, args := buildMetricsQuery("mqtt_bridge_metrics", "bridge_id", `AVG(connections_active),
-		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-		AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1),
-		AVG(msgs_recv_qos2), AVG(msgs_sent_qos2),
-		AVG(session_write_behind_depth), AVG(consumer_pending_messages), AVG(stalled_consumers),
-		AVG(sockets_open), AVG(inflight_out_messages), AVG(op_queue_depth), AVG(op_suspended_conns),
-		AVG(worker_pool_queue_depth), AVG(pool_slot_connected), AVG(retained_messages),
-		AVG(subscriptions_active), AVG(go_heap_inuse_bytes), AVG(go_goroutines), AVG(scram_sessions_active)`, env, bridgeID, from, to, step)
+	query, args := buildMetricsQuery("mqtt_bridge_metrics", "bridge_id",
+		aggList("AVG", mqttMetricCols, true), env, bridgeID, from, to, step)
+
+	// With no bridge_id filter the inner query yields one row per (bucket,
+	// bridge) — N rows sharing a timestamp, which a single-series chart draws as
+	// a sawtooth between bridges. Sum the per-bridge bucket averages into one
+	// fleet total per bucket instead. SUM skips NULLs, so a bridge that doesn't
+	// report a metric doesn't drag the fleet value down, and a bucket where no
+	// bridge reports it stays NULL (rendered as a gap, not a false zero).
+	fleet := bridgeID == ""
+	if fleet {
+		query = "SELECT bucket, " + aggList("SUM", mqttMetricCols, false) +
+			" FROM (" + query + ") GROUP BY bucket ORDER BY bucket"
+	}
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -411,19 +448,25 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 		// the key when absent so the chart shows a gap rather than a false zero.
 		var socketsOpen, inflightOut, opQ, opSusp, workerQ sql.NullFloat64
 		var poolSlot, retained, subsActive, heap, goroutines, scram sql.NullFloat64
-		if err := rows.Scan(&ts, &bid, &connActive,
+		// Fleet rows have no bridge_id column — they aggregate every bridge.
+		dest := []any{&ts}
+		if !fleet {
+			dest = append(dest, &bid)
+		}
+		// Order must match mqttMetricCols.
+		dest = append(dest, &connActive,
 			&inMR, &outMR, &inBR, &outBR,
 			&rQ0, &rQ1, &sQ0, &sQ1,
 			&rQ2, &sQ2,
 			&writeBehind, &pendingMsg, &stalledC,
 			&socketsOpen, &inflightOut, &opQ, &opSusp,
 			&workerQ, &poolSlot, &retained,
-			&subsActive, &heap, &goroutines, &scram); err != nil {
+			&subsActive, &heap, &goroutines, &scram)
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
 		pt := MetricPoint{
 			"ts":                         ts,
-			"bridge_id":                  bid,
 			"connections_active":         connActive,
 			"in_msgs_rate":               inMR,
 			"out_msgs_rate":              outMR,
@@ -437,6 +480,9 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 			"msgs_sent_qos2":             sQ2,
 			"session_write_behind_depth": writeBehind,
 			"stalled_consumers":          stalledC,
+		}
+		if !fleet {
+			pt["bridge_id"] = bid
 		}
 		if pendingMsg.Valid {
 			pt["consumer_pending_messages"] = pendingMsg.Float64

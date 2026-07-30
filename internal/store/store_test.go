@@ -671,6 +671,171 @@ func TestQueryMQTTMetricsNullConsumerPending(t *testing.T) {
 	}
 }
 
+// fleetStep is the bucket size used by the fleet-aggregation tests. Samples are
+// placed at explicit offsets from a step-aligned base so bucket membership is
+// deterministic — (ts/step)*step buckets on absolute unix seconds, so a bare
+// time.Now() would straddle a boundary at random.
+const fleetStep = int64(60)
+
+// seedFleetBuckets writes samples for two bridges across two buckets. bridge-a
+// gets TWO samples in the first bucket with different values, so a correct fleet
+// query (average per bridge, then sum across bridges) is distinguishable from
+// summing the raw rows, which would double-count bridge-a's bucket.
+func seedFleetBuckets(t *testing.T, w *MetricsWriter, env string, base int64) {
+	t.Helper()
+	write := func(ts int64, bridge string, conns int64, rate float64) {
+		w.writeSample(MetricSample{
+			Timestamp: time.Unix(ts, 0),
+			Env:       env,
+			MQTTBridges: []MQTTBridgeMetricSample{{
+				BridgeID:          bridge,
+				ConnectionsActive: conns,
+				InMsgsRate:        rate,
+			}},
+		})
+	}
+	// Bucket `base`: bridge-a averages (10+20)/2 = 15 conns and (1+3)/2 = 2 msgs/s,
+	// bridge-b reports 30 conns and 5 msgs/s → fleet 45 conns, 7 msgs/s.
+	// (Summing the three raw rows would give 60 conns and 9 msgs/s.)
+	write(base, "bridge-a", 10, 1)
+	write(base+10, "bridge-a", 20, 3)
+	write(base, "bridge-b", 30, 5)
+	// Bucket `base+fleetStep`: one sample each → fleet 42 conns, 2.5 msgs/s.
+	write(base+fleetStep, "bridge-a", 40, 2)
+	write(base+fleetStep, "bridge-b", 2, 0.5)
+}
+
+func TestQueryMQTTMetricsFleetSumsAcrossBridges(t *testing.T) {
+	s := testStore(t)
+	w := NewMetricsWriter(s, slog.Default(), 0)
+
+	base := (time.Now().Unix() / fleetStep) * fleetStep
+	seedFleetBuckets(t, w, "fleet-env", base)
+
+	pts, err := w.QueryMQTTMetrics(context.Background(), "fleet-env", "",
+		base-fleetStep, base+2*fleetStep, fleetStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 2 {
+		t.Fatalf("got %d points, want 2 (one per bucket, not one per bridge per bucket): %v", len(pts), pts)
+	}
+
+	want := []struct {
+		ts    int64
+		conns float64
+		rate  float64
+	}{
+		{base, 45, 7},
+		{base + fleetStep, 42, 2.5},
+	}
+	for i, exp := range want {
+		if pts[i]["ts"] != exp.ts {
+			t.Errorf("point %d ts = %v, want %d", i, pts[i]["ts"], exp.ts)
+		}
+		if got := pts[i]["connections_active"]; got != exp.conns {
+			t.Errorf("point %d connections_active = %v, want %v (sum of per-bridge bucket averages)", i, got, exp.conns)
+		}
+		if got := pts[i]["in_msgs_rate"]; got != exp.rate {
+			t.Errorf("point %d in_msgs_rate = %v, want %v (sum of per-bridge bucket averages)", i, got, exp.rate)
+		}
+		// A fleet point aggregates every bridge, so it carries no single bridge_id.
+		if bid, ok := pts[i]["bridge_id"]; ok {
+			t.Errorf("point %d has bridge_id = %v, want the key absent on fleet points", i, bid)
+		}
+	}
+}
+
+func TestQueryMQTTMetricsBridgeFilterUnaffectedByFleetAggregate(t *testing.T) {
+	s := testStore(t)
+	w := NewMetricsWriter(s, slog.Default(), 0)
+
+	base := (time.Now().Unix() / fleetStep) * fleetStep
+	seedFleetBuckets(t, w, "fleet-env", base)
+
+	// Same data, filtered to one bridge: values must be that bridge's own bucket
+	// averages (15/2 then 40/2), never the fleet sums, and bridge_id must remain.
+	pts, err := w.QueryMQTTMetrics(context.Background(), "fleet-env", "bridge-a",
+		base-fleetStep, base+2*fleetStep, fleetStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 2 {
+		t.Fatalf("got %d points, want 2: %v", len(pts), pts)
+	}
+
+	want := []struct {
+		ts    int64
+		conns float64
+		rate  float64
+	}{
+		{base, 15, 2},
+		{base + fleetStep, 40, 2},
+	}
+	for i, exp := range want {
+		if pts[i]["ts"] != exp.ts {
+			t.Errorf("point %d ts = %v, want %d", i, pts[i]["ts"], exp.ts)
+		}
+		if got := pts[i]["bridge_id"]; got != "bridge-a" {
+			t.Errorf("point %d bridge_id = %v, want bridge-a", i, got)
+		}
+		if got := pts[i]["connections_active"]; got != exp.conns {
+			t.Errorf("point %d connections_active = %v, want %v (bridge-a average only)", i, got, exp.conns)
+		}
+		if got := pts[i]["in_msgs_rate"]; got != exp.rate {
+			t.Errorf("point %d in_msgs_rate = %v, want %v (bridge-a average only)", i, got, exp.rate)
+		}
+	}
+}
+
+func TestQueryMQTTMetricsFleetNullableColumns(t *testing.T) {
+	s := testStore(t)
+	w := NewMetricsWriter(s, slog.Default(), 0)
+
+	base := (time.Now().Unix() / fleetStep) * fleetStep
+	pending := int64(100)
+
+	// Bucket `base`: only bridge-a reports consumer_pending_messages. The fleet
+	// value must be bridge-a's 100 — bridge-b's NULL must not zero it out.
+	w.writeSample(MetricSample{
+		Timestamp: time.Unix(base, 0),
+		Env:       "fleet-null-env",
+		MQTTBridges: []MQTTBridgeMetricSample{
+			{BridgeID: "bridge-a", ConnectionsActive: 1, ConsumerPendingMessages: &pending},
+			{BridgeID: "bridge-b", ConnectionsActive: 1, ConsumerPendingMessages: nil},
+		},
+	})
+	// Bucket `base+fleetStep`: neither bridge reports it → the key is omitted so
+	// the chart shows a gap rather than a false zero.
+	w.writeSample(MetricSample{
+		Timestamp: time.Unix(base+fleetStep, 0),
+		Env:       "fleet-null-env",
+		MQTTBridges: []MQTTBridgeMetricSample{
+			{BridgeID: "bridge-a", ConnectionsActive: 1},
+			{BridgeID: "bridge-b", ConnectionsActive: 1},
+		},
+	})
+
+	pts, err := w.QueryMQTTMetrics(context.Background(), "fleet-null-env", "",
+		base-fleetStep, base+2*fleetStep, fleetStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 2 {
+		t.Fatalf("got %d points, want 2: %v", len(pts), pts)
+	}
+	if got := pts[0]["consumer_pending_messages"]; got != float64(100) {
+		t.Errorf("consumer_pending_messages = %v, want 100 (NULL bridges skipped, not summed as 0)", got)
+	}
+	if got, ok := pts[1]["consumer_pending_messages"]; ok {
+		t.Errorf("consumer_pending_messages = %v, want the key absent when no bridge reports it", got)
+	}
+	// The fleet total for a column every bridge does report still sums.
+	if got := pts[1]["connections_active"]; got != float64(2) {
+		t.Errorf("connections_active = %v, want 2", got)
+	}
+}
+
 func TestMetricsWriterSubmitDropsWhenFull(t *testing.T) {
 	s := testStore(t)
 	// Do NOT start Run() — we need the channel to stay full.
