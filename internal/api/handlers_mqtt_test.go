@@ -179,20 +179,36 @@ func waitForDiscovery(t *testing.T, srv *Server, env string) {
 	t.Fatal("discovery did not produce a bridge within 5s")
 }
 
+// waitForProbedBridge polls the fleet listing until the named configured bridge's
+// background admin-API probe has landed (its status is no longer the pending
+// placeholder), and returns that entry. Probes are off the request path, so the
+// first read reports the bridge as pending. Fleet bodies are cached for a short
+// TTL, so the helper reads through a cache that never hits.
+func waitForProbedBridge(t *testing.T, srv *Server, env, token, name string) map[string]any {
+	t.Helper()
+	srv.bridgeJSON = newBridgeRespCache(time.Nanosecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, b := range fleetBridgeList(t, srv, env, token) {
+			if b["configured_name"] != name {
+				continue
+			}
+			if st, _ := b["status"].(map[string]any); st != nil && st["error"] != probePendingReason {
+				return b
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("probe for configured bridge %q never completed", name)
+	return nil
+}
+
 func TestHandleMQTTBridges(t *testing.T) {
 	bSrv := bridgeMock(t, okBridgeHandler(bridgeConfig{}))
 	srv, _, token, id := polledServer(t, natsMockConfig{},
 		withBridges(config.MQTTBridge{Name: "b1", URL: bSrv.URL}))
 
-	w := do(t, srv, "GET", "/api/environments/"+id+"/mqtt/bridges", token, "")
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
-	}
-	bridges := decodeJSON(t, w)["bridges"].([]any)
-	if len(bridges) != 1 {
-		t.Fatalf("bridges = %d, want 1", len(bridges))
-	}
-	b := bridges[0].(map[string]any)
+	b := waitForProbedBridge(t, srv, id, token, "b1")
 	if b["configured_name"] != "b1" {
 		t.Errorf("configured_name = %v, want b1", b["configured_name"])
 	}
@@ -218,21 +234,13 @@ func TestHandleMQTTBridgesJetStreamDegradedIsReachable(t *testing.T) {
 	srv, _, token, id := polledServer(t, natsMockConfig{},
 		withBridges(config.MQTTBridge{Name: "degraded", URL: bSrv.URL}))
 
-	w := do(t, srv, "GET", "/api/environments/"+id+"/mqtt/bridges", token, "")
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
-	}
-	bridges := decodeJSON(t, w)["bridges"].([]any)
-	if len(bridges) != 1 {
-		t.Fatalf("bridges = %d, want 1", len(bridges))
-	}
-	b := bridges[0].(map[string]any)
+	b := waitForProbedBridge(t, srv, id, token, "degraded")
 	if b["reachable"] != true {
 		t.Errorf("reachable = %v, want true (readyz answered, with a 503 state)", b["reachable"])
 	}
 	st, ok2 := b["status"].(map[string]any)
 	if !ok2 {
-		t.Fatalf("missing status object: %s", w.Body.String())
+		t.Fatalf("missing status object: %v", b)
 	}
 	if st["jetstream_degraded"] != true {
 		t.Errorf("jetstream_degraded = %v, want true", st["jetstream_degraded"])

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +206,258 @@ func TestHandleMQTTBridgesSort(t *testing.T) {
 	}
 }
 
+// blackholeBridgeURL returns the URL of a TCP listener that accepts connections
+// (the kernel completes the handshake from the backlog) but never answers, so a
+// request to it hangs until the fetcher's own timeout — the shape of a bridge
+// whose host is up but whose admin API is wedged.
+func blackholeBridgeURL(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return "http://" + ln.Addr().String()
+}
+
+// fleetBridgeList issues one fleet read and returns the decoded bridge entries.
+func fleetBridgeList(t *testing.T, srv *Server, env, token string) []map[string]any {
+	t.Helper()
+	w := do(t, srv, "GET", "/api/environments/"+env+"/mqtt/bridges", token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	raw, ok := decodeJSON(t, w)["bridges"].([]any)
+	if !ok {
+		t.Fatalf("bridges missing from %s", w.Body.String())
+	}
+	out := make([]map[string]any, len(raw))
+	for i, b := range raw {
+		out[i], _ = b.(map[string]any)
+	}
+	return out
+}
+
+// TestHandleMQTTBridgesProbeOffRequestPath pins that a configured bridge's live
+// probe never runs on the request path: a wedged bridge costs a full admin-read
+// timeout, which would stall the fleet page for every viewer. The first read
+// reports the bridge as pending and the probe continues in the background.
+func TestHandleMQTTBridgesProbeOffRequestPath(t *testing.T) {
+	srv, _, token, id := polledServer(t, natsMockConfig{},
+		withBridges(config.MQTTBridge{Name: "stuck", URL: blackholeBridgeURL(t)}))
+	// Disable the fleet body cache so both reads really rebuild the listing —
+	// otherwise the second one would be served from the first one's bytes and
+	// would prove nothing about the probe path.
+	srv.bridgeJSON = newBridgeRespCache(time.Nanosecond)
+
+	start := time.Now()
+	bridges := fleetBridgeList(t, srv, id, token)
+	first := time.Since(start)
+	if first > time.Second {
+		t.Errorf("first fleet read took %v — the probe is on the request path (one admin read alone times out after 5s)", first)
+	}
+	if len(bridges) != 1 {
+		t.Fatalf("bridges = %d, want 1", len(bridges))
+	}
+	if bridges[0]["reachable"] != false {
+		t.Errorf("reachable = %v, want false while the first probe is pending", bridges[0]["reachable"])
+	}
+	st, _ := bridges[0]["status"].(map[string]any)
+	if st == nil || st["error"] != probePendingReason {
+		t.Errorf("status.error = %v, want %q (pending shape on the first ever read)", st["error"], probePendingReason)
+	}
+
+	start = time.Now()
+	fleetBridgeList(t, srv, id, token)
+	if second := time.Since(start); second > 100*time.Millisecond {
+		t.Errorf("second fleet read took %v, want < 100ms (last known result, refresh in background)", second)
+	}
+}
+
+// TestHandleMQTTBridgesResponseCached pins that the fleet body is produced once
+// per TTL and shared: every viewer's poll otherwise re-converted and re-marshalled
+// every cached bridge.
+func TestHandleMQTTBridgesResponseCached(t *testing.T) {
+	srv, _, token, id := polledServer(t, natsMockConfig{})
+	pushInstance := func(name string) collector.MQTTBridgeInstance {
+		return collector.MQTTBridgeInstance{
+			ConfiguredName: name, Reachable: true, LastSeen: time.Now(),
+			Status: &collector.MQTTBridgeStatus{Name: name, Ready: true},
+		}
+	}
+	srv.manager.SeedMQTTBridgesForTest(id, []collector.MQTTBridgeInstance{pushInstance("a")})
+
+	if got := len(fleetBridgeList(t, srv, id, token)); got != 1 {
+		t.Fatalf("bridges = %d, want 1", got)
+	}
+
+	// The underlying discovery cache changes; within the TTL the endpoint still
+	// serves the body it already encoded.
+	srv.manager.SeedMQTTBridgesForTest(id, []collector.MQTTBridgeInstance{pushInstance("a"), pushInstance("b")})
+	if got := len(fleetBridgeList(t, srv, id, token)); got != 1 {
+		t.Errorf("bridges = %d, want 1 (second read must be served from the cached body)", got)
+	}
+
+	// A cache without that entry rebuilds the listing, so the staleness above came
+	// from the body cache and not from a stale manager read.
+	srv.bridgeJSON = newBridgeRespCache(3 * time.Second)
+	if got := len(fleetBridgeList(t, srv, id, token)); got != 2 {
+		t.Errorf("bridges = %d, want 2 once the cached body is gone", got)
+	}
+}
+
+// TestHandleMQTTBridgesLastSeen pins the staleness signal on the fleet response:
+// a push instance reports when its last metrics publish arrived, and a configured
+// bridge reports when it was last probed. Without it a viewer cannot tell live
+// counters from ones frozen since a broker went quiet.
+func TestHandleMQTTBridgesLastSeen(t *testing.T) {
+	bSrv := bridgeMock(t, okBridgeHandler(bridgeConfig{}))
+	srv, _, token, id := polledServer(t, natsMockConfig{},
+		withBridges(config.MQTTBridge{Name: "probed", URL: bSrv.URL}))
+	srv.bridgeJSON = newBridgeRespCache(time.Nanosecond) // read fresh listings
+
+	pushSeen := time.Now().Add(-2 * time.Second).UTC().Truncate(time.Millisecond)
+	srv.manager.SeedMQTTBridgesForTest(id, []collector.MQTTBridgeInstance{
+		{
+			ConfiguredName: "pushed", Reachable: true, LastSeen: pushSeen,
+			Status: &collector.MQTTBridgeStatus{Name: "pushed", Ready: true},
+		},
+		{
+			ConfiguredName: "never-seen", Reachable: true,
+			Status: &collector.MQTTBridgeStatus{Name: "never-seen"},
+		},
+	})
+
+	// The configured bridge's probe is asynchronous, so its time appears once the
+	// first probe lands.
+	var probedAt string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, b := range fleetBridgeList(t, srv, id, token) {
+			if b["configured_name"] == "probed" {
+				probedAt, _ = b["last_seen"].(string)
+			}
+		}
+		if probedAt != "" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if probedAt == "" {
+		t.Fatal("configured bridge never reported a last_seen probe time")
+	}
+	ts, err := time.Parse(time.RFC3339Nano, probedAt)
+	if err != nil {
+		t.Fatalf("last_seen %q is not RFC3339: %v", probedAt, err)
+	}
+	if age := time.Since(ts); age < 0 || age > time.Minute {
+		t.Errorf("probe last_seen is %v old, want a recent time", age)
+	}
+
+	for _, b := range fleetBridgeList(t, srv, id, token) {
+		switch b["configured_name"] {
+		case "pushed":
+			got, _ := b["last_seen"].(string)
+			ts, err := time.Parse(time.RFC3339Nano, got)
+			if err != nil {
+				t.Fatalf("push last_seen %q is not RFC3339: %v", got, err)
+			}
+			if !ts.Equal(pushSeen) {
+				t.Errorf("push last_seen = %v, want %v (the publish receive time)", ts, pushSeen)
+			}
+		case "never-seen":
+			// Nothing is known about this entry's age, so the field is absent
+			// rather than reporting the zero time as a real timestamp.
+			if v, ok := b["last_seen"]; ok {
+				t.Errorf("last_seen = %v for an entry with no known time, want the field omitted", v)
+			}
+		}
+	}
+}
+
+// TestHandleMQTTBridgesMergesProbedInstanceIdentity pins the double-count fix: a
+// configured bridge whose name differs from the broker's own instance name is the
+// same broker as the push-discovered instance reporting that identity, so it must
+// merge into it. Listing both would show two fleet cards for one broker and
+// double-count its connections and rates in the fleet totals.
+func TestHandleMQTTBridgesMergesProbedInstanceIdentity(t *testing.T) {
+	// identityBridge serves a bridge admin API whose /metrics reports the given
+	// instance_id — the broker's own identity, independent of its configured name.
+	identityBridge := func(t *testing.T, instanceID string) *httptest.Server {
+		ok := okBridgeHandler(bridgeConfig{})
+		return bridgeMock(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/metrics" {
+				_, _ = w.Write([]byte("machmqtt_instance_info{instance_id=\"" + instanceID + "\"} 1\n" +
+					"machmqtt_connections_active 3\n"))
+				return
+			}
+			ok(w, r)
+		})
+	}
+
+	cases := []struct {
+		name       string
+		instanceID string                 // what the probed bridge reports
+		push       *collector.MQTTMetrics // the push instance's metrics
+	}{
+		{
+			// The broker's instance_id is its stable instance name, which is the
+			// key the push cache lists it under.
+			name:       "matches the push instance name",
+			instanceID: "mqtt-a-prod",
+			push:       &collector.MQTTMetrics{ConnectionsActive: 3},
+		},
+		{
+			// The broker reports a separate ephemeral instance_id, which the push
+			// snapshot carries too.
+			name:       "matches the push instance id",
+			instanceID: "inst-77",
+			push:       &collector.MQTTMetrics{ConnectionsActive: 3, InstanceID: "inst-77"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bSrv := identityBridge(t, tc.instanceID)
+			srv, _, token, id := polledServer(t, natsMockConfig{},
+				withBridges(config.MQTTBridge{Name: "mqtt-a", URL: bSrv.URL}))
+			srv.bridgeJSON = newBridgeRespCache(time.Nanosecond)
+			srv.manager.SeedMQTTBridgesForTest(id, []collector.MQTTBridgeInstance{{
+				ConfiguredName: "mqtt-a-prod", Reachable: true, LastSeen: time.Now(),
+				Status: &collector.MQTTBridgeStatus{
+					Name: "mqtt-a-prod", Ready: true, Connections: 3, Metrics: tc.push,
+				},
+			}})
+
+			// The probe is asynchronous, so the merge lands on a later read.
+			var bridges []map[string]any
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				bridges = fleetBridgeList(t, srv, id, token)
+				if len(bridges) == 1 && bridges[0]["admin_url"] == bSrv.URL {
+					break
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			if len(bridges) != 1 {
+				t.Fatalf("bridges = %d, want 1 (the configured bridge is the same broker as the push instance)", len(bridges))
+			}
+			b := bridges[0]
+			if b["admin_url"] != bSrv.URL {
+				t.Errorf("admin_url = %v, want %q (adopted from the configured bridge)", b["admin_url"], bSrv.URL)
+			}
+			// The broker's instance name is kept: it is the key its stored history
+			// is written under, and the push snapshot stays the data source.
+			if b["configured_name"] != "mqtt-a-prod" {
+				t.Errorf("configured_name = %v, want mqtt-a-prod", b["configured_name"])
+			}
+			st, _ := b["status"].(map[string]any)
+			if st == nil || st["connections"] != float64(3) {
+				t.Errorf("status.connections = %v, want 3 counted once", st["connections"])
+			}
+		})
+	}
+}
+
 func TestMQTTHandlerUnknownEnv(t *testing.T) {
 	// An MQTT proxy request for an unknown env exercises mqttBridges' nil-config
 	// branch and 404s.
@@ -213,36 +468,112 @@ func TestMQTTHandlerUnknownEnv(t *testing.T) {
 	}
 }
 
-func TestBridgeStatusCacheGet(t *testing.T) {
-	c := newBridgeStatusCache(time.Minute)
-	calls := 0
+// TestBridgeStatusCacheAsyncSingleFlight pins the probe cache's contract: the
+// first call returns nothing and starts one background probe, concurrent callers
+// join it rather than starting their own, and later calls are served from the
+// stored result without another probe.
+func TestBridgeStatusCacheAsyncSingleFlight(t *testing.T) {
+	c := newBridgeStatusCache(time.Minute, discardLogger())
+	var calls atomic.Int64
+	release := make(chan struct{})
 	fetch := func() *collector.MQTTBridgeStatus {
-		calls++
+		calls.Add(1)
+		<-release // hold the probe open so the second call must not block on it
 		return &collector.MQTTBridgeStatus{Name: "x"}
 	}
-	s1 := c.get("key", fetch)
-	s2 := c.get("key", fetch) // served from cache, fetch not called again
-	if calls != 1 {
-		t.Errorf("fetch called %d times, want 1 (second is a cache hit)", calls)
+
+	if st, at := c.getAsync("key", fetch); st != nil || !at.IsZero() {
+		t.Fatalf("first call returned (%v, %v), want (nil, zero) while probing", st, at)
 	}
-	if s1 != s2 {
-		t.Errorf("cache returned a different status on hit")
+	// A second call while the probe is in flight returns immediately and does not
+	// start a second probe.
+	if st, _ := c.getAsync("key", fetch); st != nil {
+		t.Fatalf("second call returned %v, want nil (probe still in flight)", st)
+	}
+	close(release)
+
+	st, at := waitForProbe(t, c, "key", fetch)
+	if st.Name != "x" {
+		t.Errorf("status.Name = %q, want x", st.Name)
+	}
+	if time.Since(at) > time.Minute {
+		t.Errorf("fetchedAt = %v, want the probe's completion time", at)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("probes = %d, want 1 (single-flight, then cache hits)", got)
 	}
 }
 
-func TestBridgeStatusCacheExpiry(t *testing.T) {
-	c := newBridgeStatusCache(time.Nanosecond) // expires immediately
-	calls := 0
+func TestBridgeStatusCacheAsyncRefreshesAfterTTL(t *testing.T) {
+	c := newBridgeStatusCache(time.Nanosecond, discardLogger()) // expires immediately
+	var calls atomic.Int64
 	fetch := func() *collector.MQTTBridgeStatus {
-		calls++
+		calls.Add(1)
 		return &collector.MQTTBridgeStatus{}
 	}
-	c.get("k", fetch)
-	time.Sleep(time.Millisecond)
-	c.get("k", fetch) // entry expired → refetched
-	if calls != 2 {
-		t.Errorf("fetch called %d times, want 2 (entry expired between calls)", calls)
+	waitForProbe(t, c, "k", fetch)
+	// The entry is already expired, so the next read serves it and starts a
+	// refresh: the caller still never waits.
+	c.getAsync("k", fetch)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && calls.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
 	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("probes = %d, want 2 (expired entry is refreshed in the background)", got)
+	}
+}
+
+// TestBridgeStatusCacheProbePanicRecovers pins that a panicking probe cannot wedge
+// a bridge: the in-flight flag must be cleared, or that bridge would never be
+// probed again.
+func TestBridgeStatusCacheProbePanicRecovers(t *testing.T) {
+	c := newBridgeStatusCache(time.Minute, discardLogger())
+	var calls atomic.Int64
+	panicking := func() *collector.MQTTBridgeStatus {
+		calls.Add(1)
+		panic("probe blew up")
+	}
+	c.getAsync("k", panicking)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		inFlight := c.entries["k"].fetching
+		c.mu.Unlock()
+		if !inFlight {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.mu.Lock()
+	inFlight := c.entries["k"].fetching
+	c.mu.Unlock()
+	if inFlight {
+		t.Fatal("entry still marked in-flight after the probe panicked — it would never refresh")
+	}
+	// The next read starts a fresh probe instead of being stuck.
+	c.getAsync("k", panicking)
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && calls.Load() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("probes = %d, want 2 (a panicked probe must not block later ones)", got)
+	}
+}
+
+// waitForProbe polls getAsync until the background probe has stored a result.
+func waitForProbe(t *testing.T, c *bridgeStatusCache, key string, fetch func() *collector.MQTTBridgeStatus) (*collector.MQTTBridgeStatus, time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, at := c.getAsync(key, fetch); st != nil {
+			return st, at
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("probe for %q never completed", key)
+	return nil, time.Time{}
 }
 
 // TestMQTTBridgeNotFoundAcrossHandlers pins the bridge-not-found 404 for the

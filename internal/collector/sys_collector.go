@@ -164,29 +164,30 @@ func (sc *SYSCollector) run(ctx context.Context, cfg *config.NATSConnConfig) {
 
 	var received atomic.Int64
 	var warnedBadMsg atomic.Bool
-	_, err = nc.Subscribe("$SYS.SERVER.*.STATSZ", func(msg *nats.Msg) {
-		var m sysStatsMsg
-		if err := json.Unmarshal(msg.Data, &m); err != nil {
-			// Warn once so a schema mismatch is visible without per-message spam.
-			if warnedBadMsg.CompareAndSwap(false, true) {
-				log.Debug("$SYS collector: ignoring malformed STATSZ message", "err", err)
+	_, err = subscribeWithRetry(ctx, nc, "$SYS.SERVER.*.STATSZ", log, defaultSubscribeRetries,
+		guardedMsgHandler(log, "$SYS.SERVER.*.STATSZ", func(msg *nats.Msg) {
+			var m sysStatsMsg
+			if err := json.Unmarshal(msg.Data, &m); err != nil {
+				// Warn once so a schema mismatch is visible without per-message spam.
+				if warnedBadMsg.CompareAndSwap(false, true) {
+					log.Debug("$SYS collector: ignoring malformed STATSZ message", "err", err)
+				}
+				return
 			}
-			return
-		}
-		if m.Server.ID == "" {
-			return
-		}
-		if received.Add(1) == 1 {
-			log.Info("$SYS collector: receiving STATSZ events", "server", m.Server.Name)
-		}
-		sc.mu.Lock()
-		sc.statsz[m.Server.ID] = &statszEntry{
-			server: m.Server,
-			stats:  m.Stats,
-			when:   time.Now(),
-		}
-		sc.mu.Unlock()
-	})
+			if m.Server.ID == "" {
+				return
+			}
+			if received.Add(1) == 1 {
+				log.Info("$SYS collector: receiving STATSZ events", "server", m.Server.Name)
+			}
+			sc.mu.Lock()
+			sc.statsz[m.Server.ID] = &statszEntry{
+				server: m.Server,
+				stats:  m.Stats,
+				when:   time.Now(),
+			}
+			sc.mu.Unlock()
+		}))
 	if err != nil {
 		log.Error("$SYS collector: subscribe failed", "subject", "$SYS.SERVER.*.STATSZ", "err", err)
 		return

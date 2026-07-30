@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -15,42 +17,67 @@ import (
 )
 
 // bridgeStatusCache memoizes live MachMQTT bridge admin-API status lookups for
-// configured-but-undiscovered bridges, so repeated fleet-listing requests don't
-// each pay the bridge round-trip. Auto-discovered bridges are served from the
-// collector's poll cache and never reach this path. Keys are configured bridge
-// URLs (a small, bounded set), so the map does not grow unbounded.
+// configured-but-undiscovered bridges. Probes run in the background and requests
+// are served the last known result, so a viewer never waits on a bridge — an
+// unreachable one costs a full admin-read timeout per read. Auto-discovered
+// bridges are served from the collector's poll cache and never reach this path.
+// Keys are configured bridge URLs (a small, bounded set), so the map does not
+// grow unbounded.
 type bridgeStatusCache struct {
 	mu      sync.Mutex
 	ttl     time.Duration
+	log     *slog.Logger
 	entries map[string]bridgeStatusEntry
 }
 
 type bridgeStatusEntry struct {
 	status    *collector.MQTTBridgeStatus
 	fetchedAt time.Time
+	// fetching is true while a background probe for this key is in flight, so
+	// concurrent viewers collapse into one probe instead of one probe each.
+	fetching bool
 }
 
-func newBridgeStatusCache(ttl time.Duration) *bridgeStatusCache {
-	return &bridgeStatusCache{ttl: ttl, entries: make(map[string]bridgeStatusEntry)}
+func newBridgeStatusCache(ttl time.Duration, log *slog.Logger) *bridgeStatusCache {
+	return &bridgeStatusCache{ttl: ttl, log: log, entries: make(map[string]bridgeStatusEntry)}
 }
 
-// get returns a fresh cached status, or calls fetch (without the lock held, so
-// requests for different bridges don't serialize) and stores the result.
-func (c *bridgeStatusCache) get(key string, fetch func() *collector.MQTTBridgeStatus) *collector.MQTTBridgeStatus {
-	now := time.Now()
+// getAsync returns the last known status for key and the time it was obtained,
+// starting a single background refresh when the entry is missing or older than
+// the TTL. It never blocks on the bridge, so a dead bridge cannot stall the
+// caller. A first-ever call returns (nil, zero) — the caller reports the bridge
+// as pending and the refresh lands within the TTL.
+func (c *bridgeStatusCache) getAsync(key string, fetch func() *collector.MQTTBridgeStatus) (*collector.MQTTBridgeStatus, time.Time) {
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && now.Sub(e.fetchedAt) < c.ttl {
-		c.mu.Unlock()
-		return e.status
+	defer c.mu.Unlock()
+	e := c.entries[key]
+	if !e.fetching && (e.status == nil || time.Since(e.fetchedAt) >= c.ttl) {
+		e.fetching = true
+		c.entries[key] = e
+		go c.refresh(key, fetch)
 	}
-	c.mu.Unlock()
+	return e.status, e.fetchedAt
+}
 
-	status := fetch()
-
-	c.mu.Lock()
-	c.entries[key] = bridgeStatusEntry{status: status, fetchedAt: now}
-	c.mu.Unlock()
-	return status
+// refresh runs one background probe and stores its result. The in-flight flag is
+// cleared even if fetch panics — otherwise that bridge would never be probed
+// again for the process's lifetime.
+func (c *bridgeStatusCache) refresh(key string, fetch func() *collector.MQTTBridgeStatus) {
+	var status *collector.MQTTBridgeStatus
+	defer func() {
+		if r := recover(); r != nil && c.log != nil {
+			c.log.Error("mqtt bridge probe panicked", "bridge", key, "panic", r)
+		}
+		c.mu.Lock()
+		e := c.entries[key]
+		e.fetching = false
+		if status != nil {
+			e.status, e.fetchedAt = status, time.Now()
+		}
+		c.entries[key] = e
+		c.mu.Unlock()
+	}()
+	status = fetch()
 }
 
 // bridgeRespCache memoizes the encoded JSON body of a live bridge read for a
@@ -144,6 +171,18 @@ func (s *Server) mqttBridges(env string) []config.MQTTBridge {
 	return e.MQTTBridges
 }
 
+// bridgeProbeTimeout bounds one background probe of a configured bridge.
+// FetchStatus performs several sequential admin reads, each with its own
+// timeout, so a bridge that answers the first and then hangs would otherwise
+// hold a probe slot for the sum of them.
+const bridgeProbeTimeout = 15 * time.Second
+
+// probePendingReason is reported for a configured bridge whose first probe has
+// not answered yet. The probe never runs on the request path, so the first ever
+// fleet read reports the bridge as pending rather than waiting for it; the next
+// read (the UI polls every few seconds) carries the real state.
+const probePendingReason = "probing the bridge admin API"
+
 func (s *Server) handleMQTTBridges(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	envCfg := s.envConfig(env)
@@ -152,6 +191,22 @@ func (s *Server) handleMQTTBridges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One cached body per env, shared by every viewer: the listing is derived from
+	// the env path value alone — there are no query params, and since the
+	// configured-bridge probes are asynchronous, nothing request-scoped feeds it —
+	// so the same bytes are correct for every caller within the TTL. Without this,
+	// each viewer's poll re-converted and re-marshalled every cached bridge. The
+	// trade-off is that a state change (e.g. a drain) can take up to the TTL to
+	// appear in the listing.
+	s.serveCachedBridgeJSON(w, "bridges|"+env, func() (any, bool) {
+		return map[string]any{"bridges": s.fleetBridges(env, envCfg)}, true
+	})
+}
+
+// fleetBridges builds the fleet listing: the collector's cached discovery results
+// (push or connz-scan) merged with the configured bridges discovery never
+// reported, sorted by display name.
+func (s *Server) fleetBridges(env string, envCfg *config.Environment) []collector.MQTTBridgeInstance {
 	// Use cached discovery results from the collector poll loop.
 	discovered := s.manager.MQTTBridges(env)
 	if discovered == nil {
@@ -159,40 +214,43 @@ func (s *Server) handleMQTTBridges(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also include manually configured bridges that weren't auto-discovered.
-	// Match an existing discovered bridge by admin URL OR by name, so a configured
-	// bridge that names a push-discovered instance (which has no admin URL of its
-	// own) merges into it — adopting the configured admin URL — instead of adding a
-	// duplicate fleet card.
 	for _, b := range envCfg.MQTTBridges {
-		found := false
-		for i := range discovered {
-			if discovered[i].AdminURL == b.URL || (b.Name != "" && bridgeDisplayName(discovered[i]) == b.Name) {
-				found = true
-				if b.Name != "" {
-					discovered[i].ConfiguredName = b.Name
-				}
-				if discovered[i].AdminURL == "" {
-					discovered[i].AdminURL = b.URL
-				}
-				break
-			}
+		if i := indexOfConfiguredBridge(discovered, b); i >= 0 {
+			mergeConfiguredBridge(&discovered[i], b)
+			continue
 		}
-		if !found {
-			// Memoized live probe: only configured bridges that NATS connz never
-			// reported reach here, and the result is cached so the UI's frequent
-			// fleet polls don't each pay the bridge round-trip.
-			status := s.bridgeStatus.get(b.URL, func() *collector.MQTTBridgeStatus {
-				f := collector.NewMQTTBridgeFetcher(b.URL, b.Name, envCfg.ResolveBridgeToken(b.BearerToken))
-				return f.FetchStatus(r.Context())
-			})
-			discovered = append(discovered, collector.MQTTBridgeInstance{
-				IP:             b.URL,
-				AdminURL:       b.URL,
-				ConfiguredName: b.Name,
-				Status:         status,
-				Reachable:      status.Error == "",
-			})
+		// Only configured bridges that neither push metrics nor connz reported
+		// reach here. The probe runs in the background and this read serves the
+		// last known result, so an unreachable bridge can never stall the fleet.
+		// Resolve the token here, not in the closure: the probe outlives the
+		// request, and the environment config it comes from is replaced in place on
+		// a config reload.
+		token := envCfg.ResolveBridgeToken(b.BearerToken)
+		status, probedAt := s.bridgeStatus.getAsync(b.URL, func() *collector.MQTTBridgeStatus {
+			ctx, cancel := context.WithTimeout(context.Background(), bridgeProbeTimeout)
+			defer cancel()
+			f := collector.NewMQTTBridgeFetcher(b.URL, b.Name, token)
+			return f.FetchStatus(ctx)
+		})
+		if status == nil {
+			status = &collector.MQTTBridgeStatus{Name: b.Name, URL: b.URL, Error: probePendingReason}
 		}
+		// A bridge the broker reports under a different instance name than the one
+		// it is configured as is the same broker: merge it rather than listing it
+		// twice, which would also double-count its connections and rates in the
+		// fleet totals.
+		if i := findByInstanceIdentity(discovered, probedInstanceIdentity(status)); i >= 0 {
+			mergeConfiguredBridge(&discovered[i], b)
+			continue
+		}
+		discovered = append(discovered, collector.MQTTBridgeInstance{
+			IP:             b.URL,
+			AdminURL:       b.URL,
+			ConfiguredName: b.Name,
+			Status:         status,
+			Reachable:      status.Error == "",
+			LastSeen:       probedAt,
+		})
 	}
 
 	sort.Slice(discovered, func(i, j int) bool {
@@ -206,8 +264,68 @@ func (s *Server) handleMQTTBridges(w http.ResponseWriter, r *http.Request) {
 		}
 		return ni < nj
 	})
+	return discovered
+}
 
-	writeJSON(w, map[string]any{"bridges": discovered})
+// indexOfConfiguredBridge returns the index of the discovered instance a
+// configured bridge names — by admin URL, or by name so a configured bridge that
+// names a push-discovered instance (which has no admin URL of its own) merges
+// into it instead of adding a duplicate fleet card. Returns -1 for no match.
+func indexOfConfiguredBridge(discovered []collector.MQTTBridgeInstance, b config.MQTTBridge) int {
+	for i := range discovered {
+		if (b.URL != "" && discovered[i].AdminURL == b.URL) ||
+			(b.Name != "" && bridgeDisplayName(discovered[i]) == b.Name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// mergeConfiguredBridge folds a configured bridge's admin endpoint and name into
+// the discovered instance it refers to. A discovered name is left alone: for a
+// push instance it is the broker's instance name, which is the key its stored
+// history is written under.
+func mergeConfiguredBridge(inst *collector.MQTTBridgeInstance, b config.MQTTBridge) {
+	if inst.ConfiguredName == "" && b.Name != "" {
+		inst.ConfiguredName = b.Name
+	}
+	if inst.AdminURL == "" {
+		inst.AdminURL = b.URL
+	}
+}
+
+// probedInstanceIdentity is the broker-reported identity of a probed bridge: the
+// instance_id its own metrics expose. A configured bridge's name is chosen by the
+// operator and need not match it.
+func probedInstanceIdentity(st *collector.MQTTBridgeStatus) string {
+	if st == nil || st.Metrics == nil {
+		return ""
+	}
+	return st.Metrics.InstanceID
+}
+
+// findByInstanceIdentity returns the index of the discovered instance that
+// reports the given broker identity — matched against the identity a push
+// snapshot carries, or against the instance name it is keyed by (deployments that
+// set instance_id to the stable name). Returns -1 for no match, including for an
+// empty identity, which must never match.
+func findByInstanceIdentity(discovered []collector.MQTTBridgeInstance, identity string) int {
+	if identity == "" {
+		return -1
+	}
+	for i := range discovered {
+		st := discovered[i].Status
+		if st == nil {
+			continue
+		}
+		if st.Metrics != nil && st.Metrics.InstanceID == identity {
+			return i
+		}
+		if st.Name == identity {
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *Server) handleMQTTConnz(w http.ResponseWriter, r *http.Request) {

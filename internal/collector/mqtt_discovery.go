@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // MQTTBridgeInstance represents a discovered MQTT bridge instance.
@@ -30,6 +31,13 @@ type MQTTBridgeInstance struct {
 	AdminURL       string            `json:"admin_url,omitempty"`
 	Status         *MQTTBridgeStatus `json:"status,omitempty"`
 	Reachable      bool              `json:"reachable"`
+
+	// LastSeen is when this instance's data was obtained: the receive time of its
+	// last metrics publish on the push path, the snapshot time on the connz-scan
+	// path, or the probe time for a configured bridge read over HTTP. It is the
+	// only staleness signal a viewer has — a push instance keeps its last counters
+	// for up to the cache TTL after it stops publishing. Zero when unknown.
+	LastSeen time.Time `json:"last_seen,omitzero"`
 }
 
 // DiscoverMQTTBridges finds MQTT bridge instances from NATS connection data.
@@ -163,6 +171,7 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 			OutMsgsRate:   rate(g.outMsgs, prevOut),
 			InBytesRate:   rate(g.inBytes, prevInB),
 			OutBytesRate:  rate(g.outBytes, prevOutB),
+			LastSeen:      snap.Timestamp,
 		}
 
 		wg.Add(1)

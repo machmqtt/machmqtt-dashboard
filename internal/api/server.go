@@ -67,7 +67,7 @@ func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.
 		metrics:      metrics,
 		store:        st,
 		logBuf:       lb,
-		bridgeStatus: newBridgeStatusCache(5 * time.Second),
+		bridgeStatus: newBridgeStatusCache(5*time.Second, log),
 		bridgeJSON:   newBridgeRespCache(3 * time.Second),
 	}
 

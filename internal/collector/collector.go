@@ -165,7 +165,7 @@ func (c *Collector) shouldConnzScan() bool {
 	if !env.MQTTDiscoveryEnabled() {
 		return false
 	}
-	if c.subscriber != nil && len(c.subscriber.Bridges()) > 0 {
+	if c.subscriber != nil && c.subscriber.BridgeCount() > 0 {
 		return false // push metrics are flowing — prefer them
 	}
 	return true

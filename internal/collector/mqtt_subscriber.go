@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,11 +99,14 @@ type BridgePoolSlot struct {
 type cachedBridge struct {
 	msg        *BridgeMetricsMsg
 	receivedAt time.Time
-	// NATS-side message rates, derived from the delta between successive metrics
-	// publishes. Push messages carry only cumulative counters, so the subscriber
-	// computes the rates the Fleet view and per-bridge trend charts display.
-	inRate  float64
-	outRate float64
+	// NATS-side message and byte rates, derived from the delta between successive
+	// metrics publishes. Push messages carry only cumulative counters, so the
+	// subscriber computes the rates the Fleet view and per-bridge trend charts
+	// display.
+	inRate       float64
+	outRate      float64
+	inBytesRate  float64
+	outBytesRate float64
 }
 
 // MQTTSubscriber maintains a live TTL-keyed cache of bridge metrics received
@@ -171,45 +175,53 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 	var received atomic.Int64
 	var warnedNewerSchema atomic.Bool
 	var warnedBadMsg atomic.Bool
-	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
-		var m BridgeMetricsMsg
-		if err := json.Unmarshal(msg.Data, &m); err != nil {
-			// Warn once so a schema mismatch is visible without per-message spam.
-			if warnedBadMsg.CompareAndSwap(false, true) {
-				log.Debug("mqtt metrics subscriber: ignoring malformed bridge message", "err", err)
+	_, err = subscribeWithRetry(ctx, nc, subject, log, defaultSubscribeRetries,
+		guardedMsgHandler(log, subject, func(msg *nats.Msg) {
+			var m BridgeMetricsMsg
+			if err := json.Unmarshal(msg.Data, &m); err != nil {
+				// Warn once so a schema mismatch is visible without per-message spam.
+				if warnedBadMsg.CompareAndSwap(false, true) {
+					log.Debug("mqtt metrics subscriber: ignoring malformed bridge message", "err", err)
+				}
+				return
 			}
-			return
-		}
-		if m.InstanceName == "" {
-			return
-		}
-		// Accept the current schema and legacy publishers that omit "v" (v=0);
-		// skip messages from a newer, possibly incompatible schema rather than
-		// misinterpreting their fields. Warn once so the mismatch is visible.
-		if m.V > bridgeMetricsSchemaV {
-			if warnedNewerSchema.CompareAndSwap(false, true) {
-				log.Warn("mqtt metrics subscriber: ignoring bridge message with newer schema version — upgrade the dashboard",
-					"v", m.V, "supported", bridgeMetricsSchemaV, "instance", m.InstanceName)
+			if m.InstanceName == "" {
+				return
 			}
-			return
-		}
-		if received.Add(1) == 1 {
-			log.Info("mqtt metrics subscriber: receiving bridge metrics", "instance", m.InstanceName)
-		}
-		s.mu.Lock()
-		if m.Drained {
-			delete(s.bridges, m.InstanceName)
-		} else {
+			// Accept the current schema and legacy publishers that omit "v" (v=0);
+			// skip messages from a newer, possibly incompatible schema rather than
+			// misinterpreting their fields. Warn once so the mismatch is visible.
+			if m.V > bridgeMetricsSchemaV {
+				if warnedNewerSchema.CompareAndSwap(false, true) {
+					log.Warn("mqtt metrics subscriber: ignoring bridge message with newer schema version — upgrade the dashboard",
+						"v", m.V, "supported", bridgeMetricsSchemaV, "instance", m.InstanceName)
+				}
+				return
+			}
+			if received.Add(1) == 1 {
+				log.Info("mqtt metrics subscriber: receiving bridge metrics", "instance", m.InstanceName)
+			}
 			now := time.Now()
 			cb := &cachedBridge{msg: &m, receivedAt: now}
-			// Derive NATS-side msg rates from the counter delta vs the prior publish.
-			if prev, ok := s.bridges[m.InstanceName]; ok && prev.msg != nil && prev.msg.Metrics != nil && m.Metrics != nil {
+			s.mu.Lock()
+			// Derive NATS-side msg and byte rates from the counter delta vs the prior
+			// publish. A drained instance is cached like any other: draining keeps
+			// existing sessions alive, so it stays on the fleet (as Draining, with its
+			// live counters) until its publishes stop and the TTL sweeper removes it.
+			if prev, ok := s.bridges[m.InstanceName]; ok && prev.msg != nil {
 				dt := now.Sub(prev.receivedAt).Seconds()
 				if dt > 0 {
-					cb.inRate = nonNegRate(natsInTotal(m.Metrics), natsInTotal(prev.msg.Metrics), dt)
-					cb.outRate = nonNegRate(natsOutTotal(m.Metrics), natsOutTotal(prev.msg.Metrics), dt)
+					if prev.msg.Metrics != nil && m.Metrics != nil {
+						cb.inRate = nonNegRate(natsInTotal(m.Metrics), natsInTotal(prev.msg.Metrics), dt)
+						cb.outRate = nonNegRate(natsOutTotal(m.Metrics), natsOutTotal(prev.msg.Metrics), dt)
+					}
+					curTo, curFrom := natsByteTotals(&m)
+					prevTo, prevFrom := natsByteTotals(prev.msg)
+					cb.inBytesRate = nonNegRate(curTo, prevTo, dt)
+					cb.outBytesRate = nonNegRate(curFrom, prevFrom, dt)
 				} else {
 					cb.inRate, cb.outRate = prev.inRate, prev.outRate
+					cb.inBytesRate, cb.outBytesRate = prev.inBytesRate, prev.outBytesRate
 				}
 			}
 			// Resolve the envelope fixups before the message becomes visible: a
@@ -217,9 +229,8 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 			// hands its *MQTTMetrics to readers that marshal it concurrently.
 			normalizeBridgeMsg(&m)
 			s.bridges[m.InstanceName] = cb
-		}
-		s.mu.Unlock()
-	})
+			s.mu.Unlock()
+		}))
 	if err != nil {
 		log.Error("mqtt metrics subscriber: subscribe failed", "subject", subject, "err", err)
 		return
@@ -273,9 +284,21 @@ func (s *MQTTSubscriber) Bridges() []MQTTBridgeInstance {
 		inst := bridgeMsgToInstance(name, cb.msg)
 		inst.InMsgsRate = cb.inRate
 		inst.OutMsgsRate = cb.outRate
+		inst.InBytesRate = cb.inBytesRate
+		inst.OutBytesRate = cb.outBytesRate
+		inst.LastSeen = cb.receivedAt
 		out = append(out, inst)
 	}
 	return out
+}
+
+// BridgeCount reports how many bridges the push cache currently holds. Callers
+// that only need "is push data flowing" use this instead of Bridges(), which
+// converts and copies every cached message.
+func (s *MQTTSubscriber) BridgeCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.bridges)
 }
 
 // natsInTotal / natsOutTotal are the bridge's cumulative NATS-side message
@@ -286,6 +309,25 @@ func natsInTotal(m *MQTTMetrics) int64 {
 }
 func natsOutTotal(m *MQTTMetrics) int64 {
 	return m.ServerConsumedQoS0 + m.ServerConsumedQoS1 + m.ServerConsumedQoS2
+}
+
+// natsByteTotals sums the pool slots' cumulative NATS-side byte counters.
+// toNATS is what the bridge wrote to NATS and fromNATS what it read back, which
+// is the direction pairing the connz-scan path uses: a NATS server reports a
+// bridge connection's in_bytes for what the bridge published to it. Both paths
+// write the same InBytesRate/OutBytesRate fields and the same stored time
+// series, so In must stay "bridge → NATS" on both or a bridge's history swaps
+// direction whenever the source switches. The same pairing holds for the message
+// rates: natsInTotal is server_published (bridge → NATS).
+//
+// A slot set can change between publishes, so the sum can regress; the callers'
+// nonNegRate clamp turns that into 0 rather than a negative rate.
+func natsByteTotals(m *BridgeMetricsMsg) (toNATS, fromNATS int64) {
+	for _, sl := range m.Pool.Slots {
+		toNATS += sl.OutBytes
+		fromNATS += sl.InBytes
+	}
+	return toNATS, fromNATS
 }
 
 func nonNegRate(cur, prev int64, dt float64) float64 {
@@ -353,6 +395,11 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 	}
 
 	metrics := bridgeMetrics(m)
+	// The broker embeds drained inside the metrics object and older publishers
+	// carry it only at the envelope level, so either one marks the instance as
+	// draining. A draining instance keeps serving its existing sessions, so it
+	// stays listed with its live counters — it is just not Ready.
+	drained := m.Drained || metrics.Drained != 0
 
 	natsConn := MQTTNATSConnection{
 		Connected:  m.NATS.Connected,
@@ -377,8 +424,8 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 
 	status := &MQTTBridgeStatus{
 		Name:          name,
-		Ready:         m.NATS.Connected && !m.Drained,
-		Draining:      m.Drained,
+		Ready:         m.NATS.Connected && !drained,
+		Draining:      drained,
 		Connections:   int(metrics.ConnectionsActive),
 		NATSConnected: m.NATS.Connected,
 		Pool:          pool,
@@ -400,6 +447,58 @@ func boolToInt64(b bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// guardedMsgHandler wraps a NATS subscription callback so a panic while handling
+// one message is contained instead of killing the process: the callback runs on
+// the client's dispatch goroutine, where an unrecovered panic is fatal and would
+// take down monitoring for every cluster. Each recovered panic is logged with a
+// running count for the subscription, so a poison payload is visible rather than
+// silently swallowed.
+func guardedMsgHandler(log *slog.Logger, subject string, h nats.MsgHandler) nats.MsgHandler {
+	var panics atomic.Int64
+	return func(msg *nats.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("nats subscription callback panicked; message dropped",
+					"subject", subject, "panics", panics.Add(1),
+					"panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		h(msg)
+	}
+}
+
+// defaultSubscribeRetries are the bounded, increasing waits between failed
+// subscribe attempts (one attempt, then one per delay). A subscribe can fail
+// transiently while the client is re-establishing its connection, and the caller
+// is a long-lived collector goroutine: giving up on the first error would leave
+// that cluster permanently without push data until a restart. Passed in rather
+// than read from a global so tests can shorten it without racing.
+var defaultSubscribeRetries = []time.Duration{500 * time.Millisecond, 2 * time.Second, 5 * time.Second}
+
+// subscribeWithRetry subscribes to subject, retrying on failure with the given
+// waits and aborting as soon as ctx is done. It returns the last error when every
+// attempt failed.
+func subscribeWithRetry(ctx context.Context, nc *nats.Conn, subject string, log *slog.Logger, delays []time.Duration, h nats.MsgHandler) (*nats.Subscription, error) {
+	var err error
+	for attempt := 0; ; attempt++ {
+		var sub *nats.Subscription
+		sub, err = nc.Subscribe(subject, h)
+		if err == nil {
+			return sub, nil
+		}
+		if attempt >= len(delays) {
+			return nil, err
+		}
+		log.Warn("nats subscribe failed; retrying", "subject", subject,
+			"attempt", attempt+1, "retry_in", delays[attempt], "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delays[attempt]):
+		}
+	}
 }
 
 // connectNATS builds a NATS connection from the cluster's NATSConnConfig.
