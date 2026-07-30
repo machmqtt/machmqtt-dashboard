@@ -688,3 +688,71 @@ func waitForBridges(t *testing.T, sub *MQTTSubscriber, want int) {
 	}
 	t.Fatalf("bridge count never reached %d (got %d)", want, len(sub.Bridges()))
 }
+
+// TestMQTTSubscriberReadyStateFromPush pins the push-path readiness mapping:
+// the broker's ready_state string drives the same Ready/Draining/JSDegraded
+// flags the HTTP readyz path sets, and a payload without the field (older
+// broker) falls back to deriving readiness from the NATS link.
+func TestMQTTSubscriberReadyStateFromPush(t *testing.T) {
+	s := natstest.New(t)
+	sub := newMQTTSubscriber()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sub.run(ctx, &config.NATSConnConfig{URLs: []string{s.ClientURL()}, SubjectPrefix: "$MQTT5"})
+	waitSubscriberConnected(t, sub)
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	publish := func(m BridgeMetricsMsg) {
+		data, _ := json.Marshal(m)
+		nc.Publish("$MQTT5.metrics."+m.InstanceName, data)
+		nc.Flush()
+	}
+
+	// A JetStream-degraded broker: MQTT up (NATS link connected), JS down.
+	publish(BridgeMetricsMsg{
+		V: 1, InstanceName: "degraded", ReadyState: "jetstream-degraded",
+		NATS:    BridgeMsgNATS{Connected: true},
+		Metrics: &MQTTMetrics{ConnectionsActive: 3},
+	})
+	waitForBridgeState(t, sub, "degraded", func(inst MQTTBridgeInstance) bool {
+		st := inst.Status
+		return st != nil && st.JetStreamDegraded && !st.Ready && !st.Draining
+	}, "JetStreamDegraded=true, Ready=false, Draining=false")
+
+	// An explicitly ready broker.
+	publish(BridgeMetricsMsg{
+		V: 1, InstanceName: "ready", ReadyState: "ready",
+		NATS: BridgeMsgNATS{Connected: true},
+	})
+	waitForBridgeState(t, sub, "ready", func(inst MQTTBridgeInstance) bool {
+		st := inst.Status
+		return st != nil && st.Ready && !st.JetStreamDegraded && !st.Draining
+	}, "Ready=true, JetStreamDegraded=false")
+
+	// A pre-ready_state broker: no field → readiness derived from the NATS link,
+	// and never JetStreamDegraded (the payload cannot express it).
+	publish(BridgeMetricsMsg{
+		V: 1, InstanceName: "legacy",
+		NATS: BridgeMsgNATS{Connected: true},
+	})
+	waitForBridgeState(t, sub, "legacy", func(inst MQTTBridgeInstance) bool {
+		st := inst.Status
+		return st != nil && st.Ready && !st.JetStreamDegraded
+	}, "legacy fallback: Ready=true, JetStreamDegraded=false")
+
+	// ready_state "draining" marks Draining even when the envelope drained flag
+	// is absent (the state string is authoritative).
+	publish(BridgeMetricsMsg{
+		V: 1, InstanceName: "draining-state", ReadyState: "draining",
+		NATS: BridgeMsgNATS{Connected: true},
+	})
+	waitForBridgeState(t, sub, "draining-state", func(inst MQTTBridgeInstance) bool {
+		st := inst.Status
+		return st != nil && st.Draining && !st.Ready
+	}, "Draining=true via ready_state")
+}

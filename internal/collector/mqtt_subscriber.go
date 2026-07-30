@@ -41,6 +41,11 @@ type BridgeMetricsMsg struct {
 	InstanceName string    `json:"instance_name"` // stable across restarts — dashboard's historical key
 	Version      string    `json:"version,omitempty"`
 	Drained      bool      `json:"drained,omitempty"`
+	// ReadyState is the broker's /readyz state string ("ready", "draining",
+	// "jetstream-degraded", "not ready") on the push path, so both paths render
+	// identical states. Empty on brokers that predate the field, in which case
+	// readiness falls back to being derived from the NATS link and drained.
+	ReadyState string `json:"ready_state,omitempty"`
 
 	// Metrics carries the full MQTTMetrics counter set (the same struct the HTTP
 	// /metrics parser fills). The broker now embeds instance_id and drained inside
@@ -422,15 +427,24 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 		}
 	}
 
+	// Prefer the broker's explicit ready_state (same vocabulary as /readyz, so
+	// push and poll bridges render identical badges). Brokers that predate the
+	// field keep the derived fallback: NATS link up and not draining.
+	ready, drainingState, jsDegraded := ReadyzState(m.ReadyState)
+	if m.ReadyState == "" {
+		ready, drainingState, jsDegraded = m.NATS.Connected && !drained, false, false
+	}
+
 	status := &MQTTBridgeStatus{
-		Name:          name,
-		Ready:         m.NATS.Connected && !drained,
-		Draining:      drained,
-		Connections:   int(metrics.ConnectionsActive),
-		NATSConnected: m.NATS.Connected,
-		Pool:          pool,
-		Metrics:       metrics,
-		NATS:          natsDiag,
+		Name:              name,
+		Ready:             ready,
+		Draining:          drained || drainingState,
+		JetStreamDegraded: jsDegraded,
+		Connections:       int(metrics.ConnectionsActive),
+		NATSConnected:     m.NATS.Connected,
+		Pool:              pool,
+		Metrics:           metrics,
+		NATS:              natsDiag,
 	}
 
 	return MQTTBridgeInstance{
