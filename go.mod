@@ -1,12 +1,13 @@
 module github.com/noodlebit/machmqtt-dashboard
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.51.0
+	github.com/nats-io/nkeys v0.4.16
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.20.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -22,7 +23,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/minio/highwayhash v1.0.4 // indirect
 	github.com/nats-io/jwt/v2 v2.8.2 // indirect
-	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
