@@ -228,6 +228,96 @@ func TestBridgeMsgToInstancePrefersEmbedded(t *testing.T) {
 	}
 }
 
+// TestBridgesConcurrentReadersNoRace pins the cache's immutability contract:
+// Bridges() takes only a read lock, so anything it writes through the cached
+// message is an unsynchronized write shared with every other reader — including
+// the API handlers, which JSON-marshal the very same *MQTTMetrics the cache
+// holds. Run under -race.
+func TestBridgesConcurrentReadersNoRace(t *testing.T) {
+	s := natstest.New(t)
+	sub := newMQTTSubscriber()
+	// Default TTL: a short one would let the sweeper empty the cache mid-test,
+	// leaving nothing for the readers to contend over.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sub.run(ctx, &config.NATSConnConfig{URLs: []string{s.ClientURL()}, SubjectPrefix: "$MQTT5"})
+	waitSubscriberConnected(t, sub)
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	// Live (non-drained) bridges carrying an embedded metrics object: that is the
+	// struct the cache shares with readers. instance_id lives only at the top
+	// level, the shape that invites an envelope→metrics fixup on read.
+	for _, name := range []string{"b1", "b2"} {
+		data, _ := json.Marshal(BridgeMetricsMsg{
+			V: 1, InstanceName: name, InstanceID: "id-" + name,
+			Metrics: &MQTTMetrics{ConnectionsActive: 3, ConsumerPendingMessages: 5},
+			NATS:    BridgeMsgNATS{Connected: true, ServerName: "n1"},
+		})
+		nc.Publish("$MQTT5.metrics."+name, data)
+	}
+	nc.Flush()
+	waitForBridges(t, sub, 2)
+
+	const iterations = 200
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				for _, inst := range sub.Bridges() {
+					if inst.Status.Metrics.InstanceID == "" {
+						t.Error("InstanceID was not resolved at ingest")
+					}
+				}
+			}
+		}()
+	}
+	// Stands in for the API handler serving push.Status.Metrics, which aliases
+	// the cached struct rather than copying it.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range iterations {
+			for _, inst := range sub.Bridges() {
+				if _, err := json.Marshal(inst.Status.Metrics); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+// TestMQTTSubscriberConnectedFalseWhenLinkDown covers the health signal behind
+// the dashboard's "push connected" badge: the client reconnects indefinitely, so
+// the conn stays non-nil after the server disappears and only the link state
+// distinguishes healthy from unreachable.
+func TestMQTTSubscriberConnectedFalseWhenLinkDown(t *testing.T) {
+	s := natstest.New(t)
+	sub := newMQTTSubscriber()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sub.run(ctx, &config.NATSConnConfig{URLs: []string{s.ClientURL()}, SubjectPrefix: "$MQTT5"})
+	waitSubscriberConnected(t, sub)
+
+	s.Shutdown()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !sub.Connected() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("Connected() stayed true after the NATS server went away")
+}
+
 func waitForBridges(t *testing.T, sub *MQTTSubscriber, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

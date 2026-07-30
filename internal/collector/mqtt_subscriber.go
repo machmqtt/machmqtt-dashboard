@@ -43,7 +43,7 @@ type BridgeMetricsMsg struct {
 
 	// Metrics carries the full MQTTMetrics counter set (the same struct the HTTP
 	// /metrics parser fills). The broker now embeds instance_id and drained inside
-	// this object too; bridgeMsgToInstance prefers those when present.
+	// this object too; normalizeBridgeMsg prefers those when present.
 	Metrics *MQTTMetrics `json:"metrics,omitempty"`
 
 	// NATS, Pool, and Account feed the connection/pool/JetStream diagnostics in
@@ -135,10 +135,14 @@ func (s *MQTTSubscriber) logger() *slog.Logger {
 }
 
 // Connected reports whether the metrics subscriber's NATS connection is up.
+// The client retries indefinitely (see connectNATS), so a non-nil conn only
+// means "configured": the link must also be currently established, or health
+// would report the push path up while NATS is unreachable.
 func (s *MQTTSubscriber) Connected() bool {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.nc != nil
+	nc := s.nc
+	s.mu.RUnlock()
+	return nc != nil && nc.IsConnected()
 }
 
 // run connects to NATS, subscribes to <prefix>.metrics.>, and maintains the
@@ -208,6 +212,10 @@ func (s *MQTTSubscriber) run(ctx context.Context, cfg *config.NATSConnConfig) {
 					cb.inRate, cb.outRate = prev.inRate, prev.outRate
 				}
 			}
+			// Resolve the envelope fixups before the message becomes visible: a
+			// cached message must be immutable once published, because Bridges()
+			// hands its *MQTTMetrics to readers that marshal it concurrently.
+			normalizeBridgeMsg(&m)
 			s.bridges[m.InstanceName] = cb
 		}
 		s.mu.Unlock()
@@ -287,6 +295,40 @@ func nonNegRate(cur, prev int64, dt float64) float64 {
 	return float64(cur-prev) / dt
 }
 
+// bridgeMetrics resolves the counter set for a message without writing through
+// it. The full set arrives inside m.Metrics, which the subscriber normalizes at
+// ingest (see normalizeBridgeMsg) — mutating it here would race with readers
+// holding an earlier Bridges() result. When absent, a fresh struct carries the
+// JS-absent sentinel the HTTP parser uses, plus the envelope's instance_id and
+// drained, so the rest of the mapping is nil-safe.
+func bridgeMetrics(m *BridgeMetricsMsg) *MQTTMetrics {
+	if m.Metrics != nil {
+		return m.Metrics
+	}
+	return &MQTTMetrics{
+		ConsumerPendingMessages: -1,
+		InstanceID:              m.InstanceID,
+		Drained:                 boolToInt64(m.Drained),
+	}
+}
+
+// normalizeBridgeMsg folds the envelope's instance_id and drained into the
+// embedded metrics object. The broker embeds both inside Metrics, so those win;
+// the top-level wire fields only fill them when unset. Call this once, before
+// the message is cached — never afterwards.
+func normalizeBridgeMsg(m *BridgeMetricsMsg) {
+	if m.Metrics == nil {
+		m.Metrics = bridgeMetrics(m)
+		return
+	}
+	if m.Metrics.InstanceID == "" {
+		m.Metrics.InstanceID = m.InstanceID
+	}
+	if m.Metrics.Drained == 0 {
+		m.Metrics.Drained = boolToInt64(m.Drained)
+	}
+}
+
 // bridgeMsgToInstance converts a wire message into the MQTTBridgeInstance shape.
 // name is instance_name (the stable cache key and store BridgeID).
 func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
@@ -310,20 +352,7 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 		})
 	}
 
-	// The full counter set now arrives inside m.Metrics. When absent, substitute
-	// the JS-absent sentinel the HTTP parser uses so the rest of the mapping is
-	// nil-safe. The broker also embeds instance_id and drained inside Metrics, so
-	// prefer those and only fall back to the top-level wire fields when unset.
-	metrics := m.Metrics
-	if metrics == nil {
-		metrics = &MQTTMetrics{ConsumerPendingMessages: -1}
-	}
-	if metrics.InstanceID == "" {
-		metrics.InstanceID = m.InstanceID
-	}
-	if metrics.Drained == 0 {
-		metrics.Drained = boolToInt64(m.Drained)
-	}
+	metrics := bridgeMetrics(m)
 
 	natsConn := MQTTNATSConnection{
 		Connected:  m.NATS.Connected,

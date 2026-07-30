@@ -122,10 +122,14 @@ func (sc *SYSCollector) cacheLen() int {
 }
 
 // Connected reports whether the $SYS NATS connection is currently established.
+// The client retries indefinitely (see connectNATS), so a non-nil conn only
+// means "configured": the link must also be up, or health would report the push
+// path connected while NATS is unreachable.
 func (sc *SYSCollector) Connected() bool {
 	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-	return sc.nc != nil
+	nc := sc.nc
+	sc.mu.RUnlock()
+	return nc != nil && nc.IsConnected()
 }
 
 func (sc *SYSCollector) logger() *slog.Logger {
