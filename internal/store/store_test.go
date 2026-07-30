@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1661,5 +1662,52 @@ func TestMetricsWriterClosedDB(t *testing.T) {
 	_, err = w.QueryMQTTMetrics(ctx, "e", "", 0, 100, 5)
 	if err == nil {
 		t.Error("QueryMQTTMetrics: expected error on closed DB")
+	}
+}
+
+func TestOpenSecuresDataDir(t *testing.T) {
+	// The dir holds the DB with password hashes and cluster admin tokens, so it
+	// must not be group/world readable — on a fresh create and on a dir that
+	// already exists with looser permissions (e.g. one created by an earlier
+	// version, or by an installer).
+	t.Run("fresh create", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "data")
+		s, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		assertDirMode(t, dir, 0o700)
+	})
+
+	t.Run("pre-existing 0755", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "data")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Mkdir's mode is subject to the process umask, so set it explicitly —
+		// otherwise the "loose perms" precondition may not actually hold.
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		assertDirMode(t, dir, 0o755) // precondition
+
+		s, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		assertDirMode(t, dir, 0o700)
+	})
+}
+
+func assertDirMode(t *testing.T, dir string, want os.FileMode) {
+	t.Helper()
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != want {
+		t.Errorf("%s mode = %#o, want %#o", dir, got, want)
 	}
 }

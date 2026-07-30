@@ -37,6 +37,57 @@ func TestComputeRates(t *testing.T) {
 	}
 }
 
+func TestComputeRatesCounterReset(t *testing.T) {
+	now := time.Now()
+	// A restarted server reports counters lower than the previous poll's.
+	prev := &Snapshot{
+		Varz: map[string]*Varz{
+			"srv1": {InMsgs: 5_000, OutMsgs: 9_000, InBytes: 700_000, OutBytes: 800_000, Now: now},
+			"srv2": {InMsgs: 100, OutMsgs: 200, InBytes: 1_000, OutBytes: 2_000, Now: now},
+		},
+	}
+	cur := &Snapshot{
+		Varz: map[string]*Varz{
+			"srv1": {InMsgs: 10, OutMsgs: 20, InBytes: 100, OutBytes: 200, Now: now.Add(10 * time.Second)},
+			// srv2 keeps counting: a real delta must still produce a real rate.
+			"srv2": {InMsgs: 200, OutMsgs: 400, InBytes: 3_000, OutBytes: 6_000, Now: now.Add(10 * time.Second)},
+		},
+	}
+
+	rates := computeRates(prev, cur)
+	r, ok := rates["srv1"]
+	if !ok {
+		t.Fatal("no rates for srv1")
+	}
+	for name, got := range map[string]float64{
+		"InMsgsRate":   r.InMsgsRate,
+		"OutMsgsRate":  r.OutMsgsRate,
+		"InBytesRate":  r.InBytesRate,
+		"OutBytesRate": r.OutBytesRate,
+	} {
+		if got != 0 {
+			t.Errorf("%s = %f, want 0 after a counter reset (negative rates distort charts and stored history)", name, got)
+		}
+	}
+
+	r2, ok := rates["srv2"]
+	if !ok {
+		t.Fatal("no rates for srv2")
+	}
+	if r2.InMsgsRate != 10 {
+		t.Errorf("srv2 InMsgsRate = %f, want 10", r2.InMsgsRate)
+	}
+	if r2.OutMsgsRate != 20 {
+		t.Errorf("srv2 OutMsgsRate = %f, want 20", r2.OutMsgsRate)
+	}
+	if r2.InBytesRate != 200 {
+		t.Errorf("srv2 InBytesRate = %f, want 200", r2.InBytesRate)
+	}
+	if r2.OutBytesRate != 400 {
+		t.Errorf("srv2 OutBytesRate = %f, want 400", r2.OutBytesRate)
+	}
+}
+
 func TestComputeRatesSameTimestamp(t *testing.T) {
 	now := time.Now()
 	prev := &Snapshot{

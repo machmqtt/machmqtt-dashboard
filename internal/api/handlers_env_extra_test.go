@@ -117,7 +117,7 @@ func TestSubsRowsFromConnz(t *testing.T) {
 		snap := &collector.Snapshot{
 			Connz: map[string]*collector.Connz{"s": {Conns: []collector.ConnInfo{{Cid: 1}}}},
 		}
-		if rows := subsRowsFromConnz(snap); rows != nil {
+		if rows, _ := subsRowsFromConnz(snap); rows != nil {
 			t.Errorf("rows = %v, want nil when conns carry no subs", rows)
 		}
 	})
@@ -131,7 +131,7 @@ func TestSubsRowsFromConnz(t *testing.T) {
 				{Cid: 3}, // no subs → skipped
 			}}},
 		}
-		rows := subsRowsFromConnz(snap)
+		rows, _ := subsRowsFromConnz(snap)
 		if len(rows) != 3 {
 			t.Fatalf("rows = %d, want 3 (1 detail + 2 list)", len(rows))
 		}
@@ -151,7 +151,7 @@ func TestCacheSubsRowsEviction(t *testing.T) {
 	srv, _, _, _ := polledServer(t, natsMockConfig{})
 	// Fill the cache past its max so the oldest entry is evicted.
 	for i := 0; i < subsCacheMaxEntries+5; i++ {
-		srv.cacheSubsRows(rowKey(i), []subRow{{Subject: "s"}})
+		srv.cacheSubsRows(rowKey(i), []subRow{{Subject: "s"}}, false)
 	}
 	subsDetailCacheMu.Lock()
 	n := len(subsDetailCacheData)

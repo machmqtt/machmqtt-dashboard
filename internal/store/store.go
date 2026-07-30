@@ -67,8 +67,16 @@ type Store struct {
 }
 
 func Open(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	// The dir holds the SQLite database, which stores credential material
+	// (password hashes, per-cluster admin API tokens), so it must not be readable
+	// by other local users. MkdirAll leaves the mode of an already-existing dir
+	// untouched, so 0700 is re-asserted on every open rather than only at create
+	// time; a dir we cannot secure is treated as fatal.
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	if err := os.Chmod(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("secure data dir: %w", err)
 	}
 
 	dbPath := filepath.Join(dataDir, "dashboard.db")

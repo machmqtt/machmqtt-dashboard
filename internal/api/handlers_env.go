@@ -136,8 +136,10 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	// If filtering by subject, build a CID set from the subs cache (15s TTL).
 	var subCIDs map[uint64]bool
 	subsAvailable := true
+	subsTruncated := false
 	if filterSubject != "" {
-		rows := s.getSubsRows(r.Context(), env)
+		rows, tr := s.getSubsRows(r.Context(), env)
+		subsTruncated = tr
 		// No rows means either the subscription source is unavailable or the
 		// cluster genuinely has no subscriptions. Either way the subject filter
 		// matches nothing — surface subsAvailable=false so the client can tell
@@ -152,7 +154,18 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var allConns []collector.ConnInfo
+	// Connz.Total is the server's own count of its connections, while Conns holds
+	// only the page the poll fetched (Collector.fetchServer caps it). Fewer rows
+	// than Total means this view is a prefix of the cluster's connections, so
+	// report both numbers instead of passing the fetched count off as the total.
+	serverTotal := 0
+	// A truncated subject-filter source can also hide connections from the result.
+	truncated := subsTruncated
 	for _, connz := range snap.Connz {
+		serverTotal += connz.Total
+		if len(connz.Conns) < connz.Total {
+			truncated = true
+		}
 		for _, c := range connz.Conns {
 			if acc != "" && c.Account != acc {
 				continue
@@ -164,6 +177,8 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// total bounds the pageable rows (the fetched, filtered set); server_total is
+	// what the cluster reports it has.
 	total := len(allConns)
 	if offset > total {
 		offset = total
@@ -174,10 +189,12 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"connections": allConns[offset:end],
-		"total":       total,
-		"limit":       limit,
-		"offset":      offset,
+		"connections":  allConns[offset:end],
+		"total":        total,
+		"server_total": serverTotal,
+		"truncated":    truncated,
+		"limit":        limit,
+		"offset":       offset,
 	}
 	if filterSubject != "" {
 		resp["subs_available"] = subsAvailable
@@ -221,7 +238,7 @@ func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Enrich subs from the cache when the snapshot doesn't carry them.
 	if len(found.SubsDetail) == 0 && len(found.Subs) == 0 {
-		rows := s.getSubsRows(r.Context(), env)
+		rows, _ := s.getSubsRows(r.Context(), env)
 		for _, row := range rows {
 			if row.ConnCid == cid {
 				found.SubsDetail = append(found.SubsDetail, collector.SubDetail{
@@ -289,28 +306,32 @@ type subRow struct {
 var subsDetailCacheMu sync.Mutex
 var subsDetailCacheData = make(map[string]*struct {
 	rows      []subRow
+	truncated bool
 	fetchedAt time.Time
 })
 
 const subsCacheTTL = 15 * time.Second
 const subsCacheMaxEntries = 50
 
-func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
+// getSubsRows returns the subscription rows and whether they are incomplete —
+// true when a server reported more connections than the fetch returned, so some
+// connections' subscriptions are missing from the table.
+func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
 	subsDetailCacheMu.Lock()
 	cached := subsDetailCacheData[env]
 	if cached != nil && time.Since(cached.fetchedAt) < subsCacheTTL {
-		rows := cached.rows
+		rows, truncated := cached.rows, cached.truncated
 		subsDetailCacheMu.Unlock()
-		return rows
+		return rows, truncated
 	}
 	subsDetailCacheMu.Unlock()
 
 	// Fast path: use snapshot Connz when sys_collection is active and the slow
 	// poll has populated per-connection subscription detail via PING.CONNZ.
 	if snap := s.manager.Snapshot(env); snap != nil {
-		if rows := subsRowsFromConnz(snap); rows != nil {
-			s.cacheSubsRows(env, rows)
-			return rows
+		if rows, truncated := subsRowsFromConnz(snap); rows != nil {
+			s.cacheSubsRows(env, rows, truncated)
+			return rows, truncated
 		}
 	}
 
@@ -318,7 +339,7 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 	fetcher := s.manager.Fetcher(env)
 	servers := s.manager.EnvServers(env)
 	if fetcher == nil || len(servers) == 0 {
-		return nil
+		return nil, false
 	}
 
 	snap := s.manager.Snapshot(env)
@@ -355,9 +376,15 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 	wg.Wait()
 
 	var all []subRow
+	truncated := false
 	for _, connz := range results {
 		if connz == nil {
 			continue
+		}
+		// The per-server fetch above asks for at most 1024 connections; anything
+		// beyond that (or beyond maxRows) is silently absent from the table.
+		if len(connz.Conns) < connz.Total {
+			truncated = true
 		}
 		if len(all) >= maxRows {
 			break
@@ -400,19 +427,28 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		}
 	}
 
+	if len(all) >= maxRows {
+		truncated = true
+	}
+
 	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
-	s.cacheSubsRows(env, all)
-	return all
+	s.cacheSubsRows(env, all, truncated)
+	return all, truncated
 }
 
 // subsRowsFromConnz builds the subscription row table from snapshot Connz entries
 // that carry per-connection subscription detail (populated by PING.CONNZ with
 // subscriptions_detail=true on slow polls when sys_collection=true). Returns nil
 // when no Connz entry has subscription data, signalling a fall-through to HTTP.
-func subsRowsFromConnz(snap *collector.Snapshot) []subRow {
+// The bool reports whether some connections were left out of the rows.
+func subsRowsFromConnz(snap *collector.Snapshot) ([]subRow, bool) {
 	const maxRows = 50000
 	var all []subRow
+	truncated := false
 	for srvID, connz := range snap.Connz {
+		if len(connz.Conns) < connz.Total {
+			truncated = true
+		}
 		srvName := srvID
 		if v, ok := snap.Varz[srvID]; ok && v.ServerName != "" {
 			srvName = v.ServerName
@@ -454,18 +490,22 @@ func subsRowsFromConnz(snap *collector.Snapshot) []subRow {
 		}
 	}
 	if len(all) == 0 {
-		return nil
+		return nil, false
+	}
+	if len(all) >= maxRows {
+		truncated = true
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
-	return all
+	return all, truncated
 }
 
-func (s *Server) cacheSubsRows(env string, rows []subRow) {
+func (s *Server) cacheSubsRows(env string, rows []subRow, truncated bool) {
 	subsDetailCacheMu.Lock()
 	subsDetailCacheData[env] = &struct {
 		rows      []subRow
+		truncated bool
 		fetchedAt time.Time
-	}{rows: rows, fetchedAt: time.Now()}
+	}{rows: rows, truncated: truncated, fetchedAt: time.Now()}
 	if len(subsDetailCacheData) > subsCacheMaxEntries {
 		var oldestKey string
 		var oldestTime time.Time
@@ -492,7 +532,7 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	filterServer := q.Get("server")
 	hideSystem := q.Get("hide_system") == "true"
 
-	all := s.getSubsRows(r.Context(), env)
+	all, truncated := s.getSubsRows(r.Context(), env)
 	if all == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
@@ -527,8 +567,11 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"subscriptions": filtered[offset:end],
 		"total":         total,
-		"limit":         limit,
-		"offset":        offset,
+		// The source connz fetch is capped per server, so rows can be missing for
+		// connections beyond the cap.
+		"truncated": truncated,
+		"limit":     limit,
+		"offset":    offset,
 	})
 }
 
@@ -580,7 +623,8 @@ func (s *Server) handleAccountDetail(w http.ResponseWriter, r *http.Request) {
 
 	// SubCnt from the subs cache (15s TTL).
 	var subCnt uint32
-	for _, row := range s.getSubsRows(r.Context(), env) {
+	subsRows, _ := s.getSubsRows(r.Context(), env)
+	for _, row := range subsRows {
 		if row.Account == acc {
 			subCnt++
 		}

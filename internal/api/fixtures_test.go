@@ -42,6 +42,14 @@ type natsMockConfig struct {
 	// bridgeConn adds a connection named "machmqtt-bridge" (IP 127.0.0.1) so
 	// connz-scan MQTT bridge discovery has a candidate to find.
 	bridgeConn bool
+	// connzReportedTotal, when non-zero, makes /connz report that many total
+	// connections while still returning only the fixture rows — the shape a real
+	// server has when it holds more connections than the poll fetches.
+	connzReportedTotal int
+	// subsConnzReportedTotal does the same but only for the subscription fetches
+	// (/connz?subs=...), leaving the poll's plain /connz complete. That isolates
+	// truncation of the subscription source from truncation of the snapshot connz.
+	subsConnzReportedTotal int
 }
 
 // fixtureConns returns the two base connections the mock reports.
@@ -96,8 +104,15 @@ func natsMock(t *testing.T, cfg natsMockConfig) *httptest.Server {
 					NumSubs: 2, InMsgs: 10, OutMsgs: 20,
 				})
 			}
+			total := len(conns)
+			if cfg.connzReportedTotal > 0 {
+				total = cfg.connzReportedTotal
+			}
+			if subsParam != "" && cfg.subsConnzReportedTotal > 0 {
+				total = cfg.subsConnzReportedTotal
+			}
 			enc(collector.Connz{
-				ServerID: fixtureServerID, NumConns: len(conns), Total: len(conns),
+				ServerID: fixtureServerID, NumConns: len(conns), Total: total,
 				Limit: 1024, Conns: conns,
 			})
 		case "/routez":

@@ -81,11 +81,14 @@ func computeRates(prev, cur *Snapshot) map[string]*ServerRates {
 		if dt <= 0 {
 			continue
 		}
+		// These are cumulative counters that reset when a server restarts. An
+		// unclamped delta would then be a large negative rate, which is charted,
+		// summed into the overview and persisted into the metrics history.
 		rates[id] = &ServerRates{
-			InMsgsRate:   float64(cv.InMsgs-pv.InMsgs) / dt,
-			OutMsgsRate:  float64(cv.OutMsgs-pv.OutMsgs) / dt,
-			InBytesRate:  float64(cv.InBytes-pv.InBytes) / dt,
-			OutBytesRate: float64(cv.OutBytes-pv.OutBytes) / dt,
+			InMsgsRate:   nonNegRate(cv.InMsgs, pv.InMsgs, dt),
+			OutMsgsRate:  nonNegRate(cv.OutMsgs, pv.OutMsgs, dt),
+			InBytesRate:  nonNegRate(cv.InBytes, pv.InBytes, dt),
+			OutBytesRate: nonNegRate(cv.OutBytes, pv.OutBytes, dt),
 		}
 	}
 	return rates

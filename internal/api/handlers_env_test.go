@@ -118,6 +118,93 @@ func TestHandleConnzPagination(t *testing.T) {
 	}
 }
 
+func TestHandleConnzTruncatedReportsServerTotal(t *testing.T) {
+	// The server holds 5000 connections but the poll only fetched the 2 fixture
+	// rows: the response must say so instead of reporting 2 as the cluster total.
+	srv, _, token, id := polledServer(t, natsMockConfig{connzReportedTotal: 5000})
+	w := do(t, srv, "GET", "/api/environments/"+id+"/connz", token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	m := decodeJSON(t, w)
+	st, ok := m["server_total"].(float64)
+	if !ok {
+		t.Fatalf("server_total missing or not a number: %s", w.Body.String())
+	}
+	if st != 5000 {
+		t.Errorf("server_total = %v, want 5000 (server-reported Connz.Total)", st)
+	}
+	tr, ok := m["truncated"].(bool)
+	if !ok {
+		t.Fatalf("truncated missing or not a bool: %s", w.Body.String())
+	}
+	if !tr {
+		t.Error("truncated = false, want true when fetched rows < server-reported total")
+	}
+	// total still bounds the pageable rows.
+	if m["total"].(float64) != 2 {
+		t.Errorf("total = %v, want 2 (fetched rows)", m["total"])
+	}
+}
+
+func TestHandleConnzNotTruncated(t *testing.T) {
+	srv, _, token, id := polledServer(t, natsMockConfig{})
+	w := do(t, srv, "GET", "/api/environments/"+id+"/connz", token, "")
+	m := decodeJSON(t, w)
+	if tr, ok := m["truncated"].(bool); !ok || tr {
+		t.Errorf("truncated = %v (ok=%v), want false when every connection was fetched", m["truncated"], ok)
+	}
+	if st, ok := m["server_total"].(float64); !ok || st != 2 {
+		t.Errorf("server_total = %v (ok=%v), want 2", m["server_total"], ok)
+	}
+}
+
+func TestHandleConnzTruncatedViaSubjectFilterSource(t *testing.T) {
+	// A subject filter resolves CIDs from the subscription rows; when that source
+	// is capped the filtered result is a partial view even though the snapshot's
+	// own connz is complete. Only the subs fetch reports a larger total here, so
+	// this isolates that signal from the per-server connz comparison.
+	srv, _, token, id := polledServer(t, natsMockConfig{subsConnzReportedTotal: 5000})
+	w := do(t, srv, "GET", "/api/environments/"+id+"/connz?filter_subject=foo.bar", token, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	m := decodeJSON(t, w)
+	if st, ok := m["server_total"].(float64); !ok || st != 2 {
+		t.Fatalf("server_total = %v (ok=%v), want 2 — the snapshot connz must be complete for this case to isolate the subs source", m["server_total"], ok)
+	}
+	if tr, ok := m["truncated"].(bool); !ok || !tr {
+		t.Errorf("truncated = %v (ok=%v), want true when the subject-filter source was capped", m["truncated"], ok)
+	}
+}
+
+func TestHandleSubsDetailTruncationFlag(t *testing.T) {
+	t.Run("truncated", func(t *testing.T) {
+		srv, _, token, id := polledServer(t, natsMockConfig{subsInPlainConnz: true, connzReportedTotal: 5000})
+		w := do(t, srv, "GET", "/api/environments/"+id+"/subsz/detail", token, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+		}
+		m := decodeJSON(t, w)
+		tr, ok := m["truncated"].(bool)
+		if !ok {
+			t.Fatalf("truncated missing or not a bool: %s", w.Body.String())
+		}
+		if !tr {
+			t.Error("truncated = false, want true when the source connz fetch was capped")
+		}
+	})
+
+	t.Run("complete", func(t *testing.T) {
+		srv, _, token, id := polledServer(t, natsMockConfig{subsInPlainConnz: true})
+		w := do(t, srv, "GET", "/api/environments/"+id+"/subsz/detail", token, "")
+		m := decodeJSON(t, w)
+		if tr, ok := m["truncated"].(bool); !ok || tr {
+			t.Errorf("truncated = %v (ok=%v), want false", m["truncated"], ok)
+		}
+	})
+}
+
 func TestHandleConnzAccountFilter(t *testing.T) {
 	srv, _, token, id := polledServer(t, natsMockConfig{})
 	w := do(t, srv, "GET", "/api/environments/"+id+"/connz?acc=ACC", token, "")

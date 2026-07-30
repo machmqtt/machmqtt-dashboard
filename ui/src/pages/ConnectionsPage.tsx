@@ -39,7 +39,12 @@ interface Connection {
 
 interface ConnzResponse {
   connections: Connection[]
+  // total counts the rows the poll fetched (and that pagination walks), while
+  // server_total is what the cluster reports it holds. truncated is set when the
+  // poll's per-server connz limit cut the fetch short, so the table is a prefix.
   total: number
+  server_total?: number
+  truncated?: boolean
   limit: number
   offset: number
   // Present only when a subject filter is applied: false means the subscription
@@ -203,6 +208,11 @@ export function ConnectionsPage() {
   })
 
   const total = data?.total ?? 0
+  const serverTotal = data?.server_total ?? total
+  const truncated = data?.truncated === true
+  // server_total is the unfiltered cluster count, so it can only be quoted as
+  // the denominator when no filter is narrowing the rows.
+  const filtersActive = Boolean(acc || state || filterSubject)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const currentPage = Math.floor(offset / pageSize) + 1
   const hasNext = offset + pageSize < total
@@ -266,7 +276,16 @@ export function ConnectionsPage() {
         <>
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm text-gray-500 dark:text-gray-400">
-              {total} connections total
+              {!truncated
+                ? `${total.toLocaleString()} connections total`
+                : filtersActive
+                  ? `${total.toLocaleString()} matching connections`
+                  : `Showing first ${total.toLocaleString()} of ${serverTotal.toLocaleString()} connections`}
+              {truncated && (
+                <span className="ml-2 text-xs text-amber-500">
+                  (each server reports more connections than the poll fetches — this view is a sample)
+                </span>
+              )}
               {total > 0 && !data.connections?.some(c => c.account || c.authorized_user) && (
                 <span className="ml-2 text-xs text-gray-400">(no auth configured — Account/User will be empty)</span>
               )}
