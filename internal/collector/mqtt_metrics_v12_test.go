@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -421,6 +422,12 @@ func walkForZeroFields(t *testing.T, v reflect.Value, path string) {
 	typ := v.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		f, name := v.Field(i), path+"."+typ.Field(i).Name
+		// The Uncurated capture fields are dashboard-local, not part of the
+		// broker mirror: a fully curated fixture leaves them legitimately empty
+		// (that emptiness is itself asserted by TestParseV12FixtureFullyCurated).
+		if strings.HasPrefix(typ.Field(i).Name, "Uncurated") {
+			continue
+		}
 		switch f.Kind() {
 		case reflect.Array:
 			// Individual buckets may legitimately be empty; an all-zero array
@@ -676,5 +683,100 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 	// overwritten by the metrics-path pool group.
 	if p := sub.Bridges()[0].Status.Pool; p == nil || p.Size != 2 || len(p.Slots) != 1 {
 		t.Errorf("Status.Pool = %+v, want the payload's own pool object (size 2, 1 slot)", p)
+	}
+}
+
+// TestParseV12FixtureFullyCurated pins that a body containing only curated
+// families captures nothing: the Uncurated maps exist for genuinely unknown
+// metrics, not as a duplicate of the typed fields.
+func TestParseV12FixtureFullyCurated(t *testing.T) {
+	m := parseV12Fixture(t)
+	if len(m.Uncurated) != 0 {
+		t.Errorf("Uncurated = %v, want empty for a fully curated body", m.Uncurated)
+	}
+	if len(m.UncuratedHelp) != 0 {
+		t.Errorf("UncuratedHelp = %v, want empty for a fully curated body", m.UncuratedHelp)
+	}
+}
+
+// TestParsePrometheusUncuratedCapture covers the scrape-path capture of
+// machmqtt families this build has no curated field for: plain and labeled
+// series are recorded verbatim with the broker's HELP text, unknown histogram
+// buckets and non-machmqtt families stay out, and known families never leak in.
+func TestParsePrometheusUncuratedCapture(t *testing.T) {
+	body := `# HELP machmqtt_future_widget_total Widgets processed by a feature this dashboard predates.
+# TYPE machmqtt_future_widget_total counter
+machmqtt_future_widget_total 123
+# TYPE machmqtt_future_by_kind_total counter
+machmqtt_future_by_kind_total{kind="a"} 4
+machmqtt_future_by_kind_total{kind="b"} 5
+# TYPE machmqtt_future_latency_seconds histogram
+machmqtt_future_latency_seconds_bucket{le="0.1"} 7
+machmqtt_future_latency_seconds_sum 0.5
+machmqtt_future_latency_seconds_count 7
+# TYPE machmqtt_connections_active gauge
+machmqtt_connections_active 3
+not_a_machmqtt_metric 9
+`
+	m := parsePrometheusMetrics(body)
+
+	want := map[string]float64{
+		"machmqtt_future_widget_total":            123,
+		`machmqtt_future_by_kind_total{kind="a"}`: 4,
+		`machmqtt_future_by_kind_total{kind="b"}`: 5,
+		// The unknown histogram's sum/count are plain unknown series; its
+		// _bucket lines are deliberately not captured (the bucket case swallows
+		// them before the default runs).
+		"machmqtt_future_latency_seconds_sum":   0.5,
+		"machmqtt_future_latency_seconds_count": 7,
+	}
+	if len(m.Uncurated) != len(want) {
+		t.Errorf("Uncurated has %d entries, want %d: %v", len(m.Uncurated), len(want), m.Uncurated)
+	}
+	for k, v := range want {
+		if m.Uncurated[k] != v {
+			t.Errorf("Uncurated[%q] = %v, want %v", k, m.Uncurated[k], v)
+		}
+	}
+	if _, leaked := m.Uncurated["machmqtt_connections_active"]; leaked {
+		t.Error("a curated family leaked into Uncurated")
+	}
+	if m.ConnectionsActive != 3 {
+		t.Errorf("ConnectionsActive = %d, want 3 (curated parsing must be unaffected)", m.ConnectionsActive)
+	}
+	if got := m.UncuratedHelp["machmqtt_future_widget_total"]; got != "Widgets processed by a feature this dashboard predates." {
+		t.Errorf("UncuratedHelp = %q, want the broker's HELP text", got)
+	}
+	if _, ok := m.UncuratedHelp["machmqtt_future_by_kind_total"]; ok {
+		t.Error("help recorded for a family that has no HELP line")
+	}
+}
+
+// TestMQTTMetricsUnmarshalCapturesUnknownKeys covers the push-path capture:
+// unknown numeric top-level keys in the metrics object land in Uncurated,
+// non-numeric unknowns are skipped, and typed fields decode as before.
+func TestMQTTMetricsUnmarshalCapturesUnknownKeys(t *testing.T) {
+	raw := `{
+		"connections_active": 6,
+		"counter_added_in_future": 999,
+		"ratio_added_in_future": 0.25,
+		"object_added_in_future": {"nested": 1},
+		"string_added_in_future": "x"
+	}`
+	var m MQTTMetrics
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.ConnectionsActive != 6 {
+		t.Errorf("ConnectionsActive = %d, want 6", m.ConnectionsActive)
+	}
+	want := map[string]float64{"counter_added_in_future": 999, "ratio_added_in_future": 0.25}
+	if len(m.Uncurated) != len(want) {
+		t.Errorf("Uncurated has %d entries, want %d: %v", len(m.Uncurated), len(want), m.Uncurated)
+	}
+	for k, v := range want {
+		if m.Uncurated[k] != v {
+			t.Errorf("Uncurated[%q] = %v, want %v", k, m.Uncurated[k], v)
+		}
 	}
 }

@@ -179,5 +179,28 @@ test.describe('v1.2 metric groups on the detail page', () => {
 
     await expect(page.getByText('Peak Active')).toBeVisible()
     await expect(page.getByText('I/O Reactor')).toHaveCount(0)
+    // No uncurated payload → no section.
+    await expect(page.getByText('Uncurated Metrics')).toHaveCount(0)
+  })
+
+  test('uncurated metrics from a newer broker render raw with help text', async ({ page, request }) => {
+    const env = await discoverEnv(request)
+    await mockDetailReads(page, env.id, {
+      ...V12_METRICS,
+      uncurated: { machmqtt_future_widget_total: 12345, 'machmqtt_future_by_kind_total{kind="a"}': 7 },
+      uncurated_help: { machmqtt_future_widget_total: 'Widgets processed by a feature this dashboard predates.' },
+    })
+
+    await page.goto(`/mqtt/${encodeURIComponent(BRIDGE)}/detail`)
+    await page.getByRole('button', { name: 'Metrics', exact: true }).click()
+
+    await expect(page.getByText('Uncurated Metrics')).toBeVisible()
+    await expect(page.getByText('machmqtt_future_widget_total', { exact: true })).toBeVisible()
+    await expect(page.locator('div[title="12.3K"]')).toBeVisible()
+    await expect(page.getByText('machmqtt_future_by_kind_total{kind="a"}')).toBeVisible()
+    // The broker's HELP text rides as the label's tooltip.
+    await expect(
+      page.locator('div[title="Widgets processed by a feature this dashboard predates."]'),
+    ).toBeVisible()
   })
 })

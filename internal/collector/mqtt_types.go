@@ -420,6 +420,20 @@ type MQTTMetrics struct {
 	ClusterEnabled    bool `json:"cluster_enabled,omitempty"`
 	BridgeUp          bool `json:"bridge_up,omitempty"`
 	SessionsUp        bool `json:"sessions_up,omitempty"`
+
+	// --- Dashboard-local capture (NOT part of the broker snapshot mirror) ---
+	// Uncurated holds broker metrics this build has no curated field for:
+	// unknown machmqtt_* Prometheus families on the scrape path (keyed by the
+	// series name including its label block) and unknown numeric top-level keys
+	// in the pushed metrics object. A new broker metric is therefore visible —
+	// raw, under its wire name — the moment the broker ships it, instead of
+	// silently invisible until the next contract sync. The broker-side tag
+	// parity check must treat these two fields as dashboard-local extras.
+	Uncurated map[string]float64 `json:"uncurated,omitempty"`
+	// UncuratedHelp carries the broker's own # HELP text for captured families
+	// (scrape path only — the push payload has no help text), keyed by family
+	// name without labels.
+	UncuratedHelp map[string]string `json:"uncurated_help,omitempty"`
 }
 
 // MQTTHistogramBucketCount is the number of explicit histogram buckets every

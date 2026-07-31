@@ -734,6 +734,18 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           </Grid>
         </Section>
       )}
+      {data.uncurated && Object.keys(data.uncurated).length > 0 && (
+        <Section title="Uncurated Metrics">
+          <Grid>
+            {Object.entries(data.uncurated)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([k, v]) => (
+                <DI key={k} label={k} value={fmtNum(v as number)} mono hint={data.uncurated_help?.[k.split('{')[0]]} />
+              ))}
+          </Grid>
+          <p className="text-xs text-gray-400 mt-2">Metrics the broker reports that this dashboard build has no curated view for yet — shown raw under their wire names so a newer broker's additions are visible immediately. Hover a name for the broker's own description where available.</p>
+        </Section>
+      )}
     </div>
   )
 }
@@ -1196,10 +1208,10 @@ function Grid({ children }: { children: React.ReactNode }) {
 
 // valueClass carries severity styling for values that have one (see the license
 // status tones); it is appended so callers can only add to the base classes.
-function DI({ label, value, mono, valueClass }: { label: string; value: string; mono?: boolean; valueClass?: string }) {
+function DI({ label, value, mono, valueClass, hint }: { label: string; value: string; mono?: boolean; valueClass?: string; hint?: string }) {
   return (
     <div className="min-w-0">
-      <div className="text-gray-500 dark:text-gray-400 text-xs">{label}</div>
+      <div className="text-gray-500 dark:text-gray-400 text-xs truncate" title={hint || label}>{label}</div>
       <div className={`font-medium truncate ${mono ? 'font-mono text-xs' : ''} ${valueClass ?? ''}`} title={value || '-'}>{value || '-'}</div>
     </div>
   )

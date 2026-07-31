@@ -2,11 +2,59 @@ package collector
 
 import (
 	"cmp"
+	"encoding/json"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// knownMetricTags is the set of top-level json tags MQTTMetrics decodes into a
+// typed field, built once by reflection so it cannot drift from the struct.
+// UnmarshalJSON uses it to spot payload keys this build has no field for.
+var knownMetricTags = sync.OnceValue(func() map[string]bool {
+	tags := make(map[string]bool)
+	t := reflect.TypeFor[MQTTMetrics]()
+	for i := 0; i < t.NumField(); i++ {
+		tag, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if tag != "" && tag != "-" {
+			tags[tag] = true
+		}
+	}
+	return tags
+})
+
+// UnmarshalJSON decodes the typed fields as usual, then captures unknown
+// numeric top-level keys into Uncurated so a metric added by a newer broker is
+// visible under its wire name instead of silently dropped. Non-numeric unknowns
+// (a future nested object, say) are skipped: they have no single-value
+// rendering, and the next contract sync gives them a typed home.
+func (m *MQTTMetrics) UnmarshalJSON(b []byte) error {
+	type plainMetrics MQTTMetrics
+	if err := json.Unmarshal(b, (*plainMetrics)(m)); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil
+	}
+	known := knownMetricTags()
+	for k, v := range raw {
+		if known[k] {
+			continue
+		}
+		var f float64
+		if json.Unmarshal(v, &f) == nil {
+			if m.Uncurated == nil {
+				m.Uncurated = make(map[string]float64)
+			}
+			m.Uncurated[k] = f
+		}
+	}
+	return nil
+}
 
 func parsePrometheusMetrics(body string) *MQTTMetrics {
 	// ConsumerPendingMessages is absent when JetStream is unavailable; sentinel -1
@@ -37,8 +85,18 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		return &pool.Slots[len(pool.Slots)-1]
 	}
 
+	// help collects # HELP lines by family so a captured unknown family carries
+	// the broker's own description (HELP always precedes the family's samples).
+	help := map[string]string{}
+
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
+		if h, ok := strings.CutPrefix(line, "# HELP "); ok {
+			if fam, text, ok := strings.Cut(h, " "); ok {
+				help[fam] = text
+			}
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -707,6 +765,31 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		// --- Operator drain state ---
 		case name == "machmqtt_drained":
 			m.Drained = parseInt(value)
+
+		// Anything else in the broker's namespace is a metric this build has no
+		// curated field for — capture it verbatim (name plus label block) so it
+		// is visible immediately rather than silently dropped. Unknown histogram
+		// bucket series were already swallowed by the _bucket case above, and
+		// non-machmqtt families (a proxy's own metrics, say) stay ignored.
+		default:
+			if strings.HasPrefix(name, "machmqtt_") {
+				if m.Uncurated == nil {
+					m.Uncurated = make(map[string]float64)
+				}
+				key := name
+				if i := strings.IndexByte(line, '{'); i >= 0 {
+					if end := labelBlockEnd(line, i); end > i {
+						key = name + line[i:end+1]
+					}
+				}
+				m.Uncurated[key] = parseFloat(value)
+				if h, ok := help[name]; ok {
+					if m.UncuratedHelp == nil {
+						m.UncuratedHelp = make(map[string]string)
+					}
+					m.UncuratedHelp[name] = h
+				}
+			}
 		}
 	}
 
