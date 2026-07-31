@@ -179,8 +179,12 @@ type MQTTMetrics struct {
 	// SysPublishBlocked counts client PUBLISH/will packets to a $SYS topic
 	// refused by the spoof-block, so non-zero means a client is attempting to
 	// forge the broker stat tree.
-	SysTreePublished     int64 `json:"sys_tree_published"`
-	SysPublishBlocked    int64 `json:"sys_publish_blocked"`
+	SysTreePublished  int64 `json:"sys_tree_published"`
+	SysPublishBlocked int64 `json:"sys_publish_blocked"`
+	// PublishRefusedTopic counts client PUBLISHes rejected with 0x90 (Topic Name
+	// invalid) because the topic, while well-formed MQTT, contains a character
+	// the broker cannot map onto a NATS subject ('*', '>', space, DEL, control).
+	PublishRefusedTopic  int64 `json:"publish_refused_topic"`
 	TLSHandshakeFailures int64 `json:"tls_handshake_failures"`
 	ProxyProtocolErrors  int64 `json:"proxy_protocol_errors"`
 	WSUpgradeFailures    int64 `json:"ws_upgrade_failures"`
@@ -470,6 +474,10 @@ type MQTTMetricsReactor struct {
 	// FeedWriteOverflows counts TLS/WS connections torn down because their cipher
 	// write buffer hit its hard cap; expect ~0.
 	FeedWriteOverflows int64 `json:"feed_write_overflows"`
+	// FeedReadOverflows counts TLS/WS connections torn down because their feed
+	// read buffer hit its cap — a peer sending bytes the TLS/WS stack will not
+	// consume. Expect ~0; any value is a broken or abusive client.
+	FeedReadOverflows int64 `json:"feed_read_overflows"`
 	// LoopDeaths counts event loops that exited permanently on a fatal poller
 	// error; their connections are force-closed and new ones steered elsewhere.
 	LoopDeaths int64 `json:"loop_deaths"`

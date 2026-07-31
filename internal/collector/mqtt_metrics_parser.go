@@ -308,6 +308,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.SysTreePublished = parseInt(value)
 		case name == "machmqtt_sys_publish_blocked_total":
 			m.SysPublishBlocked = parseInt(value)
+		case name == "machmqtt_publish_refused_topic_total":
+			m.PublishRefusedTopic = parseInt(value)
 		case name == "machmqtt_tls_handshake_failures_total":
 			m.TLSHandshakeFailures = parseInt(value)
 		case name == "machmqtt_proxy_protocol_errors_total":
@@ -443,6 +445,9 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.Reactor = &reactor
 		case name == "machmqtt_reactor_feed_write_overflows_total":
 			reactor.FeedWriteOverflows = parseInt(value)
+			m.Reactor = &reactor
+		case name == "machmqtt_reactor_feed_read_overflows_total":
+			reactor.FeedReadOverflows = parseInt(value)
 			m.Reactor = &reactor
 		case name == "machmqtt_reactor_loop_deaths_total":
 			reactor.LoopDeaths = parseInt(value)

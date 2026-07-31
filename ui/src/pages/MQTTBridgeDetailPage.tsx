@@ -558,6 +558,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Proxy Protocol Errors" value={fmtNum(data.proxy_protocol_errors)} />
           <DI label="WS Upgrade Failures" value={fmtNum(data.ws_upgrade_failures)} />
           <DI label="WS Protocol Violations" value={fmtNum(data.ws_protocol_violations)} />
+          <DI label="Publish Refused (Topic)" value={fmtNum(data.publish_refused_topic)} />
           <DI label="Flow-Control Overflow" value={fmtNum(data.flowcontrol_overflow)} />
           <DI label="OAuth2 Token Cache Evictions" value={fmtNum(data.oauth2_token_cache_evictions)} />
         </Grid>
@@ -650,6 +651,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
             <DI label="Read Continuations" value={fmtNum(data.reactor.read_continuations)} />
             <DI label="Write Backpressure" value={fmtNum(data.reactor.write_backpressure)} />
             <DI label="Feed Write Overflows" value={fmtNum(data.reactor.feed_write_overflows)} />
+            <DI label="Feed Read Overflows" value={fmtNum(data.reactor.feed_read_overflows)} />
             <DI label="Loop Panics" value={fmtNum(data.reactor.loop_panics)} />
             <DI label="Loop Deaths" value={fmtNum(data.reactor.loop_deaths)} />
           </Grid>

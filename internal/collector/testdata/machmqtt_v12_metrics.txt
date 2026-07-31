@@ -212,6 +212,9 @@ machmqtt_sys_tree_published_total 1519
 # HELP machmqtt_sys_publish_blocked_total Client PUBLISH or Will messages to a $SYS topic rejected with reason code 0x87 (Not authorized) by the spoof-block. A non-zero value means a client is attempting to spoof the broker stat tree.
 # TYPE machmqtt_sys_publish_blocked_total counter
 machmqtt_sys_publish_blocked_total 1526
+# HELP machmqtt_publish_refused_topic_total Client PUBLISH messages rejected with reason code 0x90 (Topic Name invalid) because the Topic Name, while well-formed MQTT, contains a character this broker refuses ('*', '>', space, DEL, or a control character). QoS 1/2 are answered with PUBACK/PUBREC and stay connected; QoS 0 is disconnected. A rising value means a client is publishing topic names that cannot be mapped onto a NATS subject.
+# TYPE machmqtt_publish_refused_topic_total counter
+machmqtt_publish_refused_topic_total 1527
 # HELP machmqtt_tls_handshake_failures_total TLS handshake failures (includes certificate errors, protocol mismatches).
 # TYPE machmqtt_tls_handshake_failures_total counter
 machmqtt_tls_handshake_failures_total 1533
@@ -579,6 +582,9 @@ machmqtt_reactor_write_backpressure_total 914
 # HELP machmqtt_reactor_feed_write_overflows_total TLS/WS connections torn down because their cipher write buffer hit the hard cap (a slow consumer the per-connection enqueue cap did not catch first). Expected ~0; a rising value flags an outbound-cap tuning gap.
 # TYPE machmqtt_reactor_feed_write_overflows_total counter
 machmqtt_reactor_feed_write_overflows_total 915
+# HELP machmqtt_reactor_feed_read_overflows_total TLS/WS connections torn down because their feed READ buffer hit the 64 KiB cap — a peer sending bytes the TLS/WS stack will not consume (e.g. a partial record that never completes). Distinct from the write counter above: that one is a consumer too slow to drain to, this one is a peer sending something unparseable. Expected 0; any value is a broken or abusive client, identified by the close in the logs.
+# TYPE machmqtt_reactor_feed_read_overflows_total counter
+machmqtt_reactor_feed_read_overflows_total 917
 # HELP machmqtt_session_persist_failed_total Total session write-behind persist failures by reason label.
 # TYPE machmqtt_session_persist_failed_total counter
 machmqtt_session_persist_failed_total{reason="write_failed"} 1988

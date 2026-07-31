@@ -54,6 +54,7 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		{"HookVetoes", m.HookVetoes, 1512},
 		{"SysTreePublished", m.SysTreePublished, 1519},
 		{"SysPublishBlocked", m.SysPublishBlocked, 1526},
+		{"PublishRefusedTopic", m.PublishRefusedTopic, 1527},
 		{"WSProtocolViolations", m.WSProtocolViolations, 2142},
 		{"QoS2SyncPersistFailed", m.QoS2SyncPersistFailed, 1582},
 		{"WillVerifyFailures", m.WillVerifyFailures, 1694},
@@ -169,6 +170,7 @@ func TestParseV12FixtureSubObjects(t *testing.T) {
 		{"ReadContinuations", m.Reactor.ReadContinuations, 913},
 		{"WriteBackpressure", m.Reactor.WriteBackpressure, 914},
 		{"FeedWriteOverflows", m.Reactor.FeedWriteOverflows, 915},
+		{"FeedReadOverflows", m.Reactor.FeedReadOverflows, 917},
 		{"LoopDeaths", m.Reactor.LoopDeaths, 916},
 	}
 	for _, tc := range reactorTests {
@@ -566,6 +568,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 			"hook_vetoes": 94,
 			"sys_tree_published": 95,
 			"sys_publish_blocked": 96,
+			"publish_refused_topic": 97,
 			"inbound_bytes": 97,
 			"session_persist_panics": 98,
 			"cluster_lease_revision_regressions": 99,
@@ -611,6 +614,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 		{"HookVetoes", m.HookVetoes, 94},
 		{"SysTreePublished", m.SysTreePublished, 95},
 		{"SysPublishBlocked", m.SysPublishBlocked, 96},
+		{"PublishRefusedTopic", m.PublishRefusedTopic, 97},
 		{"InboundBytes", m.InboundBytes, 97},
 		{"SessionPersistPanics", m.SessionPersistPanics, 98},
 		{"ClusterLeaseRevisionRegressions", m.ClusterLeaseRevisionRegressions, 99},
