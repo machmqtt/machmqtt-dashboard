@@ -52,7 +52,7 @@ jobs:
       - name: Go vulnerability check
         run: |
           set -o pipefail
-          go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./cmd/... ./internal/... ./test/enterprise-auth/app | tee govulncheck.txt
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./cmd/... ./internal/... ./test/enterprise-auth/app | tee govulncheck.txt
 
       - name: Install frontend dependencies
         run: cd ui && npm ci
