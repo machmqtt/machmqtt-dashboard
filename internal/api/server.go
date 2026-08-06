@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -16,6 +18,7 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/logbuf"
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
+	"golang.org/x/sync/singleflight"
 )
 
 //go:embed dist/*
@@ -45,31 +48,46 @@ var upgrader = websocket.Upgrader{
 }
 
 type Server struct {
-	mux          *http.ServeMux
-	manager      *collector.Manager
-	hub          *ws.Hub
-	log          *slog.Logger
-	version      string
-	metrics      *store.MetricsWriter
-	store        *store.Store
-	logBuf       *logbuf.Handler
-	bridgeStatus *bridgeStatusCache
-	bridgeJSON   *bridgeRespCache
+	mux                *http.ServeMux
+	manager            *collector.Manager
+	hub                *ws.Hub
+	log                *slog.Logger
+	version            string
+	cfg                *config.Config
+	metrics            *store.MetricsWriter
+	store              *store.Store
+	auth               *auth.Auth
+	logBuf             *logbuf.Handler
+	bridgeStatus       *bridgeStatusCache
+	bridgeJSON         *bridgeRespCache
+	ops                *operationalMetrics
+	ready              atomic.Bool
+	subsCacheMu        sync.Mutex
+	subsCacheData      map[string]*subsCacheEntry
+	subsGroup          singleflight.Group
+	subsCacheHits      atomic.Uint64
+	subsCacheMisses    atomic.Uint64
+	subsCacheEvictions atomic.Uint64
 }
 
 func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.Logger, version string, cfg *config.Config, metrics *store.MetricsWriter, st *store.Store, lb *logbuf.Handler) *Server {
 	s := &Server{
-		mux:          http.NewServeMux(),
-		manager:      manager,
-		hub:          hub,
-		log:          log,
-		version:      version,
-		metrics:      metrics,
-		store:        st,
-		logBuf:       lb,
-		bridgeStatus: newBridgeStatusCache(5*time.Second, log),
-		bridgeJSON:   newBridgeRespCache(3 * time.Second),
+		mux:           http.NewServeMux(),
+		manager:       manager,
+		hub:           hub,
+		log:           log,
+		version:       version,
+		metrics:       metrics,
+		store:         st,
+		cfg:           cfg,
+		auth:          a,
+		logBuf:        lb,
+		bridgeStatus:  newBridgeStatusCache(5*time.Second, log),
+		bridgeJSON:    newBridgeRespCache(3 * time.Second),
+		ops:           newOperationalMetrics(),
+		subsCacheData: make(map[string]*subsCacheEntry),
 	}
+	s.ready.Store(true)
 
 	s.registerRoutes(a)
 	s.serveSPA()
@@ -78,8 +96,10 @@ func NewServer(a *auth.Auth, manager *collector.Manager, hub *ws.Hub, log *slog.
 }
 
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(limitBody(s.mux))
+	return securityHeaders(s.observe(limitBody(s.mux)))
 }
+
+func (s *Server) SetReady(ready bool) { s.ready.Store(ready) }
 
 func (s *Server) serveSPA() {
 	sub, err := fs.Sub(distFS, spaDistDir)

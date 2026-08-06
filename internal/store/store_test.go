@@ -3,12 +3,15 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/config"
@@ -24,6 +27,47 @@ func testStore(t *testing.T) *Store {
 	return s
 }
 
+func TestOpenEnforcesSingleProcessDataDirectory(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err == nil || !strings.Contains(err.Error(), "instance lock") {
+		t.Fatalf("second Open error=%v, want instance-lock failure", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open after release: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWALSize(t *testing.T) {
+	s := testStore(t)
+	if _, err := s.CreateUser("wal-user", "secure-password", RoleViewer); err != nil {
+		t.Fatal(err)
+	}
+	size, err := s.WALSize()
+	if err != nil || size < 0 {
+		t.Fatalf("WAL size = %d, err = %v", size, err)
+	}
+
+	s.dbPath = filepath.Join(t.TempDir(), "missing", "dashboard.db")
+	if size, err := s.WALSize(); err != nil || size != 0 {
+		t.Fatalf("missing WAL size = %d, err = %v", size, err)
+	}
+	s.dbPath = "invalid\x00path"
+	if _, err := s.WALSize(); err == nil || !strings.Contains(err.Error(), "inspect database WAL") {
+		t.Fatalf("invalid WAL path error = %v", err)
+	}
+}
+
 func TestCreateAndAuthenticate(t *testing.T) {
 	s := testStore(t)
 
@@ -36,6 +80,9 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	}
 	if u.Role != RoleAdmin {
 		t.Errorf("role = %q, want %q", u.Role, RoleAdmin)
+	}
+	if u.AuthProvider != ProviderLocal {
+		t.Errorf("provider = %q, want local", u.AuthProvider)
 	}
 
 	authed, err := s.Authenticate("admin", "secret123")
@@ -200,11 +247,233 @@ func TestDeleteUser(t *testing.T) {
 
 func TestDeleteDefaultAdminBlocked(t *testing.T) {
 	s := testStore(t)
-	s.EnsureDefaultAdmin() // creates admin with id=1
+	s.EnsureBreakGlassAdmin("bootstrap-password") // creates admin with id=1
 
 	err := s.DeleteUser(1)
 	if err == nil {
 		t.Fatal("expected error when deleting default admin")
+	}
+}
+
+func TestCanDeleteLocalAdminWhenAnotherRemains(t *testing.T) {
+	s := testStore(t)
+	first, _ := s.CreateUser("first-admin", "p", RoleAdmin)
+	s.CreateUser("second-admin", "p", RoleAdmin)
+
+	if err := s.DeleteUser(first.ID); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+}
+
+func TestExternalIdentityCanShareLocalUsername(t *testing.T) {
+	s := testStore(t)
+	local, err := s.CreateUser("admin", "local-password", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external, err := s.UpsertExternalUser("corporate-ad", "subject-123", "admin", "Directory Admin", "admin@example.com", RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.ID == external.ID {
+		t.Fatal("local and external identities must be distinct")
+	}
+	if external.AuthProvider != "corporate-ad" || external.ExternalSubject != "subject-123" {
+		t.Errorf("external identity = %+v", external)
+	}
+	if _, err := s.Authenticate("admin", "local-password"); err != nil {
+		t.Fatalf("local admin was shadowed: %v", err)
+	}
+}
+
+func TestExternalUsernamesAreDisplayAttributesNotKeys(t *testing.T) {
+	s := testStore(t)
+	first, err := s.UpsertExternalUser("corporate-ad", "subject-1", "shared-name", "First", "first@example.com", RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.UpsertExternalUser("corporate-ad", "subject-2", "shared-name", "Second", "second@example.com", RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatal("external users with distinct subjects were merged by username")
+	}
+}
+
+func TestLegacyUserSchemaMigration(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "dashboard.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'viewer',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_login DATETIME,
+		failed_attempts INTEGER NOT NULL DEFAULT 0,
+		last_failed_at DATETIME,
+		must_change_password INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte("existing-password"), bcrypt.MinCost)
+	if _, err := db.Exec("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", "existing-admin", string(hash), RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	u, err := s.Authenticate("existing-admin", "existing-password")
+	if err != nil {
+		t.Fatalf("existing password did not survive migration: %v", err)
+	}
+	if u.AuthProvider != ProviderLocal || u.Role != RoleAdmin {
+		t.Errorf("migrated user = %+v", u)
+	}
+}
+
+func TestMigrationsAreVersionedAndIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(dir)
+	if err != nil {
+		t.Fatalf("repeated migration failed: %v", err)
+	}
+	defer second.Close()
+	var versions int
+	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if versions != 4 {
+		t.Fatalf("schema migration count=%d, want 4", versions)
+	}
+}
+
+func TestHistoricalMigrationMatrixAndInterruptedReplay(t *testing.T) {
+	migrations := []struct {
+		name  string
+		apply func(*sql.Tx) error
+	}{
+		{"users and external identities", migrateUsers},
+		{"mqtt bridge discovery", migrateMQTTBridges},
+		{"time-series metrics", migrateMetrics},
+		{"topology persistence", migrateTopology},
+	}
+	for historicalVersion := 0; historicalVersion <= len(migrations); historicalVersion++ {
+		t.Run(fmt.Sprintf("version_%d", historicalVersion), func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "dashboard.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+				t.Fatal(err)
+			}
+			for index := 0; index < historicalVersion; index++ {
+				tx, err := db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := migrations[index].apply(tx); err != nil {
+					_ = tx.Rollback()
+					t.Fatal(err)
+				}
+				if _, err := tx.Exec(`INSERT INTO schema_migrations(version, name) VALUES (?, ?)`, index+1, migrations[index].name); err != nil {
+					_ = tx.Rollback()
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Simulate an interrupted next migration whose idempotent DDL was
+			// applied but whose schema_migrations record was never committed.
+			if historicalVersion < len(migrations) {
+				tx, err := db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := migrations[historicalVersion].apply(tx); err != nil {
+					_ = tx.Rollback()
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			st, err := Open(dir)
+			if err != nil {
+				t.Fatalf("upgrade historical version %d: %v", historicalVersion, err)
+			}
+			defer st.Close()
+			var count int
+			if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != len(migrations) {
+				t.Fatalf("migration records=%d err=%v", count, err)
+			}
+			if err := st.IntegrityCheck(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMetricsAndBridgeCleanupQueryPlansUseIndexes(t *testing.T) {
+	s := testStore(t)
+	tests := []struct {
+		name  string
+		query string
+		args  []any
+		index string
+	}{
+		{"server all", `SELECT server_id FROM server_metrics WHERE env = ? AND ts >= ? AND ts <= ?`, []any{"prod", 1, 2}, "idx_server_metrics_env_ts"},
+		{"server one", `SELECT server_id FROM server_metrics WHERE env = ? AND server_id = ? AND ts >= ? AND ts <= ?`, []any{"prod", "n1", 1, 2}, "idx_server_metrics_env_sid_ts"},
+		{"mqtt all", `SELECT bridge_id FROM mqtt_bridge_metrics WHERE env = ? AND ts >= ? AND ts <= ?`, []any{"prod", 1, 2}, "idx_mqtt_bridge_metrics_env_ts"},
+		{"mqtt one", `SELECT bridge_id FROM mqtt_bridge_metrics WHERE env = ? AND bridge_id = ? AND ts >= ? AND ts <= ?`, []any{"prod", "b1", 1, 2}, "idx_mqtt_bridge_metrics_env_bid_ts"},
+		{"stale bridges", `DELETE FROM mqtt_bridges WHERE env = ? AND last_seen < ?`, []any{"prod", 1}, "idx_mqtt_bridges_env_last_seen"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := s.db.QueryContext(context.Background(), `EXPLAIN QUERY PLAN `+tc.query, tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var plan strings.Builder
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				plan.WriteString(detail)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(plan.String(), tc.index) {
+				t.Fatalf("query plan %q does not use %s", plan.String(), tc.index)
+			}
+		})
 	}
 }
 
@@ -216,10 +485,13 @@ func TestDeleteUserNotFound(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultAdmin(t *testing.T) {
+func TestEnsureBreakGlassAdmin(t *testing.T) {
 	s := testStore(t)
 
-	u, err := s.EnsureDefaultAdmin()
+	if _, err := s.EnsureBreakGlassAdmin(""); err == nil {
+		t.Fatal("expected missing bootstrap password to fail")
+	}
+	u, err := s.EnsureBreakGlassAdmin("bootstrap-password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,11 +499,11 @@ func TestEnsureDefaultAdmin(t *testing.T) {
 		t.Fatal("expected user to be created")
 	}
 	if u.Username != "admin" || u.Role != RoleAdmin {
-		t.Errorf("user = %+v, want admin/admin role", u)
+		t.Errorf("user = %+v, want username admin with admin role", u)
 	}
 
 	// Second call should be a no-op.
-	u2, err := s.EnsureDefaultAdmin()
+	u2, err := s.EnsureBreakGlassAdmin("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +512,14 @@ func TestEnsureDefaultAdmin(t *testing.T) {
 	}
 
 	if !u.MustChangePassword {
-		t.Error("EnsureDefaultAdmin: expected MustChangePassword=true")
+		t.Error("EnsureBreakGlassAdmin: expected MustChangePassword=true")
 	}
 
-	// Verify we can authenticate with admin/admin.
-	authed, err := s.Authenticate("admin", "admin")
+	// Verify the explicit bootstrap password works and the former known default does not.
+	if _, err := s.Authenticate("admin", "admin"); err == nil {
+		t.Fatal("known default password must not authenticate")
+	}
+	authed, err := s.Authenticate("admin", "bootstrap-password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,12 +540,220 @@ func TestEnsureDefaultAdmin(t *testing.T) {
 	}
 
 	// After changing password, flag should be cleared.
-	if err := s.ChangePassword(authed.ID, "admin", "newsecret"); err != nil {
+	oldVersion := authed.SessionVersion
+	if err := s.ChangePassword(authed.ID, "bootstrap-password", "newsecret"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = s.GetUser(authed.ID)
 	if got.MustChangePassword {
 		t.Error("expected MustChangePassword=false after password change")
+	}
+	if got.SessionVersion != oldVersion+1 {
+		t.Fatalf("session version=%d want=%d", got.SessionVersion, oldVersion+1)
+	}
+}
+
+func TestEnsureBreakGlassAdminIgnoresExternalAdministrator(t *testing.T) {
+	s := testStore(t)
+	if _, err := s.UpsertExternalUser("corporate-ad", "external-admin", "admin", "", "", RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	local, err := s.EnsureBreakGlassAdmin("bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local == nil || local.AuthProvider != ProviderLocal || local.Role != RoleAdmin {
+		t.Fatalf("local break-glass admin = %+v", local)
+	}
+}
+
+func TestEnsureBreakGlassAdminPromotesExistingLocalAdminUsername(t *testing.T) {
+	s := testStore(t)
+	existing, err := s.CreateUser("admin", "existing-password", RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := s.EnsureBreakGlassAdmin("bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.ID != existing.ID || promoted.Role != RoleAdmin || !promoted.MustChangePassword {
+		t.Fatalf("promoted local admin = %+v", promoted)
+	}
+	if _, err := s.Authenticate("admin", "existing-password"); err != nil {
+		t.Fatalf("promotion changed existing password: %v", err)
+	}
+}
+
+func TestMQTTBridgeAndTopologyPersistence(t *testing.T) {
+	s := testStore(t)
+	if err := s.UpsertMQTTBridge("prod", "10.0.0.1", "s1", "http://10.0.0.1:8080"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertMQTTBridge("prod", "10.0.0.1", "s1", "http://10.0.0.1:9090"); err != nil {
+		t.Fatal(err)
+	}
+	bridges, err := s.ListMQTTBridges("prod")
+	if err != nil || len(bridges) != 1 || bridges[0].AdminURL != "http://10.0.0.1:9090" {
+		t.Fatalf("bridges=%+v err=%v", bridges, err)
+	}
+	if _, err := s.db.Exec(`UPDATE mqtt_bridges SET last_seen=?`, time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteStaleMQTTBridges("prod", 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	bridges, _ = s.ListMQTTBridges("prod")
+	if len(bridges) != 0 {
+		t.Fatalf("stale bridges=%+v", bridges)
+	}
+
+	positions := []NodePosition{{NodeID: "n1", X: 1, Y: 2}, {NodeID: "n2", X: 3, Y: 4}}
+	if err := s.SaveTopologyPositions("prod", positions); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTopologyPositions("prod")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("positions=%+v err=%v", got, err)
+	}
+	if err := s.SaveTopologyPositions("prod", positions[:1]); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetTopologyPositions("prod")
+	if len(got) != 1 {
+		t.Fatalf("replaced positions=%+v", got)
+	}
+	if camera, err := s.GetTopologyCamera("prod"); err != nil || camera != nil {
+		t.Fatalf("camera=%+v err=%v", camera, err)
+	}
+	camera := CameraState{Zoom: 2, CenterX: 3, CenterY: 4}
+	if err := s.SaveTopologyCamera("prod", camera); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.GetTopologyCamera("prod"); err != nil || got == nil || got.Zoom != 2 {
+		t.Fatalf("camera=%+v err=%v", got, err)
+	}
+	if err := s.DeleteTopologyCamera("prod"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreValidationAndExternalRoleRevocation(t *testing.T) {
+	s := testStore(t)
+	for _, tc := range []struct{ username, password, role string }{{"", "p", RoleViewer}, {"u", "", RoleViewer}, {"u", "p", "owner"}} {
+		if _, err := s.CreateUser(tc.username, tc.password, tc.role); err == nil {
+			t.Fatalf("CreateUser(%q,%q,%q) should fail", tc.username, tc.password, tc.role)
+		}
+	}
+	if _, err := s.UpsertExternalUser("", "s", "u", "", "", RoleViewer); err == nil {
+		t.Fatal("invalid provider")
+	}
+	if _, err := s.UpsertExternalUser(ProviderLocal, "s", "u", "", "", RoleViewer); err == nil {
+		t.Fatal("local external provider")
+	}
+	if _, err := s.UpsertExternalUser("corp", "", "u", "", "", RoleViewer); err == nil {
+		t.Fatal("missing subject")
+	}
+	if _, err := s.UpsertExternalUser("corp", "s", "u", "", "", "owner"); err == nil {
+		t.Fatal("invalid role")
+	}
+	u, err := s.UpsertExternalUser("corp", "s", "u", "", "", RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.UpsertExternalUser("corp", "s", "u", "", "", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SessionVersion != u.SessionVersion+1 {
+		t.Fatalf("session version %d -> %d", u.SessionVersion, updated.SessionVersion)
+	}
+	if err := s.ChangePassword(999, "old", "new"); err == nil {
+		t.Fatal("missing user password change")
+	}
+	if _, err := s.GetUser(999); err == nil {
+		t.Fatal("missing user")
+	}
+}
+
+func TestStoreClosedDatabaseErrorPaths(t *testing.T) {
+	s := testStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checks := []struct {
+		name string
+		fn   func() error
+	}{
+		{"count", func() error { _, err := s.UserCount(); return err }},
+		{"create", func() error { _, err := s.CreateUser("u", "p", RoleViewer); return err }},
+		{"authenticate", func() error { _, err := s.Authenticate("u", "p"); return err }},
+		{"external", func() error { _, err := s.UpsertExternalUser("corp", "s", "u", "", "", RoleViewer); return err }},
+		{"get", func() error { _, err := s.GetUser(1); return err }},
+		{"list users", func() error { _, err := s.ListUsers(); return err }},
+		{"delete", func() error { return s.DeleteUser(1) }},
+		{"bootstrap", func() error { _, err := s.EnsureBreakGlassAdmin("bootstrap-password"); return err }},
+		{"bridge upsert", func() error { return s.UpsertMQTTBridge("e", "i", "s", "u") }},
+		{"bridge list", func() error { _, err := s.ListMQTTBridges("e"); return err }},
+		{"bridge cleanup", func() error { return s.DeleteStaleMQTTBridges("e", time.Hour) }},
+		{"positions get", func() error { _, err := s.GetTopologyPositions("e"); return err }},
+		{"camera get", func() error { _, err := s.GetTopologyCamera("e"); return err }},
+		{"camera save", func() error { return s.SaveTopologyCamera("e", CameraState{}) }},
+		{"camera delete", func() error { return s.DeleteTopologyCamera("e") }},
+		{"positions save", func() error { return s.SaveTopologyPositions("e", nil) }},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.fn(); err == nil {
+				t.Fatal("expected closed database error")
+			}
+		})
+	}
+}
+
+func TestOpenFailurePaths(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(file); err == nil {
+		t.Fatal("expected data directory error")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dashboard.db"), []byte("not sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err == nil {
+		t.Fatal("expected corrupt database error")
+	}
+}
+
+func TestDatabaseIntegrityAndBackup(t *testing.T) {
+	s := testStore(t)
+	if _, err := s.CreateUser("backup-user", "password", RoleViewer); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IntegrityCheck(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Backup(context.Background(), ""); err == nil {
+		t.Fatal("empty backup destination accepted")
+	}
+	destination := filepath.Join(t.TempDir(), "backup.db")
+	if err := s.Backup(context.Background(), destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Backup(context.Background(), destination); err == nil {
+		t.Fatal("existing destination accepted")
+	}
+	db, err := sql.Open("sqlite", "file:"+destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE username='backup-user'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("backup user count=%d err=%v", count, err)
 	}
 }
 
@@ -405,10 +888,10 @@ func TestGetTopologyCamera(t *testing.T) {
 		t.Errorf("camera round-trip: got %+v, want %+v", got, cam)
 	}
 
-	// Non-existent env should return an error (sql.ErrNoRows).
-	_, err = s.GetTopologyCamera("nonexistent-env")
-	if err == nil {
-		t.Fatal("expected error for non-existent env")
+	// A missing optional camera is not an operational database error.
+	missing, err := s.GetTopologyCamera("nonexistent-env")
+	if err != nil || missing != nil {
+		t.Fatalf("missing camera = %+v, err = %v", missing, err)
 	}
 }
 
@@ -430,10 +913,10 @@ func TestDeleteTopologyCamera(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 
-	// After delete, get should return an error.
-	_, err := s.GetTopologyCamera(env)
-	if err == nil {
-		t.Fatal("expected error after camera was deleted")
+	// After delete, the optional camera should be absent.
+	got, err := s.GetTopologyCamera(env)
+	if err != nil || got != nil {
+		t.Fatalf("camera after delete = %+v, err = %v", got, err)
 	}
 }
 
@@ -1362,9 +1845,9 @@ func TestCreateUserInsertError(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultAdminCreateUserError(t *testing.T) {
+func TestEnsureBreakGlassAdminCreateUserError(t *testing.T) {
 	// Install a BEFORE INSERT trigger on users that raises an error, so that
-	// EnsureDefaultAdmin's CreateUser call fails while UserCount returns 0.
+	// EnsureBreakGlassAdmin's CreateUser call fails when no local admin exists.
 	s := testStore(t)
 	_, err := s.db.Exec(`
 		CREATE TRIGGER block_admin_insert
@@ -1374,28 +1857,9 @@ func TestEnsureDefaultAdminCreateUserError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.EnsureDefaultAdmin()
+	_, err = s.EnsureBreakGlassAdmin("bootstrap-password")
 	if err == nil {
-		t.Fatal("expected error from EnsureDefaultAdmin when CreateUser fails")
-	}
-}
-
-func TestEnsureDefaultAdminInsertError(t *testing.T) {
-	// EnsureDefaultAdmin inserts the default admin (with must_change_password set)
-	// in a single statement. Block the INSERT so the error branch is covered.
-	s := testStore(t)
-
-	_, err := s.db.Exec(`
-		CREATE TRIGGER block_admin_insert
-		BEFORE INSERT ON users
-		BEGIN SELECT RAISE(ABORT, 'test: insert blocked'); END
-	`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = s.EnsureDefaultAdmin()
-	if err == nil {
-		t.Fatal("expected error from EnsureDefaultAdmin when INSERT fails")
+		t.Fatal("expected error from EnsureBreakGlassAdmin when CreateUser fails")
 	}
 }
 
@@ -1574,8 +2038,8 @@ func TestClosedStoreErrors(t *testing.T) {
 	if err := s.DeleteUser(1); err == nil {
 		t.Error("DeleteUser: expected error on closed DB")
 	}
-	if _, err := s.EnsureDefaultAdmin(); err == nil {
-		t.Error("EnsureDefaultAdmin: expected error on closed DB")
+	if _, err := s.EnsureBreakGlassAdmin("bootstrap-password"); err == nil {
+		t.Error("EnsureBreakGlassAdmin: expected error on closed DB")
 	}
 	if err := s.UpsertMQTTBridge("e", "1.2.3.4", "s", ""); err == nil {
 		t.Error("UpsertMQTTBridge: expected error on closed DB")

@@ -45,6 +45,8 @@ type Client struct {
 	// per-client field (defaulting to defaultPingPeriod) so tests can shorten it
 	// before Run starts the write pump, avoiding a shared-global data race.
 	pingPeriod       time.Duration
+	writeWait        time.Duration
+	pongWait         time.Duration
 	dropped          atomic.Uint64 // cumulative drops (surfaced in admin health)
 	consecutiveDrops atomic.Uint64 // resets on a successful delivery; triggers force-close
 	done             chan struct{} // closed once on teardown to unblock the write pump
@@ -57,6 +59,7 @@ type Client struct {
 // force-closes the client after a sustained run of drops so the browser can
 // reconnect and resync.
 func (c *Client) markDropped() {
+	c.hub.dropped.Add(1)
 	if c.dropped.Add(1) == 1 {
 		c.log.Warn("ws dropping messages to slow client", "env", c.Env())
 	}
@@ -104,6 +107,8 @@ func NewClient(hub *Hub, conn *websocket.Conn, log *slog.Logger) *Client {
 		send:       make(chan *websocket.PreparedMessage, sendBufLen),
 		log:        log,
 		pingPeriod: defaultPingPeriod,
+		writeWait:  writeWait,
+		pongWait:   pongWait,
 		done:       make(chan struct{}),
 	}
 }
@@ -121,10 +126,9 @@ func (c *Client) readPump() {
 	}()
 
 	c.conn.SetReadLimit(maxMsgSize)
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	_ = c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
+		return c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	})
 
 	for {
@@ -139,6 +143,7 @@ func (c *Client) readPump() {
 		var sub subscribeMsg
 		if json.Unmarshal(msg, &sub) == nil && sub.Subscribe != "" {
 			c.setEnv(sub.Subscribe)
+			c.hub.recordSubscription()
 			c.hub.notifySubscribe(c, sub.Subscribe)
 		}
 	}
@@ -158,15 +163,17 @@ func (c *Client) writePump() {
 			// immediately instead of lingering until the next ping.
 			return
 		case pm := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeWait))
 			// c.send is never closed (Unregister only removes the client from the
 			// hub map), so a receive here is always a real message.
 			if err := c.conn.WritePreparedMessage(pm); err != nil {
+				c.hub.recordWriteFailure()
 				return
 			}
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				c.hub.recordWriteFailure()
 				return
 			}
 		}

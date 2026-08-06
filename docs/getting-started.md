@@ -24,13 +24,14 @@ The fastest way to get a working dashboard with a 3-node NATS cluster:
 cd machmqtt-dashboard
 
 # Start the 3-node NATS cluster + dashboard
+export NATS_DASHBOARD_BOOTSTRAP_PASSWORD="$(openssl rand -base64 24)"
 docker compose up -d
 
 # Open the dashboard
 open http://localhost:8080
 ```
 
-Login with `admin` / `admin`.
+Login as `admin` with the exported one-time password and rotate it when prompted. Compose refuses to start the dashboard if this secret is missing.
 
 The compose stack runs:
 - 3 NATS servers (nats-1, nats-2, nats-3) with JetStream enabled, clustered
@@ -73,8 +74,8 @@ This runs `npm install` + `vite build` for the frontend, then compiles the Go bi
 ```bash
 # 1. Build the frontend
 cd ui
-npm install
-npx vite build   # outputs to ../internal/api/dist/
+npm ci
+npm run build   # outputs to ../internal/api/dist/
 cd ..
 
 # 2. Build the backend
@@ -128,7 +129,7 @@ docker run -p 8080:8080 \
 ```
 
 The Docker image:
-- Uses a 3-stage build (Node.js -> Go -> Alpine 3.21)
+- Uses a 3-stage build (Node.js -> Go -> minimal Alpine runtime)
 - Produces a `CGO_ENABLED=0` static binary
 - Runs as non-root user `app` (uid 1000)
 - Expects config at `/etc/machmqtt-dashboard/config.yaml`
@@ -140,7 +141,23 @@ The Docker image:
 make test
 ```
 
-This runs all Go unit tests with a 120-second timeout.
+This runs the first-party Go and frontend test/coverage gates. Fast authentication integration tests use in-process LDAP/LDAPS and OIDC protocol servers, so no external identity infrastructure is required.
+
+To verify that the tests detect injected behavioral faults, run:
+
+```bash
+make test-mutation
+```
+
+The Go gate mutation-tests code changed from `GREMLINS_DIFF` (default `HEAD`). Pull-request CI sets that reference to the target branch. The frontend gate exhaustively mutates the authentication, authorization, networking, state, WebSocket, password-rotation, and user-administration surfaces while excluding presentation-only string mutations.
+
+For end-to-end testing against real identity-provider software, Docker must be running:
+
+```bash
+make test-enterprise-auth
+```
+
+That target starts OpenLDAP and Dex containers and explicitly tests Local, LDAP + Local, OIDC + Local, and LDAP + OIDC + Local configurations. It tests direct LDAP login, provider ordering, identity collisions, local break-glass fallback, and a real Chromium OIDC authorization-code flow through Dex with OpenLDAP as its identity source. Containers and test volumes are removed afterward.
 
 ## CLI Flags
 

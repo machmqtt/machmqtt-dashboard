@@ -4,10 +4,13 @@ export function fetchWithTimeout(
   url: string,
   opts?: RequestInit & { timeout?: number },
 ): Promise<Response> {
-  const { timeout = DEFAULT_TIMEOUT, ...fetchOpts } = opts || {}
+  const { timeout = DEFAULT_TIMEOUT, signal, ...fetchOpts } = opts || {}
   const controller = new AbortController()
   const id = setTimeout(() => controller.abort(), timeout)
-  return fetch(url, { ...fetchOpts, signal: controller.signal }).finally(() =>
+	const combinedSignal = signal
+		? AbortSignal.any([signal, controller.signal])
+		: controller.signal
+  return fetch(url, { ...fetchOpts, signal: combinedSignal }).finally(() =>
     clearTimeout(id),
   )
 }

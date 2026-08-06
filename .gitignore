@@ -1,5 +1,6 @@
 # Build output
 bin/
+/machmqtt-dashboard
 *.exe
 
 # Data / runtime
@@ -10,8 +11,10 @@ data/
 
 # Frontend build (embedded in Go binary)
 internal/api/dist/assets/
+internal/api/dist/.vite/
 
 # Node
+node_modules/
 ui/node_modules/
 
 # Playwright e2e artifacts
@@ -23,6 +26,12 @@ ui/playwright-report/
 
 # Test / coverage
 coverage.out
+ui/coverage/
+ui/playwright-report/
+ui/test-results/
+ui/.stryker-tmp/
+ui/reports/
+mutation-reports/
 *.test
 *.prof
 

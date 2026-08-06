@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +14,19 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
 )
 
+type fakePasswordProvider struct {
+	name  string
+	calls *[]string
+	fn    func(username, password string) (*store.User, ProviderResult, error)
+}
+
+func (p fakePasswordProvider) Name() string { return p.name }
+func (p fakePasswordProvider) Type() string { return "ldap" }
+func (p fakePasswordProvider) Authenticate(_ context.Context, username, password string) (*store.User, ProviderResult, error) {
+	*p.calls = append(*p.calls, p.name)
+	return p.fn(username, password)
+}
+
 func testAuth(t *testing.T) (*Auth, *store.Store) {
 	t.Helper()
 	s, err := store.Open(t.TempDir())
@@ -18,7 +34,9 @@ func testAuth(t *testing.T) (*Auth, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return New(s, "test-secret-key", false, false, nil), s
+	a := New(s, "test-secret-key", false)
+	t.Cleanup(a.Close)
+	return a, s
 }
 
 func TestIssueAndValidate(t *testing.T) {
@@ -42,6 +60,98 @@ func TestIssueAndValidate(t *testing.T) {
 	}
 	if claims.Role != store.RoleViewer {
 		t.Errorf("role = %q, want %q", claims.Role, store.RoleViewer)
+	}
+	if claims.AuthProvider != store.ProviderLocal {
+		t.Errorf("provider = %q, want local", claims.AuthProvider)
+	}
+	if claims.Issuer != sessionIssuer || len(claims.Audience) != 1 || claims.Audience[0] != sessionIssuer || claims.ID == "" || claims.Subject == "" || claims.NotBefore == nil {
+		t.Fatalf("registered session claims incomplete: %+v", claims.RegisteredClaims)
+	}
+}
+
+func TestAuthLifecycleAndForcedRotationAllowlist(t *testing.T) {
+	a, _ := testAuth(t)
+	a.recordAuthEvent("local", "success")
+	metrics := a.Metrics()
+	metrics["local\x00success"] = 99
+	if a.Metrics()["local\x00success"] != 1 {
+		t.Fatal("authentication metrics snapshot aliases internal state")
+	}
+	a.Close()
+	a.Close()
+	if a.loginLimiter.Size() != 0 {
+		t.Fatal("new limiter should be empty")
+	}
+	allowed := []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodGet, "/api/me", true}, {http.MethodPost, "/api/logout", true},
+		{http.MethodPut, "/api/users/7/password", true}, {http.MethodPut, "/api/users/8/password", false},
+		{http.MethodGet, "/api/environments", false},
+	}
+	for _, tc := range allowed {
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		if got := passwordRotationAllowed(r, 7); got != tc.want {
+			t.Errorf("%s %s=%v", tc.method, tc.path, got)
+		}
+	}
+}
+
+func TestProviderOrderFirstMatchWins(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	var calls []string
+	external, err := s.UpsertExternalUser("second", "subject", "alice", "", "", store.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers := []PasswordProvider{
+		fakePasswordProvider{name: "first", calls: &calls, fn: func(_, _ string) (*store.User, ProviderResult, error) {
+			return nil, ProviderNoMatch, nil
+		}},
+		fakePasswordProvider{name: "second", calls: &calls, fn: func(_, _ string) (*store.User, ProviderResult, error) {
+			return external, ProviderAuthenticated, nil
+		}},
+		fakePasswordProvider{name: "third", calls: &calls, fn: func(_, _ string) (*store.User, ProviderResult, error) {
+			t.Fatal("provider after first match must not be called")
+			return nil, ProviderNoMatch, nil
+		}},
+	}
+	a := NewWithProviders(s, "test-secret-key", false, providers)
+	user, err := a.AuthenticatePassword(context.Background(), "alice", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID != external.ID {
+		t.Fatalf("authenticated user = %d, want %d", user.ID, external.ID)
+	}
+	if len(calls) != 2 || calls[0] != "first" || calls[1] != "second" {
+		t.Fatalf("provider calls = %v", calls)
+	}
+}
+
+func TestRejectedExternalIdentityDoesNotFallBackToLocal(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	s.CreateUser("admin", "local-password", store.RoleAdmin)
+	var calls []string
+	provider := fakePasswordProvider{name: "corporate-ad", calls: &calls, fn: func(_, _ string) (*store.User, ProviderResult, error) {
+		return nil, ProviderRejected, nil
+	}}
+	a := NewWithProviders(s, "test-secret-key", false, []PasswordProvider{provider})
+
+	if _, err := a.AuthenticatePassword(context.Background(), "admin", "local-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("ordered login error = %v, want invalid credentials", err)
+	}
+	if _, err := a.AuthenticateLocal("admin", "local-password"); err != nil {
+		t.Fatalf("explicit local login must bypass external identity: %v", err)
 	}
 }
 
@@ -108,6 +218,59 @@ func TestMiddlewareAcceptsValidToken(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestMiddlewareRejectsDeletedUserToken(t *testing.T) {
+	a, s := testAuth(t)
+	s.CreateUser("remaining-admin", "pass", store.RoleAdmin)
+	u, _ := s.CreateUser("temporary-admin", "pass", store.RoleAdmin)
+	token, _ := a.IssueToken(u)
+	if err := s.DeleteUser(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("deleted user reached protected handler")
+	}))
+	req := httptest.NewRequest("GET", "/api/test", nil)
+	req.AddCookie(&http.Cookie{Name: "session", Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestMiddlewareRejectsRevokedAndForcedRotationSessions(t *testing.T) {
+	a, s := testAuth(t)
+	u, err := s.CreateUser("revoked", "old-password", store.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := a.IssueToken(u)
+	if err := s.ChangePassword(u.ID, "old-password", "new-password"); err != nil {
+		t.Fatal(err)
+	}
+	handler := a.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("revoked token accepted") }))
+	r := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	r.AddCookie(&http.Cookie{Name: "session", Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked status=%d", w.Code)
+	}
+
+	bootstrap, err := s.EnsureBreakGlassAdmin("bootstrap-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapToken, _ := a.IssueToken(bootstrap)
+	blocked := httptest.NewRequest(http.MethodGet, "/api/environments", nil)
+	blocked.AddCookie(&http.Cookie{Name: "session", Value: bootstrapToken})
+	w = httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("forced-change session reached protected route") })).ServeHTTP(w, blocked)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("forced change status=%d", w.Code)
 	}
 }
 
@@ -263,7 +426,15 @@ func TestClientIP(t *testing.T) {
 				req.Header.Set("X-Forwarded-For", tc.xff)
 			}
 			req.RemoteAddr = tc.remoteAddr
-			if got := clientIP(req, tc.trustProxy); got != tc.want {
+			var trusted []*net.IPNet
+			if tc.trustProxy {
+				_, network, err := net.ParseCIDR("192.168.1.0/24")
+				if err != nil {
+					t.Fatal(err)
+				}
+				trusted = []*net.IPNet{network}
+			}
+			if got := clientIP(req, trusted); got != tc.want {
 				t.Errorf("clientIP = %q, want %q", got, tc.want)
 			}
 		})
@@ -604,15 +775,11 @@ func TestHandleMeUserNotFound(t *testing.T) {
 
 func TestHandleListUsersStoreError(t *testing.T) {
 	a, s := testAuth(t)
-	admin, _ := s.CreateUser("admin", "pass", store.RoleAdmin)
-	token, _ := a.IssueToken(admin)
 	s.Close() // close DB so ListUsers fails
 
-	handler := a.Middleware(AdminMiddleware(http.HandlerFunc(a.HandleListUsers)))
 	req := httptest.NewRequest("GET", "/api/admin/users", nil)
-	req.AddCookie(&http.Cookie{Name: "session", Value: token})
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	a.HandleListUsers(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -624,7 +791,7 @@ func TestSweepOnceRemovesFullyExpired(t *testing.T) {
 	rl.Allow("10.0.0.1")              // adds an attempt
 	rl.Allow("10.0.0.2")              // adds an attempt
 	time.Sleep(50 * time.Millisecond) // both expire
-	rl.sweepOnce()
+	rl.prune(time.Now())
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	if _, ok := rl.attempts["10.0.0.1"]; ok {
@@ -642,7 +809,7 @@ func TestSweepOnceTrimsPartiallyExpired(t *testing.T) {
 	time.Sleep(110 * time.Millisecond)
 	rl.Allow("10.0.0.3") // fresh attempt — within window
 	time.Sleep(10 * time.Millisecond)
-	rl.sweepOnce()
+	rl.prune(time.Now())
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	if len(rl.attempts["10.0.0.3"]) == 0 {

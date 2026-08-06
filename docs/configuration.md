@@ -33,13 +33,13 @@ metrics_retention: 24h
 
 ## Default Admin User
 
-On first startup, if the user database is empty, a default administrator account is created automatically:
+On startup, if no local administrator exists, the dashboard creates a local `admin` account using an explicitly supplied one-time bootstrap password. Supply it through `authentication.local.bootstrap_password_file` (preferred), `authentication.local.bootstrap_password`, or the `MACHMQTT_DASHBOARD_BOOTSTRAP_PASSWORD` environment variable. `NATS_DASHBOARD_BOOTSTRAP_PASSWORD` remains a deprecated compatibility alias.
 
 - **Username:** `admin`
-- **Password:** `admin`
+- **Password:** operator-supplied, at least 12 characters
 - **Role:** `admin`
 
-The account is flagged `must_change_password`, so the UI forces a password change on first login. The default admin is only created when no users exist; subsequent startups skip this step.
+The account is flagged `must_change_password`, so the UI forces a password change on first login. The break-glass admin is only created when no local administrator exists; subsequent startups skip this step.
 
 Admin users can create additional users via the User Management page in the UI or the admin API endpoints.
 
@@ -149,6 +149,10 @@ Cluster secrets (`admin_token`, `nats_conn` credentials) are stored in this data
 plaintext columns, redacted only when served back through the API — see
 [Security Considerations](deployment.md#security-considerations) for how to protect this
 directory.
+
+One dashboard process per data directory is supported. OIDC state is one-time, browser-bound, retained in bounded process memory for ten minutes, and is not shared between replicas. Do not route an OIDC callback to another replica.
+
+Startup acquires a non-blocking lock in the data directory and fails if another process owns it. OIDC flow count/evictions, rate-limiter key count/rejections, and SQLite WAL size are exported on `/metrics`.
 
 ## Environment Variables
 

@@ -203,6 +203,7 @@ export function SubscriptionsPage() {
     }),
   ], [])
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API is intentional
   const table = useReactTable({
     data: detail?.subscriptions || [],
     columns,
@@ -423,4 +424,3 @@ function SC({ label, value, sub }: { label: string; value: string; sub?: string 
     </div>
   )
 }
-

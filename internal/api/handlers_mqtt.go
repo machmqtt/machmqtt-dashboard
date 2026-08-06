@@ -387,11 +387,11 @@ func (s *Server) handleMQTTClient(w http.ResponseWriter, r *http.Request) {
 	connz, err := f.FetchConnzClient(r.Context(), clientID)
 	if err != nil {
 		s.log.Warn("mqtt bridge request failed", "err", err)
-		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		writeJSONError(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
 		return
 	}
 	if len(connz.Connections) == 0 {
-		http.Error(w, `{"error":"client not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"client not found"}`, http.StatusNotFound)
 		return
 	}
 	writeJSON(w, connz.Connections[0])
@@ -474,7 +474,7 @@ func (s *Server) handleMQTTBridgeDiag(w http.ResponseWriter, r *http.Request) {
 	diag, err := f.FetchDiag(r.Context())
 	if err != nil {
 		s.log.Warn("mqtt bridge request failed", "err", err)
-		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		writeJSONError(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, diag)
@@ -498,7 +498,7 @@ func (s *Server) handleMQTTLicense(w http.ResponseWriter, r *http.Request) {
 	license, err := f.FetchLicense(r.Context())
 	if err != nil {
 		s.log.Warn("mqtt bridge request failed", "err", err)
-		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		writeJSONError(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, license)
@@ -595,7 +595,7 @@ func (s *Server) handleMQTTCluster(w http.ResponseWriter, r *http.Request) {
 	cluster, code, err := f.FetchCluster(r.Context())
 	if err != nil {
 		s.log.Warn("mqtt bridge request failed", "err", err)
-		http.Error(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
+		writeJSONError(w, `{"error":"bridge request failed"}`, http.StatusBadGateway)
 		return
 	}
 	switch code {

@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "mutate": [
+    "src/App.tsx",
+    "src/hooks/useAuth.ts",
+    "src/hooks/useMetrics.ts",
+    "src/hooks/useWebSocket.ts",
+    "src/store/store.ts",
+    "src/utils/fetchWithTimeout.ts",
+    "src/pages/LoginPage.tsx",
+    "src/pages/ChangePasswordPage.tsx",
+    "src/pages/UsersPage.tsx"
+  ],
+  "reporters": ["clear-text", "progress", "json"],
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "coverageAnalysis": "perTest",
+  "ignoreStatic": true,
+  "mutator": {
+    "excludedMutations": ["StringLiteral"]
+  },
+  "vitest": {
+    "configFile": "vite.config.ts",
+    "related": true
+  },
+  "concurrency": 8,
+  "timeoutMS": 10000,
+  "thresholds": {
+    "high": 90,
+    "low": 80,
+    "break": 80
+  }
+}

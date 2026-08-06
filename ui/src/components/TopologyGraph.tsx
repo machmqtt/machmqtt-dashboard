@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/refs -- force-graph maintains mutable simulation state outside React */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
 import type { TopologyData, TopologyNode, TopologyLink } from '../store/store'
@@ -186,6 +187,7 @@ export function TopologyGraphView({ data }: Props) {
   useEffect(() => {
     let cancelled = false
     positionsLoaded.current = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset loading state when the environment changes
     setReady(false)
     fetchLayout(activeEnv).then((layout) => {
       if (cancelled) return

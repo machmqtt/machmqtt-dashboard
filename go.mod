@@ -3,18 +3,26 @@ module github.com/noodlebit/machmqtt-dashboard
 go 1.26.5
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/coreos/go-oidc/v3 v3.20.0
+	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667
+	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.51.0
 	github.com/nats-io/nkeys v0.4.16
 	golang.org/x/crypto v0.52.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
+	golang.org/x/sys v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.47.0
 )
 
 require (
+	github.com/Azure/go-ntlmssp v0.1.0 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.7.0-default-no-op // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
@@ -26,7 +34,6 @@ require (
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

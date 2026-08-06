@@ -352,3 +352,59 @@ func TestBuildTopologyGateways(t *testing.T) {
 		t.Errorf("links = %d, want 1", len(g.Links))
 	}
 }
+
+func TestBuildTopologyLeafMQTTAndRateBranches(t *testing.T) {
+	now := time.Now()
+	prev := &Snapshot{
+		Timestamp:  now.Add(-2 * time.Second),
+		Routez:     map[string]*Routez{"A": {Routes: []RouteInfo{{RemoteID: "B", InMsgs: 1, OutMsgs: 2}}}},
+		Leafz:      map[string]*Leafz{"A": {Leafs: []LeafInfo{{Name: "leaf-one", InMsgs: 2, OutMsgs: 3}}}},
+		Connz:      map[string]*Connz{"A": {Conns: []ConnInfo{{Name: "machmqtt-bridge", IP: "127.0.0.1", InMsgs: 3, OutMsgs: 4}}}},
+		Varz:       map[string]*Varz{"A": {Host: "host-a"}},
+		ServerURLs: map[string]string{"A": "bridge-host"},
+	}
+	snap := &Snapshot{
+		Timestamp: now,
+		Varz: map[string]*Varz{
+			"A": {ServerName: "nats-a", Host: "host-a", Connections: 2},
+			"B": {ServerName: "leaf-known"},
+		},
+		Health:   map[string]*HealthStatus{"A": {Status: "error"}},
+		Rates:    map[string]*ServerRates{"A": {InMsgsRate: 2, OutMsgsRate: 3}},
+		Routez:   map[string]*Routez{"A": {Routes: []RouteInfo{{RemoteID: "B", RemoteName: "nats-b", InMsgs: 5, OutMsgs: 8}}}},
+		Gatewayz: map[string]*Gatewayz{"A": {OutboundGateways: map[string]*RemoteGatewayz{"west": {Connection: &ConnInfo{Cid: 1}}}}},
+		Leafz: map[string]*Leafz{"A": {Leafs: []LeafInfo{
+			{Name: "leaf-one", InMsgs: 6, OutMsgs: 9},
+			{Name: "leaf-known", InMsgs: 1, OutMsgs: 1},
+			{IP: "10.0.0.2"},
+		}}},
+		Connz: map[string]*Connz{"A": {Conns: []ConnInfo{
+			{Name: "machmqtt-bridge", IP: "127.0.0.1", NumSubs: 2, InMsgs: 9, OutMsgs: 12},
+			{Name: "machmqtt-pool-2", IP: "127.0.0.1", NumSubs: 1, InMsgs: 1, OutMsgs: 1},
+			{Name: "ordinary", IP: "10.0.0.3"},
+		}}},
+		ServerURLs: map[string]string{"A": "bridge-host"},
+	}
+	g := buildTopology(snap, prev)
+	if len(g.Nodes) < 6 || len(g.Links) < 5 {
+		t.Fatalf("topology=%+v", g)
+	}
+	var foundMQTT, foundLeafRate, foundRouteRate bool
+	for _, link := range g.Links {
+		if link.Type == "mqtt" && link.InMsgsRate > 0 {
+			foundMQTT = true
+		}
+		if link.Type == "leaf" && link.Target == "leaf:leaf-one" && link.InMsgsRate == 2 {
+			foundLeafRate = true
+		}
+		if link.Type == "route" && link.InMsgsRate == 2 {
+			foundRouteRate = true
+		}
+	}
+	if !foundMQTT || !foundLeafRate || !foundRouteRate {
+		t.Fatalf("missing rate links: %+v", g.Links)
+	}
+	if routeLinkKey("b", "a") != "a<->b" || routeLinkKey("a", "b") != "a<->b" {
+		t.Fatal("route key")
+	}
+}

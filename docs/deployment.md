@@ -216,3 +216,20 @@ stops producing data, so it's reasonable to keep both open.
   back through the API, not at rest. Restrict filesystem access to `data_dir` (and back
   up the database file) accordingly.
 - Session cookies are `httpOnly` and `SameSite=Strict`
+
+Sessions have a 24-hour absolute lifetime and no sliding idle timeout. Password changes, local account deletion/disable, and role changes invalidate outstanding sessions through a server-side version. Rotating `session_secret` invalidates every session. Logout clears the browser cookie but does not maintain a per-token denylist; a copied token remains usable until expiry or one of those revocation events, so use TLS and rotate the affected account or signing secret after suspected theft.
+
+The ordered password login limiter and the dedicated local recovery limiter intentionally have separate bounded budgets. This preserves break-glass access during an external-provider attack or outage without allowing alternate external endpoints to multiply the external attempt budget. Only configured `trusted_proxy_cidrs` may supply client forwarding headers. Limiter and OIDC flow state are process-local, reinforcing the single-instance deployment boundary.
+
+## Health, metrics, and recovery
+
+- `GET /livez` reports process liveness and has no external dependency.
+- `GET /readyz` verifies the process is accepting work and SQLite is reachable. It becomes unavailable during graceful shutdown; stale NATS observations are treated as degraded monitoring, not process unreadiness.
+- `GET /metrics` exposes Prometheus text metrics for HTTP requests, authentication outcomes, the persistence queue, SQLite pool usage, and WebSocket clients/drops. Labels are bounded and never contain usernames, subjects, tokens, client IDs, or raw URLs.
+- Every response includes `X-Request-ID`; structured request logs include normalized route, status, duration, response size, and client class.
+
+Only one dashboard process may use a data directory. Before offline backup or restore, stop the process. Online backups use SQLite `VACUUM INTO`; verify the result with `PRAGMA quick_check`. Restore by replacing `dashboard.db` while stopped, preserving ownership and permissions, then start and verify `/readyz`. If integrity checking fails, retain the database and WAL files for investigation and restore the last verified backup rather than attempting an in-place downgrade.
+
+Metrics retention is configured by `metrics_retention` (default `24h`; supported `1h` through `8760h`). Size the volume from the polling interval, server/bridge count, and retention window.
+
+See [Performance and capacity](performance.md) for dataset shapes, query limits, sizing guidance, and the repeatable benchmark command.

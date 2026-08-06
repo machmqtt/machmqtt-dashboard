@@ -48,7 +48,7 @@ export SESSION_SECRET=$(openssl rand -hex 32)
 docker compose up -d
 ```
 
-Open [http://localhost:8080](http://localhost:8080) and log in with `admin` / `admin`.
+Open [http://localhost:8080](http://localhost:8080) and log in as `admin` with the one-time password you exported. The first session must rotate it.
 
 ### From Source
 
@@ -124,7 +124,7 @@ The Vite dev server proxies `/api` requests to the Go backend on `:8080`.
 ### Testing
 
 ```bash
-go test ./internal/...
+make test
 ```
 
 Collector integration tests spin up an in-process NATS server (`internal/testutil/natstest`, built on the `nats-server/v2` test helpers) — no external NATS instance or Docker container is required.

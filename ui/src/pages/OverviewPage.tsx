@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useStore } from '../store/store'
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton'
 import { Activity, Cable, ArrowDownToLine, ArrowUpFromLine, Database, GitBranch, Server } from 'lucide-react'

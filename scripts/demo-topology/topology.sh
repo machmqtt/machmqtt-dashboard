@@ -26,7 +26,8 @@ NATS_BIN="${NATS_BIN:-$(command -v nats-server || echo "$HOME/go/bin/nats-server
 MACHMQTT_BIN="${MACHMQTT_BIN:-$REPO_ROOT/../machmqtt/machmqtt}"
 DASH_PORT=8095
 DASH_USER="admin"
-DASH_PASS="demopassword"   # the demo login (set after first-run admin/admin)
+DASH_PASS="demopassword"   # the demo login after mandatory bootstrap rotation
+DASH_BOOTSTRAP_PASS="${DASH_BOOTSTRAP_PASS:-demo-bootstrap-password}"
 
 # ── Port map (high ports to avoid clashing with a default local stack) ──
 HUB_NAMES=(hub-1 hub-2 hub-3)
@@ -169,7 +170,8 @@ metrics_retention: 24h
 session_secret: "${secret}"
 data_dir: "$RUN_DIR/dash-data"
 EOF
-  "$RUN_DIR/dashboard" -config "$RUN_DIR/conf/dashboard.yaml" >> "$RUN_DIR/logs/dashboard.log" 2>&1 &
+  MACHMQTT_DASHBOARD_BOOTSTRAP_PASSWORD="$DASH_BOOTSTRAP_PASS" \
+    "$RUN_DIR/dashboard" -config "$RUN_DIR/conf/dashboard.yaml" >> "$RUN_DIR/logs/dashboard.log" 2>&1 &
   record_pid "$!" "dashboard"
   wait_http "http://127.0.0.1:${DASH_PORT}/" "dashboard"
 
@@ -188,10 +190,11 @@ EOF
 
 configure_dashboard() {
   local jar="$RUN_DIR/cookies.txt"
-  # First-run admin is admin/admin with a forced change; log in, then set the
-  # documented demo password so screenshots aren't interrupted by the prompt.
+  # Log in with the explicit one-time bootstrap secret, then set the documented
+  # demo password so screenshots aren't interrupted by the rotation prompt.
   curl -s -c "$jar" -X POST "http://127.0.0.1:${DASH_PORT}/api/login" \
-    -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' >/dev/null
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"admin\",\"password\":\"${DASH_BOOTSTRAP_PASS}\"}" >/dev/null
   local uid
   uid="$(curl -s -b "$jar" "http://127.0.0.1:${DASH_PORT}/api/me" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
   if [ -n "$uid" ]; then
@@ -200,7 +203,7 @@ configure_dashboard() {
     # that later requests must use.
     curl -s -b "$jar" -c "$jar" -X PUT "http://127.0.0.1:${DASH_PORT}/api/users/${uid}/password" \
       -H 'Content-Type: application/json' \
-      -d "{\"old_password\":\"admin\",\"new_password\":\"${DASH_PASS}\"}" >/dev/null || true
+      -d "{\"old_password\":\"${DASH_BOOTSTRAP_PASS}\",\"new_password\":\"${DASH_PASS}\"}" >/dev/null || true
   fi
 
   # Build the environment: monitor all 6 servers, configure the 3 broker admin

@@ -12,6 +12,15 @@ import (
 )
 
 const mqttFetchTimeout = 5 * time.Second
+const mqttMaxResponseBytes = 8 << 20
+
+var mqttTransport = &http.Transport{
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   10,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   5 * time.Second,
+	ResponseHeaderTimeout: 5 * time.Second,
+}
 
 // MQTTBridgeFetcher fetches data from a MachMQTT bridge admin API.
 type MQTTBridgeFetcher struct {
@@ -66,7 +75,7 @@ func (f *MQTTBridgeFetcher) fetchAccepting(ctx context.Context, path string, out
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	decodable := resp.StatusCode == http.StatusOK
 	for _, code := range alsoDecode {
@@ -80,7 +89,17 @@ func (f *MQTTBridgeFetcher) fetchAccepting(ctx context.Context, path string, out
 		return fmt.Errorf("fetch %s: status %d: %s", path, resp.StatusCode, body)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(out)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, mqttMaxResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > mqttMaxResponseBytes {
+		return fmt.Errorf("fetch %s: response exceeds %d bytes", path, mqttMaxResponseBytes)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+	return nil
 }
 
 // getWithStatus performs a GET and returns the bridge's HTTP status code. On a
@@ -237,19 +256,24 @@ func (f *MQTTBridgeFetcher) FetchMetrics(ctx context.Context) (*MQTTMetrics, err
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, mqttMaxResponseBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > mqttMaxResponseBytes {
+		return nil, fmt.Errorf("metrics response exceeds %d bytes", mqttMaxResponseBytes)
 	}
 
 	return parsePrometheusMetrics(string(body)), nil
 }
+
+func CloseMQTTIdleConnections() { mqttTransport.CloseIdleConnections() }
 
 // FetchStatus fetches readyz + diag/nats + metrics for a quick overview.
 func (f *MQTTBridgeFetcher) FetchStatus(ctx context.Context) *MQTTBridgeStatus {
