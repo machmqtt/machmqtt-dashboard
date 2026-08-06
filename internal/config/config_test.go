@@ -647,3 +647,38 @@ func TestResolveBridgeToken(t *testing.T) {
 		})
 	}
 }
+
+func TestDiscoveryTrustedHostsNormalizesEveryConfiguredSource(t *testing.T) {
+	env := Environment{
+		Servers:     []Server{{URL: "https://NATS.Example.COM:8222/varz"}, {URL: "http://"}},
+		MQTTBridges: []MQTTBridge{{URL: "bridge.example.com:8080/readyz"}},
+		NATSConn:    &NATSConnConfig{URLs: []string{"nats://[2001:db8::1]:4222", "nats://push.example.com:4222?x=1"}},
+		MQTTDiscovery: &MQTTDiscoveryConfig{TrustedHosts: []string{
+			"Explicit.Example.COM", "",
+		}},
+	}
+	want := []string{"nats.example.com", "bridge.example.com", "2001:db8::1", "push.example.com", "explicit.example.com"}
+	hosts := env.DiscoveryTrustedHosts()
+	if len(hosts) != len(want) {
+		t.Fatalf("trusted hosts = %v, want exactly %v", hosts, want)
+	}
+	for _, host := range want {
+		if !hosts[host] {
+			t.Errorf("trusted hosts missing %q: %v", host, hosts)
+		}
+	}
+}
+
+func TestHostFromURLVariants(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://host.example:8443/path?x=1": "host.example",
+		"host.example:4222/path":             "host.example",
+		"host.example/path":                  "host.example",
+		"[2001:db8::2]:4222":                 "2001:db8::2",
+		"plain-host":                         "plain-host",
+	} {
+		if got := hostFromURL(raw); got != want {
+			t.Errorf("hostFromURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

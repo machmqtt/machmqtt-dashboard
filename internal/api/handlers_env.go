@@ -230,9 +230,50 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), connzRequestTimeout)
 	defer cancel()
 	results := fetchConnzPages(ctx, servers, func(ctx context.Context, serverURL string, pageLimit, pageOffset int) (*collector.Connz, error) {
-		return fetcher.FetchConnz(ctx, serverURL, pageLimit, pageOffset, "", acc, state, filterSubject)
+		// Subject filtering is applied below from the subscription-detail source.
+		// Fetching the full connection page here preserves the server-wide total and
+		// lets us report when either source is incomplete. Account and state remain
+		// upstream filters because NATS implements them directly.
+		return fetcher.FetchConnz(ctx, serverURL, pageLimit, pageOffset, "", acc, state, "")
 	})
 	allConns, reportedTotal, failedServers, partial := flattenConnz(results)
+
+	// Some monitoring-compatible endpoints ignore the account query parameter.
+	// Enforce it locally as well so the API contract is stable across providers.
+	if acc != "" {
+		filtered := allConns[:0]
+		for _, conn := range allConns {
+			if conn.Account == acc {
+				filtered = append(filtered, conn)
+			}
+		}
+		allConns = filtered
+	}
+
+	subsAvailable := false
+	subsTruncated := false
+	if filterSubject != "" {
+		rows, truncated := s.getSubsRows(ctx, env)
+		subsAvailable = len(rows) > 0
+		subsTruncated = truncated
+		type connectionKey struct {
+			serverID string
+			cid      uint64
+		}
+		matchingConnections := make(map[connectionKey]struct{}, len(rows))
+		for _, row := range rows {
+			if strings.Contains(row.Subject, filterSubject) {
+				matchingConnections[connectionKey{serverID: row.ServerID, cid: row.ConnCid}] = struct{}{}
+			}
+		}
+		filtered := allConns[:0]
+		for _, conn := range allConns {
+			if _, ok := matchingConnections[connectionKey{serverID: conn.ServerID, cid: conn.Cid}]; ok {
+				filtered = append(filtered, conn)
+			}
+		}
+		allConns = filtered
+	}
 
 	loadedTotal := len(allConns)
 	if offset > loadedTotal {
@@ -243,15 +284,21 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 		end = loadedTotal
 	}
 
-	writeJSON(w, map[string]any{
+	resp := map[string]any{
 		"connections":    allConns[offset:end],
-		"total":          reportedTotal,
+		"total":          loadedTotal,
+		"server_total":   reportedTotal,
 		"loaded_total":   loadedTotal,
 		"limit":          limit,
 		"offset":         offset,
-		"partial":        partial,
+		"partial":        partial || subsTruncated,
+		"truncated":      partial || subsTruncated,
 		"failed_servers": failedServers,
-	})
+	}
+	if filterSubject != "" {
+		resp["subs_available"] = subsAvailable
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {

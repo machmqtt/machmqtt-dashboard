@@ -154,7 +154,7 @@ func polledServer(t *testing.T, natsCfg natsMockConfig, opts ...func(*polledOpts
 	t.Cleanup(func() { s.Close() })
 
 	u, _ := s.CreateUser("admin", "pass", store.RoleAdmin)
-	a := auth.New(s, "test-secret", false, false, nil)
+	a := auth.New(s, "test-secret", false)
 	token, _ := a.IssueToken(u)
 	log := discardLogger()
 

@@ -59,13 +59,22 @@ func TestHandleMQTTBridgeMetricsSuccess(t *testing.T) {
 }
 
 func TestMetricsHandlersQueryError(t *testing.T) {
-	srv, s, token, id := polledServer(t, natsMockConfig{}, withMetrics())
+	srv, s, _, id := polledServer(t, natsMockConfig{}, withMetrics())
 	s.Close() // queries now fail
-	// Give the writer's Run goroutine a moment to settle on the closed DB.
-	for _, path := range []string{"metrics/overview", "metrics/servers?server_id=x", "metrics/mqtt?bridge_id=x"} {
-		w := do(t, srv, "GET", "/api/environments/"+id+"/"+path, token, "")
+	for _, tc := range []struct {
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"metrics/overview", srv.handleEnvMetrics},
+		{"metrics/servers?server_id=x", srv.handleServerMetrics},
+		{"metrics/mqtt?bridge_id=x", srv.handleMQTTBridgeMetrics},
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/api/environments/"+id+"/"+tc.path, nil)
+		r.SetPathValue("env", id)
+		tc.handler(w, r)
 		if w.Code != http.StatusInternalServerError {
-			t.Errorf("%s status = %d, want 500 on query error", path, w.Code)
+			t.Errorf("%s status = %d, want 500 on query error", tc.path, w.Code)
 		}
 	}
 }

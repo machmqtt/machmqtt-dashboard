@@ -21,8 +21,12 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
 
-func natsFixture(t *testing.T) *httptest.Server {
+func natsFixture(t *testing.T, exposeMQTTBridge bool) *httptest.Server {
 	t.Helper()
+	connectionName := "client"
+	if exposeMQTTBridge {
+		connectionName = "machmqtt-bridge"
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -33,7 +37,7 @@ func natsFixture(t *testing.T) *httptest.Server {
 				http.Error(w, "detail unsupported", http.StatusBadRequest)
 				return
 			}
-			fmt.Fprint(w, `{"server_id":"s1","total":1,"offset":0,"limit":1024,"connections":[{"cid":7,"ip":"127.0.0.1","port":4222,"name":"machmqtt-bridge","account":"A","subscriptions_list":["foo"],"subscriptions_list_detail":[{"subject":"foo","sid":"1"}]}]}`)
+			fmt.Fprintf(w, `{"server_id":"s1","total":1,"offset":0,"limit":1024,"connections":[{"cid":7,"ip":"127.0.0.1","port":4222,"name":%q,"account":"A","subscriptions_list":["foo"],"subscriptions_list_detail":[{"subject":"foo","sid":"1"}]}]}`, connectionName)
 		case "/routez":
 			fmt.Fprint(w, `{"server_id":"s1","num_routes":0,"routes":[]}`)
 		case "/gatewayz":
@@ -83,8 +87,12 @@ func mqttFixture(t *testing.T) *httptest.Server {
 }
 
 func setupLiveAPIServer(t *testing.T) (*Server, string) {
+	return setupLiveAPIServerWithDiscovery(t, true)
+}
+
+func setupLiveAPIServerWithDiscovery(t *testing.T, exposeMQTTBridge bool) (*Server, string) {
 	t.Helper()
-	nats := natsFixture(t)
+	nats := natsFixture(t, exposeMQTTBridge)
 	mqtt := mqttFixture(t)
 	t.Cleanup(nats.Close)
 	t.Cleanup(mqtt.Close)
@@ -109,6 +117,14 @@ func setupLiveAPIServer(t *testing.T) (*Server, string) {
 		Name: "test", Servers: []config.Server{{URL: nats.URL}, {URL: nats.URL}}, MQTTBridges: []config.MQTTBridge{{Name: "bridge", URL: mqtt.URL}},
 		MQTTDiscovery: &config.MQTTDiscoveryConfig{AdminPorts: []int{mqttPort}},
 	}}}
+	if _, err := db.SeedClusters(cfg.Environments); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the existing human-readable integration paths deterministic while
+	// exercising the production seed-before-manager startup sequence.
+	if _, err := db.DB().Exec("UPDATE clusters SET id = ? WHERE name = ?", "test", "test"); err != nil {
+		t.Fatal(err)
+	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	manager, err := collector.NewManager(cfg, nil, log, db)
 	if err != nil {
@@ -124,13 +140,32 @@ func setupLiveAPIServer(t *testing.T) (*Server, string) {
 	for manager.Snapshot("test").Timestamp.IsZero() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	for len(manager.MQTTBridges("test")) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	if exposeMQTTBridge {
+		for len(manager.MQTTBridges("test")) == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 	}
 	metrics := store.NewMetricsWriter(db.DB(), log)
 	_ = metrics.Submit(store.MetricSample{Timestamp: time.Now(), Env: "test"})
 	srv := NewServer(a, manager, ws.NewHub(log), log, "test-version", cfg, metrics, db, nil)
 	return srv, token
+}
+
+func updateLiveCluster(t *testing.T, srv *Server, mutate func(*store.Cluster)) {
+	t.Helper()
+	cluster, err := srv.store.GetCluster("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(cluster)
+	if err := srv.store.UpdateCluster(cluster); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.manager.UpdateCluster(*cluster); err != nil {
+		t.Fatal(err)
+	}
+	// Configuration changes must not reuse bodies cached under the prior config.
+	srv.bridgeJSON = newBridgeRespCache(3 * time.Second)
 }
 
 func TestLiveAPIReadAndPersistenceRoutes(t *testing.T) {
@@ -183,7 +218,7 @@ func TestOperationalAndHandlerFailureRoutes(t *testing.T) {
 	if srv.envConfig("missing") != nil || srv.mqttBridges("missing") != nil {
 		t.Fatal("missing environment config")
 	}
-	srv.cfg.Environments[0].MQTTBridges = nil
+	updateLiveCluster(t, srv, func(cluster *store.Cluster) { cluster.MQTTBridges = nil })
 	resolved := srv.findBridge("test", "127.0.0.1")
 	if resolved == nil || resolved.URL == "" {
 		t.Fatalf("discovered bridge=%+v", resolved)
@@ -349,7 +384,9 @@ func TestMetricsDisabledAndSubscriptionCacheBranches(t *testing.T) {
 }
 
 func TestHandlerDatabaseAndUpstreamFailureBranches(t *testing.T) {
-	srv, token := setupLiveAPIServer(t)
+	// Disable connz-based MQTT discovery so every detail response below must use
+	// the configured bridge's live admin URL rather than a cached push snapshot.
+	srv, token := setupLiveAPIServerWithDiscovery(t, false)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, authedReq(http.MethodPut, "/api/environments/test/topology/positions", token, `{`))
 	if w.Code != http.StatusBadRequest {
@@ -357,7 +394,9 @@ func TestHandlerDatabaseAndUpstreamFailureBranches(t *testing.T) {
 	}
 
 	// A dead configured bridge exercises bounded upstream failure handling.
-	srv.cfg.Environments[0].MQTTBridges[0].URL = "http://127.0.0.1:1"
+	updateLiveCluster(t, srv, func(cluster *store.Cluster) {
+		cluster.MQTTBridges[0].URL = "http://127.0.0.1:1"
+	})
 	for _, tc := range []struct {
 		path   string
 		status int
@@ -472,8 +511,10 @@ func TestMQTTHandlerEdgeCases(t *testing.T) {
 
 	// A second configured bridge is not among the discovery results. This covers
 	// the status probe, unreachable state, sorting, and missing-environment result.
-	srv.cfg.Environments[0].MQTTBridges = append(srv.cfg.Environments[0].MQTTBridges,
-		config.MQTTBridge{Name: "aardvark", URL: "http://127.0.0.1:1"})
+	updateLiveCluster(t, srv, func(cluster *store.Cluster) {
+		cluster.MQTTBridges = append(cluster.MQTTBridges,
+			config.MQTTBridge{Name: "aardvark", URL: "http://127.0.0.1:1"})
+	})
 	for _, path := range []string{
 		"/api/environments/test/mqtt/bridges",
 		"/api/environments/missing/mqtt/bridges",
@@ -482,6 +523,9 @@ func TestMQTTHandlerEdgeCases(t *testing.T) {
 		srv.Handler().ServeHTTP(w, authedReq(http.MethodGet, path, token, ""))
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s status=%d body=%s", path, w.Code, w.Body.String())
+		}
+		if path == "/api/environments/test/mqtt/bridges" && !strings.Contains(w.Body.String(), `"name":"aardvark"`) {
+			t.Fatalf("configured bridge absent from fleet response: %s", w.Body.String())
 		}
 	}
 
@@ -507,11 +551,13 @@ func TestMQTTHandlerEdgeCases(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer empty.Close()
-	srv.cfg.Environments[0].MQTTBridges = append(srv.cfg.Environments[0].MQTTBridges,
-		config.MQTTBridge{Name: "empty", URL: empty.URL})
+	updateLiveCluster(t, srv, func(cluster *store.Cluster) {
+		cluster.MQTTBridges = append(cluster.MQTTBridges,
+			config.MQTTBridge{Name: "empty", URL: empty.URL})
+	})
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, authedReq(http.MethodGet, "/api/environments/test/mqtt/empty/connz/client", token, ""))
-	if w.Code != http.StatusNotFound {
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "client not found") {
 		t.Fatalf("empty client status=%d body=%s", w.Code, w.Body.String())
 	}
 }

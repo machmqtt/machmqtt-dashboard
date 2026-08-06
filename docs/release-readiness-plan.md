@@ -26,7 +26,9 @@ Current `dev`-rebase evidence:
 |---|---|
 | Frontend coverage | 96.32% statements / 97.99% lines / 95.39% functions / 90.27% branches; 105 tests |
 | Frontend lint / type-check / build / bundle | Pass; initial JavaScript 248.8 KiB / 300 KiB |
-| Offline Go race tests | Pass for dashboard, auth, config, store, and WebSocket packages |
+| Offline Go race tests | Pass for dashboard, API, auth, config, log buffer, store, and WebSocket packages |
+| Rebased available-package aggregate coverage | 95.2% (full gate still awaits the uncached NATS test dependency) |
+| Rebased critical package coverage | API 95.5% / auth 95.3% / config 97.8% / log buffer 100% / store 95.2% / WebSocket 98.3% |
 | Release compilation | Pass for Linux amd64, macOS amd64/arm64, and Windows amd64 |
 | Pending network-backed gates | Full Go suite/coverage, non-JSON `govulncheck`, npm audit, and Docker OpenLDAP/Dex matrix |
 
@@ -242,7 +244,7 @@ Latest fully measured gates before the `dev` rebase (must be revalidated where u
 ### REL-001 — Repeatable release verification (P2)
 
 - [x] Go/npm/scanners/container inputs are version or digest pinned; GitHub actions use approved major ranges.
-- [x] CI retains coverage, vulnerability JSON, benchmark output, release binary, and SPDX JSON SBOM.
+- [x] CI retains coverage, the text-mode vulnerability report, benchmark output, release binary, and SPDX JSON SBOM.
 - [x] The release candidate binary is built once and smoke-tested before artifact retention.
 - [x] Fresh install, migration upgrade/replay, backup/restore, provider outage, real-provider browser flows, and graceful shutdown are exercised.
 
@@ -253,7 +255,7 @@ make test-go-coverage
 go test -race -count=1 -timeout 240s ./cmd/... ./internal/...
 go vet ./cmd/... ./internal/... ./test/enterprise-auth/app
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4 run
-go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./cmd/... ./internal/... ./test/enterprise-auth/app
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./cmd/... ./internal/... ./test/enterprise-auth/app
 cd ui && npm audit --audit-level=moderate && npm run lint && npm run test:coverage && npm run build && npm run check:bundle
 make test-enterprise-auth
 make benchmark-release

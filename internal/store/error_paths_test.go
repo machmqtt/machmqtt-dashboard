@@ -150,6 +150,32 @@ func TestMetricsWriterLifecycleAndCleanupErrors(t *testing.T) {
 		t.Fatal("Wait should respect cancellation before Run")
 	}
 
+	// Starting with an already-cancelled context deterministically exercises the
+	// shutdown drain: every sample accepted before cancellation must persist.
+	w3 := NewMetricsWriter(s, nil, time.Hour)
+	if !w3.Submit(MetricSample{Env: "drain"}) {
+		t.Fatal("sample was not accepted before shutdown")
+	}
+	drainCtx, drainCancel := context.WithCancel(context.Background())
+	drainCancel()
+	w3.Run(drainCtx)
+	if stats := w3.Stats(); stats.Written != 1 || stats.QueueDepth != 0 {
+		t.Fatalf("shutdown drain stats = %+v, want one written and an empty queue", stats)
+	}
+	if w3.Submit(MetricSample{Env: "late"}) {
+		t.Fatal("writer accepted a sample after shutdown")
+	}
+	w3.recordBusy(nil)
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("NewMetricsWriter accepted an unsupported source")
+			}
+		}()
+		_ = NewMetricsWriter("not a database", nil)
+	}()
+
 	mockDB, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +187,11 @@ func TestMetricsWriterLifecycleAndCleanupErrors(t *testing.T) {
 		WillReturnResult(sqlmock.NewErrorResult(errInjected))
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM mqtt_bridge_metrics WHERE rowid IN (SELECT rowid FROM mqtt_bridge_metrics WHERE ts < ? LIMIT 10000)")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("PRAGMA incremental_vacuum")).WillReturnError(errInjected)
 	NewMetricsWriter(mockDB, slog.New(slog.NewTextHandler(io.Discard, nil))).deleteOld()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestStoreDirectDatabaseFailurePaths(t *testing.T) {

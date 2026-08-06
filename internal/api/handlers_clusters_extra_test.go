@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
@@ -37,9 +38,10 @@ func TestMergeClusterSecretsNilPrev(t *testing.T) {
 }
 
 func TestHandleListClustersStoreError(t *testing.T) {
-	srv, s, token, _ := polledServer(t, natsMockConfig{})
+	srv, s, _, _ := polledServer(t, natsMockConfig{})
 	s.Close()
-	w := do(t, srv, "GET", "/api/admin/clusters", token, "")
+	w := httptest.NewRecorder()
+	srv.handleListClusters(w, httptest.NewRequest(http.MethodGet, "/api/admin/clusters", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}

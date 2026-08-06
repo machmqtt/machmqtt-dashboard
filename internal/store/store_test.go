@@ -110,6 +110,31 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	}
 }
 
+func TestSessionStateAndTokenVersionRevocation(t *testing.T) {
+	s := testStore(t)
+	u, err := s.CreateUser("session-user", "secure-password", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.GetSessionState(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Role != RoleAdmin || before.SessionVersion != u.SessionVersion || before.MustChangePassword {
+		t.Fatalf("initial session state = %+v, user = %+v", before, u)
+	}
+	if err := s.BumpTokenVersion(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.GetSessionState(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.SessionVersion != before.SessionVersion+1 || after.Role != before.Role {
+		t.Fatalf("session state after revocation = %+v, before = %+v", after, before)
+	}
+}
+
 func TestCreateUserInvalidRole(t *testing.T) {
 	s := testStore(t)
 	_, err := s.CreateUser("user", "pass", "superadmin")
@@ -449,6 +474,9 @@ func TestMetricsAndBridgeCleanupQueryPlansUseIndexes(t *testing.T) {
 		{"server one", `SELECT server_id FROM server_metrics WHERE env = ? AND server_id = ? AND ts >= ? AND ts <= ?`, []any{"prod", "n1", 1, 2}, "idx_server_metrics_env_sid_ts"},
 		{"mqtt all", `SELECT bridge_id FROM mqtt_bridge_metrics WHERE env = ? AND ts >= ? AND ts <= ?`, []any{"prod", 1, 2}, "idx_mqtt_bridge_metrics_env_ts"},
 		{"mqtt one", `SELECT bridge_id FROM mqtt_bridge_metrics WHERE env = ? AND bridge_id = ? AND ts >= ? AND ts <= ?`, []any{"prod", "b1", 1, 2}, "idx_mqtt_bridge_metrics_env_bid_ts"},
+		{"server retention", `DELETE FROM server_metrics WHERE rowid IN (SELECT rowid FROM server_metrics WHERE ts < ? LIMIT 10000)`, []any{1}, "idx_server_metrics_ts"},
+		{"environment retention", `DELETE FROM env_metrics WHERE rowid IN (SELECT rowid FROM env_metrics WHERE ts < ? LIMIT 10000)`, []any{1}, "idx_env_metrics_ts"},
+		{"mqtt retention", `DELETE FROM mqtt_bridge_metrics WHERE rowid IN (SELECT rowid FROM mqtt_bridge_metrics WHERE ts < ? LIMIT 10000)`, []any{1}, "idx_mqtt_bridge_metrics_ts"},
 		{"stale bridges", `DELETE FROM mqtt_bridges WHERE env = ? AND last_seen < ?`, []any{"prod", 1}, "idx_mqtt_bridges_env_last_seen"},
 	}
 	for _, tc := range tests {
@@ -2016,6 +2044,9 @@ func testClosedStore(t *testing.T) *Store {
 
 func TestClosedStoreErrors(t *testing.T) {
 	s := testClosedStore(t)
+	if _, err := s.SeedClusters([]config.Environment{{Name: "seed"}}); err == nil {
+		t.Error("SeedClusters: expected error on closed DB")
+	}
 
 	if _, err := s.UserCount(); err == nil {
 		t.Error("UserCount: expected error on closed DB")
@@ -2028,6 +2059,12 @@ func TestClosedStoreErrors(t *testing.T) {
 	}
 	if err := s.ChangePassword(1, "old", "new"); err == nil {
 		t.Error("ChangePassword: expected error on closed DB")
+	}
+	if err := s.BumpTokenVersion(1); err == nil {
+		t.Error("BumpTokenVersion: expected error on closed DB")
+	}
+	if _, err := s.GetSessionState(1); err == nil {
+		t.Error("GetSessionState: expected error on closed DB")
 	}
 	if _, err := s.GetUser(1); err == nil {
 		t.Error("GetUser: expected error on closed DB")

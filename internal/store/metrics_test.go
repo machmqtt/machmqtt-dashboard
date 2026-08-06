@@ -52,6 +52,29 @@ func TestMetricsWriterPersistenceQueriesStatsAndRetention(t *testing.T) {
 	}
 }
 
+func TestMetricsRetentionCleanupIsBoundedPerPass(t *testing.T) {
+	s := testStore(t)
+	old := time.Now().Add(-48 * time.Hour).Unix()
+	if _, err := s.DB().Exec(`
+		WITH RECURSIVE rows(n) AS (
+			SELECT 1 UNION ALL SELECT n + 1 FROM rows WHERE n < 10001
+		)
+		INSERT INTO env_metrics (ts, env) SELECT ?, 'bounded-cleanup' FROM rows
+	`, old); err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewMetricsWriter(s, slog.New(slog.NewTextHandler(io.Discard, nil)), time.Hour)
+	w.deleteOld()
+	var remaining int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM env_metrics WHERE env = 'bounded-cleanup'`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("rows remaining after one cleanup pass = %d, want 1 (exactly 10,000 deleted)", remaining)
+	}
+}
+
 func TestMetricsWriterOperationalTimingAndBusyAccounting(t *testing.T) {
 	s := testStore(t)
 	w := NewMetricsWriter(s.DB(), slog.New(slog.NewTextHandler(io.Discard, nil)))

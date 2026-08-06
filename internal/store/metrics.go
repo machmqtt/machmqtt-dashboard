@@ -356,7 +356,14 @@ func (w *MetricsWriter) deleteOld() {
 	cutoff := time.Now().Add(-w.retention).Unix()
 	freed := false
 	for _, table := range []string{"server_metrics", "env_metrics", "mqtt_bridge_metrics"} {
-		res, err := w.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ts < ?", table), cutoff)
+		// Bound each maintenance pass so retention cannot hold SQLite's single
+		// writer lock while deleting an arbitrarily large backlog. Later cleanup
+		// ticks continue draining old rows in the same fixed-size batches.
+		query := fmt.Sprintf(
+			"DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE ts < ? LIMIT 10000)",
+			table, table,
+		)
+		res, err := w.db.Exec(query, cutoff)
 		if err != nil {
 			w.log.Warn("metrics cleanup", "table", table, "err", err)
 			continue

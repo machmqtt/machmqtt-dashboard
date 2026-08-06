@@ -32,7 +32,7 @@ func setupTestServerWithStore(t *testing.T) (*Server, *store.Store, *auth.Auth, 
 	t.Cleanup(func() { s.Close() })
 
 	u, _ := s.CreateUser("admin", "pass", store.RoleAdmin)
-	a := auth.New(s, "test-secret", false, false, nil)
+	a := auth.New(s, "test-secret", false)
 	token, _ := a.IssueToken(u)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -129,7 +129,7 @@ func TestAuthenticationProviderMetadataIsPublic(t *testing.T) {
 func TestExternalLoginRateLimitDoesNotBlockBreakGlassLogin(t *testing.T) {
 	srv, _, _ := setupTestServer(t)
 	for i := 0; i < 11; i++ {
-		req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"wrong"}`))
+		req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"missing","password":"wrong"}`))
 		req.RemoteAddr = "192.0.2.10:1234"
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, req)
@@ -343,8 +343,8 @@ func TestDefaultAdminMustChangePassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := auth.New(s, "test-secret", false, false, nil)
-	log := slog.New(slog.NewTextHandler(nil, nil))
+	a := auth.New(s, "test-secret", false)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{
 		PollInterval: 5e9,
 	}

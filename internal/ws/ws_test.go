@@ -88,6 +88,18 @@ func TestHubBroadcastDropsWhenBufferFull(t *testing.T) {
 	if got := c.dropped.Load(); got != 1 {
 		t.Errorf("dropped = %d, want 1", got)
 	}
+	if got := h.DroppedTotal(); got != 1 {
+		t.Errorf("hub dropped total = %d, want 1", got)
+	}
+	if got := h.StaleClientCount(); got != 1 {
+		t.Errorf("stale clients = %d, want 1", got)
+	}
+	h.recordSubscription()
+	h.recordWriteFailure()
+	stats := h.Stats()
+	if stats.Connected != 1 || stats.Dropped != 1 || stats.Subscriptions != 1 || stats.WriteFailures != 1 || stats.SendQueueDepth != sendBufLen {
+		t.Fatalf("unexpected hub stats: %+v", stats)
+	}
 }
 
 func TestHubBroadcastMarshalErrorIsSafe(t *testing.T) {

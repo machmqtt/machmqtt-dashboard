@@ -15,6 +15,8 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
 
+const testBootstrapPassword = "bootstrap-password"
+
 // setupDefaultAdminServer builds a full API server whose only user is the
 // break-glass admin, provisioned with an explicit secret and marked for rotation.
 func setupDefaultAdminServer(t *testing.T) *Server {
