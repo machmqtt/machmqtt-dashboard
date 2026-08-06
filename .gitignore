@@ -48,6 +48,8 @@ Thumbs.db
 
 # Config with secrets
 config.yaml
+# Deterministic test-only Dex fixture; credentials are intentionally non-production.
+!test/enterprise-auth/dex/config.yaml
 
 # License keys / tokens (never commit — commercial-software secrets)
 *-license.*
