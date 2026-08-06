@@ -88,7 +88,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := api.NewServer(a, manager, ws.NewHub(logger), logger, "enterprise-browser", cfg, nil, st)
+	srv := api.NewServer(a, manager, ws.NewHub(logger), logger, "enterprise-browser", cfg, nil, st, nil)
 	certificate, err := selfSignedCertificate()
 	if err != nil {
 		return err
