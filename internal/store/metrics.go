@@ -132,17 +132,22 @@ type MetricsWriterStats struct {
 // writer buffer was full, since process start.
 func (w *MetricsWriter) Dropped() uint64 { return w.droppedTotal.Load() }
 
+// MetricsSource is the set of handles a MetricsWriter can be built from. The
+// union is enforced at compile time, so an unsupported source is a build
+// failure rather than a runtime panic.
+type MetricsSource interface {
+	*Store | *sql.DB
+}
+
 // NewMetricsWriter accepts either a Store or its database handle so existing
 // integrations can share the same bounded writer. Call Run exactly once.
-func NewMetricsWriter(source any, log *slog.Logger, retention ...time.Duration) *MetricsWriter {
+func NewMetricsWriter[T MetricsSource](source T, log *slog.Logger, retention ...time.Duration) *MetricsWriter {
 	var db *sql.DB
-	switch value := source.(type) {
+	switch value := any(source).(type) {
 	case *Store:
 		db = value.db
 	case *sql.DB:
 		db = value
-	default:
-		panic("NewMetricsWriter requires *store.Store or *sql.DB")
 	}
 	keep := 24 * time.Hour
 	if len(retention) > 0 && retention[0] > 0 {

@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -246,7 +248,15 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 		// invalidate existing self-contained tokens immediately.
 		user, err := a.store.GetUser(claims.UserID)
 		if err != nil {
-			writeJSONError(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			// A deleted user is genuinely unauthorized; a database failure is not.
+			// Reporting the latter as 401 would log every client out during a
+			// transient outage and hide the real fault.
+			if errors.Is(err, sql.ErrNoRows) {
+				writeJSONError(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			a.log.Error("resolve session user", "user_id", claims.UserID, "err", err)
+			writeJSONError(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 			return
 		}
 		if claims.SessionVersion != user.SessionVersion {

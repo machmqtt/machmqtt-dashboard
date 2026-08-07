@@ -45,7 +45,16 @@ type OIDCProvider struct {
 	flowMu        sync.Mutex
 	flows         map[string]oidcFlow
 	flowEvictions atomic.Uint64
+	lastSweep     time.Time
 }
+
+// oidcFlowTTL bounds how long an in-flight authorization request stays valid,
+// and oidcMaxFlows caps the table so an unauthenticated caller cannot grow it
+// without limit by repeatedly starting logins it never completes.
+const (
+	oidcFlowTTL  = 10 * time.Minute
+	oidcMaxFlows = 10000
+)
 
 type OIDCFlowStats struct {
 	Active    int
@@ -87,7 +96,11 @@ func (p *OIDCProvider) BeginLogin(w http.ResponseWriter, r *http.Request) error 
 		Value:    binding,
 		Path:     p.callbackPath(),
 		HttpOnly: true,
-		Secure:   true,
+		// Derived from the configured public URL rather than hardcoded: a
+		// Secure cookie is dropped by the browser over plain HTTP, which would
+		// fail the callback binding check on an http:// deployment instead of
+		// protecting it.
+		Secure:   p.secureCookie(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600,
 	})
@@ -177,14 +190,21 @@ func (p *OIDCProvider) ensureRuntime(ctx context.Context) error {
 func (p *OIDCProvider) storeFlow(state string, flow oidcFlow) {
 	p.flowMu.Lock()
 	defer p.flowMu.Unlock()
-	cutoff := time.Now().Add(-10 * time.Minute)
-	for key, existing := range p.flows {
-		if existing.created.Before(cutoff) {
-			delete(p.flows, key)
-			p.flowEvictions.Add(1)
+	// Sweeping every entry on every login is O(n) per request. Amortize it: run
+	// the scan at most once a minute, or immediately when the table is at its
+	// cap and space must actually be reclaimed.
+	now := time.Now()
+	if now.Sub(p.lastSweep) >= time.Minute || len(p.flows) >= oidcMaxFlows {
+		cutoff := now.Add(-oidcFlowTTL)
+		for key, existing := range p.flows {
+			if existing.created.Before(cutoff) {
+				delete(p.flows, key)
+				p.flowEvictions.Add(1)
+			}
 		}
+		p.lastSweep = now
 	}
-	if len(p.flows) >= 10000 {
+	if len(p.flows) >= oidcMaxFlows {
 		var oldestKey string
 		var oldestTime time.Time
 		for key, existing := range p.flows {
@@ -197,6 +217,12 @@ func (p *OIDCProvider) storeFlow(state string, flow oidcFlow) {
 		p.flowEvictions.Add(1)
 	}
 	p.flows[state] = flow
+}
+
+// secureCookie reports whether the flow cookie should carry the Secure
+// attribute, based on the scheme of the configured public URL.
+func (p *OIDCProvider) secureCookie() bool {
+	return !strings.HasPrefix(p.publicURL, "http://")
 }
 
 func (p *OIDCProvider) FlowStats() OIDCFlowStats {
@@ -218,7 +244,7 @@ func (p *OIDCProvider) consumeFlow(state string) (oidcFlow, bool) {
 	defer p.flowMu.Unlock()
 	flow, ok := p.flows[state]
 	delete(p.flows, state)
-	if !ok || flow.created.Before(time.Now().Add(-10*time.Minute)) {
+	if !ok || flow.created.Before(time.Now().Add(-oidcFlowTTL)) {
 		return oidcFlow{}, false
 	}
 	return flow, true

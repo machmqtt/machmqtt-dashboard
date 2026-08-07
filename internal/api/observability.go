@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/noodlebit/machmqtt-dashboard/internal/auth"
 )
 
 type responseCapture struct {
@@ -73,6 +76,22 @@ func (m *operationalMetrics) record(route string, status int, duration time.Dura
 	m.requests[key]++
 	m.duration[route] += duration
 	m.mu.Unlock()
+}
+
+// snapshot copies the counters so /metrics never formats to a network writer
+// while holding the lock every request handler needs.
+func (m *operationalMetrics) snapshot() (map[string]uint64, map[string]time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	requests := make(map[string]uint64, len(m.requests))
+	for key, value := range m.requests {
+		requests[key] = value
+	}
+	durations := make(map[string]time.Duration, len(m.duration))
+	for key, value := range m.duration {
+		durations[key] = value
+	}
+	return requests, durations
 }
 
 func requestID(r *http.Request) string {
@@ -147,6 +166,31 @@ func (s *Server) observe(next http.Handler) http.Handler {
 	})
 }
 
+// guardMetrics authorizes a Prometheus scrape by bearer token when one is
+// configured, and otherwise falls back to a normal dashboard session so the
+// endpoint is never reachable anonymously.
+func (s *Server) guardMetrics(a *auth.Auth, next http.Handler) http.Handler {
+	token := ""
+	if s.cfg != nil {
+		token = s.cfg.MetricsToken
+	}
+	if token == "" {
+		return a.Middleware(next)
+	}
+	expected := []byte(token)
+	session := a.Middleware(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The scheme is required: TrimPrefix alone would also accept the bare
+		// token, widening what counts as a valid credential.
+		presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if ok && subtle.ConstantTimeCompare([]byte(presented), expected) == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		session.ServeHTTP(w, r)
+	})
+}
+
 // Prometheus output is best-effort once streaming starts; a client disconnect
 // cannot be recovered within an HTTP handler.
 //
@@ -155,15 +199,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	fmt.Fprintf(w, "# TYPE nats_dashboard_http_in_flight gauge\nnats_dashboard_http_in_flight %d\n", s.ops.inFlight.Load())
 	fmt.Fprintf(w, "# TYPE nats_dashboard_http_panics_total counter\nnats_dashboard_http_panics_total %d\n", s.ops.panics.Load())
-	s.ops.mu.Lock()
-	for key, count := range s.ops.requests {
+	requests, durations := s.ops.snapshot()
+	for key, count := range requests {
 		parts := strings.SplitN(key, "\x00", 2)
 		fmt.Fprintf(w, "nats_dashboard_http_requests_total{route=%q,status=%q} %d\n", parts[0], parts[1], count)
 	}
-	for route, duration := range s.ops.duration {
+	for route, duration := range durations {
 		fmt.Fprintf(w, "nats_dashboard_http_request_duration_seconds_total{route=%q} %f\n", route, duration.Seconds())
 	}
-	s.ops.mu.Unlock()
 	if s.metrics != nil {
 		stats := s.metrics.Stats()
 		fmt.Fprintf(w, "nats_dashboard_metrics_queue_depth %d\n", stats.QueueDepth)
@@ -213,6 +256,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "nats_dashboard_authentication_rate_limiter_keys{route=%q} %d\n", "local", local.Keys)
 		fmt.Fprintf(w, "nats_dashboard_authentication_rate_limited_total{route=%q} %d\n", "ordered", ordered.Rejected)
 		fmt.Fprintf(w, "nats_dashboard_authentication_rate_limited_total{route=%q} %d\n", "local", local.Rejected)
+		fmt.Fprintf(w, "nats_dashboard_authentication_rate_limiter_evictions_total{route=%q} %d\n", "ordered", ordered.Evicted)
+		fmt.Fprintf(w, "nats_dashboard_authentication_rate_limiter_evictions_total{route=%q} %d\n", "local", local.Evicted)
 		for provider, stats := range s.auth.OIDCFlowMetrics() {
 			fmt.Fprintf(w, "nats_dashboard_oidc_flows_active{provider=%q} %d\n", provider, stats.Active)
 			fmt.Fprintf(w, "nats_dashboard_oidc_flow_evictions_total{provider=%q} %d\n", provider, stats.Evictions)
@@ -235,8 +280,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "nats_dashboard_subscription_cache_misses_total %d\n", s.subsCacheMisses.Load())
 	fmt.Fprintf(w, "nats_dashboard_subscription_cache_evictions_total %d\n", s.subsCacheEvictions.Load())
 	s.subsCacheMu.Lock()
-	fmt.Fprintf(w, "nats_dashboard_subscription_cache_entries %d\n", len(s.subsCacheData))
+	subsEntries := len(s.subsCacheData)
 	s.subsCacheMu.Unlock()
+	fmt.Fprintf(w, "nats_dashboard_subscription_cache_entries %d\n", subsEntries)
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
 	fmt.Fprintf(w, "nats_dashboard_go_goroutines %d\n", runtime.NumGoroutine())

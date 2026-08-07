@@ -54,8 +54,22 @@ func TestOIDCFlowStats(t *testing.T) {
 	provider := NewOIDCProvider("enterprise", "https://dashboard.example.com", config.OIDCAuthConfig{}, nil)
 	provider.storeFlow("expired", oidcFlow{created: time.Now().Add(-11 * time.Minute)})
 	provider.storeFlow("current", oidcFlow{created: time.Now()})
+	// The expiry sweep is amortized to at most once a minute, so an expired
+	// entry can linger in the table. It must still be unusable.
+	if stats := provider.FlowStats(); stats.Active != 2 {
+		t.Fatalf("expected both flows still resident: %+v", stats)
+	}
+	if _, ok := provider.consumeFlow("expired"); ok {
+		t.Fatal("an unswept expired flow was accepted")
+	}
+	provider.storeFlow("expired", oidcFlow{created: time.Now().Add(-11 * time.Minute)})
+	// Force the sweep window open and confirm it reclaims the expired entry.
+	provider.flowMu.Lock()
+	provider.lastSweep = time.Now().Add(-2 * time.Minute)
+	provider.flowMu.Unlock()
+	provider.storeFlow("another", oidcFlow{created: time.Now()})
 	stats := provider.FlowStats()
-	if stats.Active != 1 || stats.Evictions != 1 {
+	if stats.Active != 2 || stats.Evictions != 1 {
 		t.Fatalf("unexpected flow stats: %+v", stats)
 	}
 }

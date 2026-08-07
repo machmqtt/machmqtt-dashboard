@@ -17,7 +17,9 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	mux.HandleFunc("GET /api/auth/oidc/{provider}/callback", a.HandleOIDCCallback)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", s.handleReadiness)
-	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	// /metrics exposes environment names and runtime internals, so it is never
+	// anonymous: a configured scrape token, or an authenticated dashboard session.
+	mux.Handle("GET /metrics", s.guardMetrics(a, http.HandlerFunc(s.handleMetrics)))
 	// Unauthenticated liveness/readiness probe (k8s / load balancer).
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 

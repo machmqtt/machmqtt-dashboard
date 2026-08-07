@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -390,12 +391,29 @@ func TestRateLimiterPruningAndProxyEdges(t *testing.T) {
 	if ipInNetworks("invalid", []*net.IPNet{trusted}) || ipInNetworks("192.0.2.1", []*net.IPNet{trusted}) {
 		t.Fatal("invalid or untrusted IP matched trusted network")
 	}
+	// At the key bound the limiter must evict rather than fail closed: refusing
+	// every unseen key would let one attacker filling the table lock out all
+	// legitimate users.
 	rl.maxKeys = len(rl.attempts)
-	if rl.Allow("new-source") {
-		t.Fatal("limiter must fail closed at its key bound")
+	before := rl.Stats().Evicted
+	if !rl.Allow("new-source") {
+		t.Fatal("limiter locked out an unseen key instead of evicting")
 	}
-	if rl.Size() != len(rl.attempts) {
-		t.Fatal("limiter size changed beyond bound")
+	if rl.Stats().Evicted <= before {
+		t.Fatal("limiter admitted a new key without evicting to make room")
+	}
+	if rl.Size() > rl.maxKeys {
+		t.Fatalf("limiter size %d exceeded bound %d", rl.Size(), rl.maxKeys)
+	}
+	// An actively blocked key must survive eviction pressure, otherwise the
+	// eviction path becomes a lockout bypass.
+	rl.attempts["blocked"] = []time.Time{now, now, now, now, now}
+	rl.maxKeys = 1
+	for i := range 20 {
+		rl.Allow(fmt.Sprintf("filler-%d", i))
+	}
+	if rl.Allow("blocked") {
+		t.Fatal("eviction pressure cleared an active block")
 	}
 }
 

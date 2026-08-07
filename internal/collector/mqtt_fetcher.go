@@ -122,7 +122,7 @@ func (f *MQTTBridgeFetcher) getWithStatus(ctx context.Context, path string, out 
 	if err != nil {
 		return 0, fmt.Errorf("get %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return resp.StatusCode, nil
@@ -161,7 +161,7 @@ func (f *MQTTBridgeFetcher) PostAdmin(ctx context.Context, path string, reqBody 
 	if err != nil {
 		return 0, nil, fmt.Errorf("post %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	return resp.StatusCode, body, nil

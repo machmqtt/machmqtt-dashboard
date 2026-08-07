@@ -237,6 +237,72 @@ func TestBootstrapSecretFileAndValidation(t *testing.T) {
 	}
 }
 
+func TestMetricsTokenResolutionAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "metrics-token")
+	if err := os.WriteFile(tokenPath, []byte("a-long-enough-metrics-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("absent leaves metrics session-guarded", func(t *testing.T) {
+		cfg, err := loadConfigText(t, minimalConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MetricsToken != "" {
+			t.Fatalf("MetricsToken = %q, want empty when unconfigured", cfg.MetricsToken)
+		}
+	})
+
+	t.Run("file is read and trimmed", func(t *testing.T) {
+		cfg, err := loadConfigText(t, "metrics_token_file: "+tokenPath+"\n"+minimalConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The trailing newline must not survive: it would become part of the
+		// expected bearer credential and every scrape would fail to match.
+		if cfg.MetricsToken != "a-long-enough-metrics-token" {
+			t.Fatalf("MetricsToken = %q", cfg.MetricsToken)
+		}
+	})
+
+	t.Run("inline is preserved verbatim", func(t *testing.T) {
+		cfg, err := loadConfigText(t, "metrics_token: \"inline-metrics-token-value\"\n"+minimalConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MetricsToken != "inline-metrics-token-value" {
+			t.Fatalf("MetricsToken = %q", cfg.MetricsToken)
+		}
+	})
+
+	for name, block := range map[string]string{
+		"too short":    "metrics_token: \"short\"\n",
+		"both sources": "metrics_token: \"inline-metrics-token-value\"\nmetrics_token_file: " + tokenPath + "\n",
+		"missing file": "metrics_token_file: /definitely/missing\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadConfigText(t, block+minimalConfig); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+
+	t.Run("boundary length accepted", func(t *testing.T) {
+		token := strings.Repeat("a", 16)
+		cfg, err := loadConfigText(t, "metrics_token: \""+token+"\"\n"+minimalConfig)
+		if err != nil {
+			t.Fatalf("16-character token rejected: %v", err)
+		}
+		if cfg.MetricsToken != token {
+			t.Fatalf("MetricsToken = %q", cfg.MetricsToken)
+		}
+		if _, err := loadConfigText(t, "metrics_token: \""+strings.Repeat("a", 15)+"\"\n"+minimalConfig); err == nil {
+			t.Fatal("15-character token accepted, want rejection at the boundary")
+		}
+	})
+}
+
 func TestLDAPProviderValidationBoundaries(t *testing.T) {
 	provider := `authentication:
   providers:

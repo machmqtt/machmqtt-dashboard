@@ -411,6 +411,11 @@ type subsCacheEntry struct {
 const subsCacheTTL = 15 * time.Second
 const subsCacheMaxEntries = 50
 
+// subsFetchTimeout bounds the detached single-flight fetch. It is longer than a
+// typical request so a slow cluster still fills the cache, but finite so a
+// wedged endpoint cannot hold the flight open indefinitely.
+const subsFetchTimeout = 30 * time.Second
+
 // getSubsRows returns the subscription rows and whether they are incomplete —
 // true when a server reported more connections than the fetch returned, so some
 // connections' subscriptions are missing from the table.
@@ -426,8 +431,15 @@ func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
 	}
 	s.subsCacheMu.Unlock()
 	s.subsCacheMisses.Add(1)
+	// The shared fetch outlives whichever caller happened to win the flight, so
+	// it runs on a detached context with its own deadline. Using the winner's
+	// request context would let one client disconnecting cancel the fetch for
+	// every caller waiting behind it — and poison the cache with the empty
+	// result for a full TTL.
 	value, _, _ := s.subsGroup.Do(env, func() (any, error) {
-		rows, truncated := s.loadSubsRows(ctx, env)
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subsFetchTimeout)
+		defer cancel()
+		rows, truncated := s.loadSubsRows(fetchCtx, env)
 		return &subsCacheEntry{rows: rows, truncated: truncated}, nil
 	})
 	if value == nil {

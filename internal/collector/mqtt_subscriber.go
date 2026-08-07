@@ -384,19 +384,7 @@ func bridgeMsgToInstance(name string, m *BridgeMetricsMsg) MQTTBridgeInstance {
 		Slots: make([]MQTTPoolSlot, 0, len(m.Pool.Slots)),
 	}
 	for _, sl := range m.Pool.Slots {
-		pool.Slots = append(pool.Slots, MQTTPoolSlot{
-			Index:         sl.Index,
-			Connected:     sl.Connected,
-			SubCount:      sl.SubCount,
-			PubCount:      sl.PubCount,
-			FlushCount:    sl.FlushCount,
-			BufferedBytes: sl.BufferedBytes,
-			OutMsgs:       sl.OutMsgs,
-			InMsgs:        sl.InMsgs,
-			OutBytes:      sl.OutBytes,
-			InBytes:       sl.InBytes,
-			Reconnects:    sl.Reconnects,
-		})
+		pool.Slots = append(pool.Slots, MQTTPoolSlot(sl))
 	}
 
 	metrics := bridgeMetrics(m)

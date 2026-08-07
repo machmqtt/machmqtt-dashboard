@@ -223,13 +223,59 @@ func TestOperationalAndHandlerFailureRoutes(t *testing.T) {
 	if resolved == nil || resolved.URL == "" {
 		t.Fatalf("discovered bridge=%+v", resolved)
 	}
-	for _, path := range []string{"/livez", "/readyz", "/metrics"} {
+	for _, path := range []string{"/livez", "/readyz"} {
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s status=%d", path, w.Code)
 		}
 	}
+	// /metrics exposes environment names, collector endpoints, and runtime
+	// internals, so it must never answer an anonymous caller.
+	anon := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(anon, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if anon.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous /metrics status=%d, want 401", anon.Code)
+	}
+	if strings.Contains(anon.Body.String(), "nats_dashboard_") {
+		t.Fatalf("anonymous /metrics leaked metric data: %s", anon.Body.String())
+	}
+	authed := httptest.NewRecorder()
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsReq.AddCookie(&http.Cookie{Name: "session", Value: token})
+	srv.Handler().ServeHTTP(authed, metricsReq)
+	if authed.Code != http.StatusOK {
+		t.Fatalf("authenticated /metrics status=%d, want 200", authed.Code)
+	}
+	if !strings.Contains(authed.Body.String(), "nats_dashboard_http_in_flight") {
+		t.Fatal("authenticated /metrics returned no metrics")
+	}
+	// With a scrape token configured, Prometheus authorizes by bearer token —
+	// but only the exact token, and a session still works as a fallback.
+	srv.cfg.MetricsToken = "s3cret-scrape-token-value"
+	guarded := srv.guardMetrics(srv.auth, http.HandlerFunc(srv.handleMetrics))
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{"correct token", "Bearer s3cret-scrape-token-value", http.StatusOK},
+		{"wrong token", "Bearer not-the-token", http.StatusUnauthorized},
+		{"token without scheme", "s3cret-scrape-token-value", http.StatusUnauthorized},
+		{"prefix of token", "Bearer s3cret", http.StatusUnauthorized},
+		{"no header", "", http.StatusUnauthorized},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		if tc.header != "" {
+			req.Header.Set("Authorization", tc.header)
+		}
+		guarded.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("%s: status=%d, want %d", tc.name, rec.Code, tc.want)
+		}
+	}
+	srv.cfg.MetricsToken = ""
 	login := httptest.NewRecorder()
 	srv.auth.HandleLocalLogin(login, httptest.NewRequest(http.MethodPost, "/api/auth/local/login", strings.NewReader(`{"username":"admin","password":"wrong"}`)))
 	metrics := httptest.NewRecorder()

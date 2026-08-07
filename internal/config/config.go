@@ -39,6 +39,11 @@ type Config struct {
 	// client can spoof it to evade the login rate limiter.
 	TrustProxyHeaders bool                 `yaml:"trust_proxy_headers"`
 	Authentication    AuthenticationConfig `yaml:"authentication"`
+	// MetricsToken guards GET /metrics, which exposes environment names,
+	// collector endpoints, and runtime internals. When set, scrapers must send
+	// it as a bearer token; when empty, /metrics requires a dashboard session.
+	MetricsToken     string `yaml:"metrics_token,omitempty"`
+	MetricsTokenFile string `yaml:"metrics_token_file,omitempty"`
 	// Environments are clusters seeded into the database on first startup, keyed
 	// by name: an environment whose name is not already present is created; ones
 	// that already exist are left untouched (so runtime edits via the admin UI are
@@ -317,6 +322,14 @@ func Load(path string) (*Config, error) {
 	if _, port, err := net.SplitHostPort(cfg.Listen); err != nil || port == "" {
 		return nil, fmt.Errorf("listen must be a host:port address")
 	}
+	metricsToken, err := resolveSecret(cfg.MetricsToken, cfg.MetricsTokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("metrics_token: %w", err)
+	}
+	if metricsToken != "" && len(metricsToken) < 16 {
+		return nil, fmt.Errorf("metrics_token must be at least 16 characters")
+	}
+	cfg.MetricsToken = metricsToken
 	if !cfg.Authentication.Local.Enabled {
 		return nil, fmt.Errorf("authentication.local.enabled must be true: local authentication is required for break-glass access")
 	}

@@ -224,6 +224,8 @@ func (a *Auth) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, `{"error":"failed to change password"}`, http.StatusBadRequest)
 		return
 	}
+	// ChangePassword bumped token_version, invalidating this request's own
+	// session. Re-issue a fresh cookie so the user stays logged in.
 	user, err := a.store.GetUser(id)
 	if err != nil {
 		writeJSONError(w, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -235,14 +237,6 @@ func (a *Auth) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.SetSessionCookie(w, token)
-
-	// ChangePassword bumped token_version, invalidating this request's own
-	// session. Re-issue a fresh cookie so the user stays logged in.
-	if user, err := a.store.GetUser(id); err == nil {
-		if token, err := a.IssueToken(user); err == nil {
-			a.SetSessionCookie(w, token)
-		}
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))

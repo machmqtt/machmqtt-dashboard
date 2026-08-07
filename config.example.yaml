@@ -11,6 +11,13 @@ data_dir: "./data"
 # them. Default 24h.
 # metrics_retention: 24h
 
+# Authorizes Prometheus to scrape /metrics. Minimum 16 characters. /metrics is
+# never anonymous: it discloses environment names, collector endpoints, and
+# configured auth provider names. Without a token it falls back to requiring a
+# dashboard session, which a scraper cannot provide. Generate: openssl rand -hex 24
+# metrics_token: ""
+# metrics_token_file: "/run/secrets/metrics_token"
+
 # Honor the X-Forwarded-For header when identifying the client IP for login rate
 # limiting. Leave false (the default) unless the dashboard is behind a trusted
 # reverse proxy that sets the header — otherwise a client can spoof it to evade

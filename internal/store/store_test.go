@@ -386,21 +386,13 @@ func TestMigrationsAreVersionedAndIdempotent(t *testing.T) {
 	if err := second.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 4 {
-		t.Fatalf("schema migration count=%d, want 4", versions)
+	if versions != len(schemaMigrations) {
+		t.Fatalf("schema migration count=%d, want %d", versions, len(schemaMigrations))
 	}
 }
 
 func TestHistoricalMigrationMatrixAndInterruptedReplay(t *testing.T) {
-	migrations := []struct {
-		name  string
-		apply func(*sql.Tx) error
-	}{
-		{"users and external identities", migrateUsers},
-		{"mqtt bridge discovery", migrateMQTTBridges},
-		{"time-series metrics", migrateMetrics},
-		{"topology persistence", migrateTopology},
-	}
+	migrations := schemaMigrations
 	for historicalVersion := 0; historicalVersion <= len(migrations); historicalVersion++ {
 		t.Run(fmt.Sprintf("version_%d", historicalVersion), func(t *testing.T) {
 			dir := t.TempDir()

@@ -222,202 +222,33 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
+// migrate applies the versioned migration ledger. It is the single schema
+// authority: every table, index, and added column lives in a numbered
+// migration so a fresh database and an upgraded one converge on the same
+// schema, and so boot does not re-run DDL that has already been recorded.
 func (s *Store) migrate() error {
-	if err := s.migrateVersioned(); err != nil {
-		return err
-	}
-	if err := migrateUsersSchema(s.db); err != nil {
-		return err
-	}
+	return s.migrateVersioned()
+}
 
-	// Cluster configuration (persisted, managed via admin UI).
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS clusters (
-			id             TEXT PRIMARY KEY,
-			name           TEXT NOT NULL,
-			servers        TEXT NOT NULL DEFAULT '[]',
-			mqtt_bridges   TEXT NOT NULL DEFAULT '[]',
-			mqtt_discovery TEXT,
-			tls            TEXT,
-			admin_token    TEXT NOT NULL DEFAULT '',
-			nats_conn      TEXT,
-			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		return err
-	}
-	// Migration: add nats_conn for existing databases (silently ignored if already present).
-	_, _ = s.db.Exec(`ALTER TABLE clusters ADD COLUMN nats_conn TEXT`)
+type migration struct {
+	version int
+	name    string
+	apply   func(*sql.Tx) error
+}
 
-	// MQTT bridge discovery persistence.
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS mqtt_bridges (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			env TEXT NOT NULL,
-			ip TEXT NOT NULL,
-			server_id TEXT NOT NULL,
-			admin_url TEXT NOT NULL DEFAULT '',
-			last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(env, ip, server_id)
-		)
-	`)
-	if err != nil {
-		return err
-	}
-
-	// Time-series metric tables.
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS server_metrics (
-			ts INTEGER NOT NULL,
-			env TEXT NOT NULL,
-			server_id TEXT NOT NULL,
-			connections INTEGER,
-			in_msgs INTEGER,
-			out_msgs INTEGER,
-			in_bytes INTEGER,
-			out_bytes INTEGER,
-			cpu REAL,
-			mem INTEGER,
-			subscriptions INTEGER,
-			slow_consumers INTEGER,
-			routes INTEGER,
-			leafnodes INTEGER,
-			in_msgs_rate REAL,
-			out_msgs_rate REAL,
-			in_bytes_rate REAL,
-			out_bytes_rate REAL,
-			healthy INTEGER
-		)
-	`)
-	if err != nil {
-		return err
-	}
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_server_metrics_env_sid_ts ON server_metrics (env, server_id, ts)`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics (ts)`)
-
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS env_metrics (
-			ts INTEGER NOT NULL,
-			env TEXT NOT NULL,
-			server_count INTEGER,
-			healthy_count INTEGER,
-			connection_count INTEGER,
-			in_msgs_rate REAL,
-			out_msgs_rate REAL,
-			in_bytes_rate REAL,
-			out_bytes_rate REAL,
-			subscriptions INTEGER
-		)
-	`)
-	if err != nil {
-		return err
-	}
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_env_metrics_env_ts ON env_metrics (env, ts)`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_env_metrics_ts ON env_metrics (ts)`)
-
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS mqtt_bridge_metrics (
-			ts INTEGER NOT NULL,
-			env TEXT NOT NULL,
-			bridge_id TEXT NOT NULL,
-			connections_active INTEGER,
-			in_msgs_rate REAL,
-			out_msgs_rate REAL,
-			in_bytes_rate REAL,
-			out_bytes_rate REAL,
-			msgs_recv_qos0 INTEGER,
-			msgs_recv_qos1 INTEGER,
-			msgs_sent_qos0 INTEGER,
-			msgs_sent_qos1 INTEGER,
-			msgs_recv_qos2 INTEGER,
-			msgs_sent_qos2 INTEGER,
-			session_write_behind_depth INTEGER,
-			consumer_pending_messages INTEGER,
-			stalled_consumers INTEGER,
-			sockets_open INTEGER,
-			inflight_out_messages INTEGER,
-			op_queue_depth INTEGER,
-			op_suspended_conns INTEGER,
-			worker_pool_queue_depth INTEGER,
-			pool_slot_connected INTEGER,
-			retained_messages INTEGER,
-			subscriptions_active INTEGER,
-			go_heap_inuse_bytes INTEGER,
-			go_goroutines INTEGER,
-			scram_sessions_active INTEGER
-		)
-	`)
-	if err != nil {
-		return err
-	}
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_bid_ts ON mqtt_bridge_metrics (env, bridge_id, ts)`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_ts ON mqtt_bridge_metrics (ts)`)
-	// idx_mqtt_bridge_metrics_env_ts covers the all-bridges aggregate query
-	// (no bridge_id predicate) that scans the full env over a time range.
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_ts ON mqtt_bridge_metrics (env, ts)`)
-	// Migrations for existing databases.
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_recv_qos2 INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_sent_qos2 INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN session_write_behind_depth INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN consumer_pending_messages INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN stalled_consumers INTEGER`)
-	// Trend-line gauges (added with the machmqtt observability sync). Existing
-	// rows get NULL; QueryMQTTMetrics scans these as NullFloat64 so pre-migration
-	// buckets render as gaps rather than a spurious zero.
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN sockets_open INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN inflight_out_messages INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_queue_depth INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_suspended_conns INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN worker_pool_queue_depth INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN pool_slot_connected INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN retained_messages INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN subscriptions_active INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_heap_inuse_bytes INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_goroutines INTEGER`)
-	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN scram_sessions_active INTEGER`)
-
-	// Topology node position persistence.
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS topology_positions (
-			env TEXT NOT NULL,
-			node_id TEXT NOT NULL,
-			x REAL NOT NULL,
-			y REAL NOT NULL,
-			PRIMARY KEY (env, node_id)
-		)
-	`)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS topology_camera (
-			env TEXT NOT NULL PRIMARY KEY,
-			zoom REAL NOT NULL,
-			center_x REAL NOT NULL,
-			center_y REAL NOT NULL
-		)
-	`)
-	if err != nil {
-		return err
-	}
-
-	return nil
+// schemaMigrations is the ordered, append-only ledger of schema changes. Never
+// renumber or edit an entry once released; add a new one instead.
+var schemaMigrations = []migration{
+	{1, "users and external identities", migrateUsers},
+	{2, "mqtt bridge discovery", migrateMQTTBridges},
+	{3, "time-series metrics", migrateMetrics},
+	{4, "topology persistence", migrateTopology},
+	{5, "cluster configuration", migrateClusters},
+	{6, "mqtt bridge metric gauges", migrateMQTTBridgeGauges},
 }
 
 func (s *Store) migrateVersioned() error {
-	type migration struct {
-		version int
-		name    string
-		apply   func(*sql.Tx) error
-	}
-	migrations := []migration{
-		{1, "users and external identities", migrateUsers},
-		{2, "mqtt bridge discovery", migrateMQTTBridges},
-		{3, "time-series metrics", migrateMetrics},
-		{4, "topology persistence", migrateTopology},
-	}
+	migrations := schemaMigrations
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		name TEXT NOT NULL,
@@ -613,6 +444,50 @@ func migrateTopology(tx *sql.Tx) error {
 			center_x REAL NOT NULL, center_y REAL NOT NULL
 		)
 	`})
+}
+
+// migrateClusters creates the cluster configuration table managed by the admin
+// UI. nats_conn is added separately so databases created before it existed are
+// upgraded in place rather than left short a column.
+func migrateClusters(tx *sql.Tx) error {
+	if err := execStatements(tx, []string{`
+		CREATE TABLE IF NOT EXISTS clusters (
+			id             TEXT PRIMARY KEY,
+			name           TEXT NOT NULL,
+			servers        TEXT NOT NULL DEFAULT '[]',
+			mqtt_bridges   TEXT NOT NULL DEFAULT '[]',
+			mqtt_discovery TEXT,
+			tls            TEXT,
+			admin_token    TEXT NOT NULL DEFAULT '',
+			nats_conn      TEXT,
+			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`}); err != nil {
+		return err
+	}
+	return ensureColumn(tx, "clusters", "nats_conn", "nats_conn TEXT")
+}
+
+// mqttBridgeGaugeColumns are gauges added to mqtt_bridge_metrics after the
+// table's original shape. Existing rows get NULL; QueryMQTTMetrics scans these
+// as NullFloat64 so pre-migration buckets render as gaps rather than a
+// spurious zero.
+var mqttBridgeGaugeColumns = []string{
+	"msgs_recv_qos2", "msgs_sent_qos2", "session_write_behind_depth",
+	"consumer_pending_messages", "stalled_consumers", "sockets_open",
+	"inflight_out_messages", "op_queue_depth", "op_suspended_conns",
+	"worker_pool_queue_depth", "pool_slot_connected", "retained_messages",
+	"subscriptions_active", "go_heap_inuse_bytes", "go_goroutines",
+	"scram_sessions_active",
+}
+
+func migrateMQTTBridgeGauges(tx *sql.Tx) error {
+	for _, column := range mqttBridgeGaugeColumns {
+		if err := ensureColumn(tx, "mqtt_bridge_metrics", column, column+" INTEGER"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func execStatements(tx *sql.Tx, statements []string) error {

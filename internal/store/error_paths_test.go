@@ -167,15 +167,6 @@ func TestMetricsWriterLifecycleAndCleanupErrors(t *testing.T) {
 	}
 	w3.recordBusy(nil)
 
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("NewMetricsWriter accepted an unsupported source")
-			}
-		}()
-		_ = NewMetricsWriter("not a database", nil)
-	}()
-
 	mockDB, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)

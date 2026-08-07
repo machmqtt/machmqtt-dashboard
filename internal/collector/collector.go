@@ -488,10 +488,14 @@ func (c *Collector) discoverMQTTBridges(ctx context.Context, clusterID string) {
 	// Persist discovered bridges keyed by cluster ID (stable identity).
 	if c.store != nil {
 		for _, b := range bridges {
-			c.store.UpsertMQTTBridge(clusterID, b.IP, b.ServerID, b.AdminURL)
+			if err := c.store.UpsertMQTTBridge(clusterID, b.IP, b.ServerID, b.AdminURL); err != nil {
+				c.log.Warn("persist discovered mqtt bridge", "ip", b.IP, "server_id", b.ServerID, "err", err)
+			}
 		}
 		// Clean up bridges not seen in 24 hours.
-		c.store.DeleteStaleMQTTBridges(clusterID, 24*time.Hour)
+		if err := c.store.DeleteStaleMQTTBridges(clusterID, 24*time.Hour); err != nil {
+			c.log.Warn("prune stale mqtt bridges", "cluster", clusterID, "err", err)
+		}
 	}
 
 	c.mqttMu.Lock()
