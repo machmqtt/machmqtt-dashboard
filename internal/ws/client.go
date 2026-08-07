@@ -83,7 +83,7 @@ func (c *Client) teardown() {
 	c.closeOnce.Do(func() {
 		close(c.done)
 		if c.conn != nil {
-			c.conn.Close()
+			_ = c.conn.Close()
 		}
 	})
 }

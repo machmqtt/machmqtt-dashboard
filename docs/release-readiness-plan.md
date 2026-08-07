@@ -15,7 +15,7 @@ This is the durable remediation ledger. An item is checked only when its code, t
 - [ ] Go vet, pinned golangci-lint, race detection, frontend lint/type-check/build, and the Docker provider suite pass after the `dev` rebase.
 - [ ] Aggregate first-party Go statement coverage is at least 95%, and every critical `internal` package is at least 95%, after the `dev` rebase.
 - [x] Frontend statements, lines, and functions are at least 95%; branches are at least 90%.
-- [ ] Local-only, LDAP + local, OIDC + local, and LDAP + OIDC + local pass against digest-pinned OpenLDAP and Dex after the `dev` rebase.
+- [x] Local-only, LDAP + local, OIDC + local, and LDAP + OIDC + local pass against digest-pinned OpenLDAP and Dex after the `dev` rebase.
 - [x] Indexed query-plan tests, migration fixtures, representative datasets, and release benchmarks pass.
 - [x] HTTP, auth, provider, collector, database, queue, cache, WebSocket, and runtime signals are observable.
 - [x] Configuration, bootstrap, recovery, retention, performance, and deployment documentation matches implemented behavior.
@@ -24,13 +24,15 @@ Current `dev`-rebase evidence:
 
 | Gate | Result |
 |---|---|
-| Frontend coverage | 96.32% statements / 97.99% lines / 95.39% functions / 90.27% branches; 105 tests |
+| Frontend coverage | 96.32% statements / 97.99% lines / 95.39% functions / 90.10% branches; 105 tests |
 | Frontend lint / type-check / build / bundle | Pass; initial JavaScript 248.8 KiB / 300 KiB |
 | Offline Go race tests | Pass for dashboard, API, auth, config, log buffer, store, and WebSocket packages |
 | Rebased available-package aggregate coverage | 95.2% (full gate still awaits the uncached NATS test dependency) |
-| Rebased critical package coverage | API 95.5% / auth 95.3% / config 97.8% / log buffer 100% / store 95.2% / WebSocket 98.3% |
+| Rebased critical package coverage | API 95.4% / auth 95.3% / config 97.8% / log buffer 100% / store 95.2% / WebSocket 98.3% |
+| Real OpenLDAP/Dex provider matrix | Pass: protocol tests, all four provider combinations, and four Chromium journeys |
+| Pinned golangci-lint v2.11.4 | Pass with zero findings for every locally resolvable package |
 | Release compilation | Pass for Linux amd64, macOS amd64/arm64, and Windows amd64 |
-| Pending network-backed gates | Full Go suite/coverage, non-JSON `govulncheck`, npm audit, and Docker OpenLDAP/Dex matrix |
+| Pending network-backed gates | Full Go suite/coverage, non-JSON `govulncheck`, and npm audit |
 
 Latest fully measured gates before the `dev` rebase (must be revalidated where unchecked above):
 

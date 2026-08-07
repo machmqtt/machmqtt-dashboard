@@ -144,7 +144,7 @@ func ensureIncrementalAutoVacuum(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var mode int
 	if err := conn.QueryRowContext(context.Background(), "PRAGMA auto_vacuum").Scan(&mode); err != nil {
@@ -248,7 +248,7 @@ func (s *Store) migrate() error {
 		return err
 	}
 	// Migration: add nats_conn for existing databases (silently ignored if already present).
-	s.db.Exec(`ALTER TABLE clusters ADD COLUMN nats_conn TEXT`)
+	_, _ = s.db.Exec(`ALTER TABLE clusters ADD COLUMN nats_conn TEXT`)
 
 	// MQTT bridge discovery persistence.
 	_, err = s.db.Exec(`
@@ -293,8 +293,8 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_server_metrics_env_sid_ts ON server_metrics (env, server_id, ts)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics (ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_server_metrics_env_sid_ts ON server_metrics (env, server_id, ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_server_metrics_ts ON server_metrics (ts)`)
 
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS env_metrics (
@@ -313,8 +313,8 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_env_metrics_env_ts ON env_metrics (env, ts)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_env_metrics_ts ON env_metrics (ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_env_metrics_env_ts ON env_metrics (env, ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_env_metrics_ts ON env_metrics (ts)`)
 
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS mqtt_bridge_metrics (
@@ -351,31 +351,31 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_bid_ts ON mqtt_bridge_metrics (env, bridge_id, ts)`)
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_ts ON mqtt_bridge_metrics (ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_bid_ts ON mqtt_bridge_metrics (env, bridge_id, ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_ts ON mqtt_bridge_metrics (ts)`)
 	// idx_mqtt_bridge_metrics_env_ts covers the all-bridges aggregate query
 	// (no bridge_id predicate) that scans the full env over a time range.
-	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_ts ON mqtt_bridge_metrics (env, ts)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_mqtt_bridge_metrics_env_ts ON mqtt_bridge_metrics (env, ts)`)
 	// Migrations for existing databases.
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_recv_qos2 INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_sent_qos2 INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN session_write_behind_depth INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN consumer_pending_messages INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN stalled_consumers INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_recv_qos2 INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN msgs_sent_qos2 INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN session_write_behind_depth INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN consumer_pending_messages INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN stalled_consumers INTEGER`)
 	// Trend-line gauges (added with the machmqtt observability sync). Existing
 	// rows get NULL; QueryMQTTMetrics scans these as NullFloat64 so pre-migration
 	// buckets render as gaps rather than a spurious zero.
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN sockets_open INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN inflight_out_messages INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_queue_depth INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_suspended_conns INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN worker_pool_queue_depth INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN pool_slot_connected INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN retained_messages INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN subscriptions_active INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_heap_inuse_bytes INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_goroutines INTEGER`)
-	s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN scram_sessions_active INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN sockets_open INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN inflight_out_messages INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_queue_depth INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN op_suspended_conns INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN worker_pool_queue_depth INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN pool_slot_connected INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN retained_messages INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN subscriptions_active INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_heap_inuse_bytes INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN go_goroutines INTEGER`)
+	_, _ = s.db.Exec(`ALTER TABLE mqtt_bridge_metrics ADD COLUMN scram_sessions_active INTEGER`)
 
 	// Topology node position persistence.
 	_, err = s.db.Exec(`
@@ -748,7 +748,7 @@ func (s *Store) Authenticate(username, password string) (*User, error) {
 		if err == sql.ErrNoRows {
 			// Compare against a dummy hash so the not-found path costs the same
 			// as a wrong-password path, preventing username enumeration by timing.
-			bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
+			_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 			return nil, fmt.Errorf("invalid credentials")
 		}
 		return nil, err
@@ -1063,7 +1063,7 @@ func (s *Store) ListMQTTBridges(env string) ([]MQTTBridgeRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var records []MQTTBridgeRecord
 	for rows.Next() {
@@ -1098,7 +1098,7 @@ func (s *Store) GetTopologyPositions(env string) ([]NodePosition, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var positions []NodePosition
 	for rows.Next() {
@@ -1151,7 +1151,7 @@ func (s *Store) SaveTopologyPositions(env string, positions []NodePosition) erro
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec("DELETE FROM topology_positions WHERE env = ?", env); err != nil {
 		return err
@@ -1163,7 +1163,7 @@ func (s *Store) SaveTopologyPositions(env string, positions []NodePosition) erro
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, p := range positions {
 		if _, err := stmt.Exec(env, p.NodeID, p.X, p.Y); err != nil {

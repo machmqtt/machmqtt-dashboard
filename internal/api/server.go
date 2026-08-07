@@ -141,7 +141,7 @@ func (s *Server) serveSPA() {
 		// its directory/index.html redirect behavior.
 		if f, err := sub.Open(clean); err == nil {
 			info, statErr := f.Stat()
-			f.Close()
+			_ = f.Close()
 			if statErr == nil && !info.IsDir() {
 				fileServer.ServeHTTP(w, r)
 				return

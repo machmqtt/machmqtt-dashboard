@@ -155,7 +155,7 @@ func (s *Store) ListClusters() ([]Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var clusters []Cluster
 	for rows.Next() {
@@ -220,7 +220,7 @@ func (s *Store) DeleteCluster(id string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	result, err := tx.Exec("DELETE FROM clusters WHERE id = ?", id)
 	if err != nil {
