@@ -6,7 +6,7 @@ All endpoints are served from the dashboard's HTTP server (default `:8080`).
 
 Authentication uses JWT tokens stored in an `httpOnly` cookie named `session`. The cookie is set on successful login and cleared on logout.
 
-The public authentication endpoints are `POST /api/login`, `POST /api/auth/local/login`, `GET /api/auth/providers`, and the OIDC login/callback routes. Other `/api/*` endpoints require authentication. Operational endpoints are `GET /livez`, `GET /readyz`, and `GET /metrics`. Errors are JSON and every response includes `X-Request-ID`.
+The public authentication endpoints are `POST /api/login`, `POST /api/auth/local/login`, `GET /api/auth/providers`, and the OIDC login/callback routes. Other `/api/*` endpoints require authentication. Operational endpoints are `GET /livez` and `GET /readyz` (both unauthenticated, for probes) and `GET /metrics`, which requires either the configured `metrics_token` as a bearer token or a dashboard session. Errors are JSON and every response includes `X-Request-ID`.
 
 ### Roles
 

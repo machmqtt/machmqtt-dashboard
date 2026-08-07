@@ -152,7 +152,11 @@ directory.
 
 One dashboard process per data directory is supported. OIDC state is one-time, browser-bound, retained in bounded process memory for ten minutes, and is not shared between replicas. Do not route an OIDC callback to another replica.
 
-Startup acquires a non-blocking lock in the data directory and fails if another process owns it. OIDC flow count/evictions, rate-limiter key count/rejections, and SQLite WAL size are exported on `/metrics`.
+Startup acquires a non-blocking lock in the data directory and fails if another process owns it. OIDC flow count/evictions, rate-limiter key count/rejections/evictions, and SQLite WAL size are exported on `/metrics`.
+
+### `metrics_token` / `metrics_token_file`
+
+Bearer token that authorizes Prometheus to scrape `/metrics`. Minimum 16 characters. `metrics_token_file` reads the value from a file so the secret never appears in the config. When neither is set, `/metrics` requires a dashboard session instead — it is never anonymous, because it discloses environment names, collector endpoints, and configured auth provider names.
 
 ## Environment Variables
 

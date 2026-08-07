@@ -226,6 +226,19 @@ The ordered password login limiter and the dedicated local recovery limiter inte
 - `GET /livez` reports process liveness and has no external dependency.
 - `GET /readyz` verifies the process is accepting work and SQLite is reachable. It becomes unavailable during graceful shutdown; stale NATS observations are treated as degraded monitoring, not process unreadiness.
 - `GET /metrics` exposes Prometheus text metrics for HTTP requests, authentication outcomes, the persistence queue, SQLite pool usage, and WebSocket clients/drops. Labels are bounded and never contain usernames, subjects, tokens, client IDs, or raw URLs.
+- `/metrics` is never anonymous. Because it reveals environment names, collector endpoints, and configured auth provider names, it requires authorization: set `metrics_token` (or `metrics_token_file`, minimum 16 characters) and have Prometheus send it as `Authorization: Bearer <token>`. If no token is configured, `/metrics` falls back to requiring a dashboard session, which means an unconfigured deployment cannot be scraped — configure the token before wiring up Prometheus.
+
+  ```yaml
+  # prometheus.yml
+  scrape_configs:
+    - job_name: machmqtt-dashboard
+      authorization:
+        credentials_file: /etc/prometheus/machmqtt-dashboard.token
+      static_configs:
+        - targets: ["dashboard:8080"]
+  ```
+
+  `/livez` and `/readyz` remain unauthenticated so container and load-balancer probes work without credentials; neither returns any environment or configuration detail.
 - Every response includes `X-Request-ID`; structured request logs include normalized route, status, duration, response size, and client class.
 
 Only one dashboard process may use a data directory. Before offline backup or restore, stop the process. Online backups use SQLite `VACUUM INTO`; verify the result with `PRAGMA quick_check`. Restore by replacing `dashboard.db` while stopped, preserving ownership and permissions, then start and verify `/readyz`. If integrity checking fails, retain the database and WAL files for investigation and restore the last verified backup rather than attempting an in-place downgrade.
