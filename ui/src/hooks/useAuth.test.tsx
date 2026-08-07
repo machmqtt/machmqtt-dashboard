@@ -77,4 +77,51 @@ describe('useAuth', () => {
     unmount()
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
   })
+
+  // Provider discovery that answers 200 without a providers field must yield an
+  // empty list; anything else would be rendered as login buttons.
+  it('normalises a provider payload that omits the list', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => json({}, 401))
+      .mockImplementationOnce(() => json({}))
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.providers).toEqual([])
+  })
+
+  it('exposes no providers until hydration resolves', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => undefined))
+    const { result } = renderHook(() => useAuth())
+    expect(result.current.providers).toEqual([])
+    expect(result.current.loading).toBe(true)
+  })
+
+  // Provider discovery is auxiliary. If it fails while /api/me succeeds, the
+  // established session must survive rather than the operator being signed out.
+  it('keeps an authenticated session when provider discovery fails', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => json({ id: 1, username: 'admin', role: 'admin', auth_provider: 'local', must_change_password: false }))
+      .mockImplementationOnce(() => Promise.resolve(new Response(null, { status: 500 })))
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.user).toMatchObject({ username: 'admin' })
+    expect(result.current.providers).toEqual([])
+  })
+
+  // Unmounting must cancel in-flight session checks; otherwise a slow
+  // /api/me keeps a credentialed request alive after the view is gone.
+  it('cancels in-flight session requests when unmounted', async () => {
+    const signals: (AbortSignal | null | undefined)[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+      signals.push(init?.signal)
+      return new Promise(() => undefined)
+    })
+    const { unmount } = renderHook(() => useAuth())
+    await waitFor(() => expect(signals).toHaveLength(2))
+    expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true)
+    expect(signals.some((signal) => signal?.aborted)).toBe(false)
+
+    unmount()
+    expect(signals.every((signal) => signal?.aborted)).toBe(true)
+  })
 })

@@ -199,7 +199,7 @@ describe('pagination, modal, and administration interactions', () => {
     const admin = { id: 1, username: 'admin', role: 'admin', auth_provider: 'local', created_at: '', last_login: null, failed_attempts: 0, last_failed_at: null }
     const local = { ...admin, id: 2, username: 'second' }
     vi.spyOn(window, 'confirm').mockReturnValue(false)
-    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
       if (url === '/api/admin/users' && !init?.method) return json({ users: [admin, local] })
       if (url === '/api/admin/users' && init?.method === 'POST') return Promise.reject(new Error('offline'))
@@ -211,20 +211,43 @@ describe('pagination, modal, and administration interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create User' }))
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     expect(useStore.getState().toasts.at(-1)?.message).toBe('Username and password are required')
+    // Each field is required on its own, and a rejected create must never
+    // reach the server.
+    const createCalls = () => fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST').length
+    expect(createCalls()).toBe(0)
     fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'new' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('Username and password are required')
+    expect(createCalls()).toBe(0)
+    fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: '' } })
     fireEvent.change(screen.getByPlaceholderText('password'), { target: { value: 'password' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('Username and password are required')
+    expect(createCalls()).toBe(0)
+    fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'new' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(useStore.getState().toasts.at(-1)?.message).toBe('Network error'))
+    expect(createCalls()).toBe(1)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(screen.getAllByTitle('Delete user')[0])
     expect(window.confirm).toHaveBeenCalled()
     fireEvent.click(screen.getAllByTitle('Change password')[0])
+    // Both password fields are required, and neither omission may issue a request.
+    const passwordCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).includes('/password')).length
     fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
+    expect(passwordCalls()).toBe(0)
     const inputs = document.querySelectorAll('input[type="password"]')
     fireEvent.change(inputs[0], { target: { value: 'old' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
+    expect(passwordCalls()).toBe(0)
+    fireEvent.change(inputs[0], { target: { value: '' } })
     fireEvent.change(inputs[1], { target: { value: 'new' } })
     fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
+    expect(passwordCalls()).toBe(0)
+    fireEvent.change(inputs[0], { target: { value: 'old' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
     await waitFor(() => expect(useStore.getState().toasts.at(-1)?.message).toBe('bad password'))
+    expect(passwordCalls()).toBe(1)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
   })
 
@@ -260,6 +283,9 @@ describe('pagination, modal, and administration interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create User' }))
     fireEvent.change(screen.getByPlaceholderText('username'), { target: { value: 'created-user' } })
     fireEvent.change(screen.getByPlaceholderText('password'), { target: { value: 'created-password' } })
+    // Least privilege: the form must default to viewer so an admin who never
+    // touches the role selector cannot accidentally mint another admin.
+    expect(screen.getByRole('combobox')).toHaveValue('viewer')
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'admin' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(useStore.getState().toasts.at(-1)).toMatchObject({
@@ -267,9 +293,16 @@ describe('pagination, modal, and administration interactions', () => {
     }))
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/users', expect.objectContaining({
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'created-user', password: 'created-password', role: 'admin' }),
     }))
     expect(screen.queryByPlaceholderText('username')).not.toBeInTheDocument()
+    // The elevated selection must not persist into the next create.
+    fireEvent.click(screen.getByRole('button', { name: 'Create User' }))
+    expect(screen.getByRole('combobox')).toHaveValue('viewer')
+    expect(screen.getByPlaceholderText('username')).toHaveValue('')
+    expect(screen.getByPlaceholderText('password')).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     fireEvent.click(screen.getAllByTitle('Delete user')[0])
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/admin/users/2', expect.objectContaining({ method: 'DELETE' })))
@@ -287,5 +320,95 @@ describe('pagination, modal, and administration interactions', () => {
     })))
     expect(useStore.getState().toasts.at(-1)).toMatchObject({ message: 'Password changed', type: 'success' })
     expect(screen.queryByRole('heading', { name: /Change Password for/ })).not.toBeInTheDocument()
+  })
+
+  it('surfaces a network failure while loading users instead of showing an empty roster', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
+    renderPage(<UsersPage />)
+    await waitFor(() => expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      message: 'Network error loading users', type: 'error',
+    }))
+    expect(screen.queryByText('Loading users...')).not.toBeInTheDocument()
+  })
+
+  it('reports why a delete was refused and keeps the user in the roster', async () => {
+    const admin = {
+      id: 1, username: 'admin', role: 'admin', auth_provider: 'local', created_at: '2026-01-01T00:00:00Z',
+      last_login: null, failed_attempts: 0, last_failed_at: null,
+    }
+    const viewer = { ...admin, id: 2, username: 'local-viewer', role: 'viewer' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === '/api/admin/users' && !init?.method) return json({ users: [admin, viewer] })
+      if (url === '/api/admin/users/2' && init?.method === 'DELETE') {
+        return json({ error: 'cannot delete the last local administrator' }, 409)
+      }
+      return json({}, 404)
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    renderPage(<UsersPage />)
+    expect(await screen.findByText('local-viewer')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByTitle('Delete user')[0])
+
+    // The server's reason must reach the operator verbatim; a generic message
+    // would hide why the account is protected.
+    await waitFor(() => expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      message: 'cannot delete the last local administrator', type: 'error',
+    }))
+    expect(screen.getByText('local-viewer')).toBeInTheDocument()
+  })
+
+  it('falls back to a generic delete message when the server sends no reason', async () => {
+    const viewer = {
+      id: 2, username: 'local-viewer', role: 'viewer', auth_provider: 'local', created_at: '2026-01-01T00:00:00Z',
+      last_login: null, failed_attempts: 0, last_failed_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === '/api/admin/users' && !init?.method) return json({ users: [viewer] })
+      return json({}, 500)
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    renderPage(<UsersPage />)
+    expect(await screen.findByText('local-viewer')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByTitle('Delete user')[0])
+    await waitFor(() => expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      message: 'Failed to delete user', type: 'error',
+    }))
+  })
+
+  it('reports network failures for delete and password change', async () => {
+    const viewer = {
+      id: 2, username: 'local-viewer', role: 'viewer', auth_provider: 'local', created_at: '2026-01-01T00:00:00Z',
+      last_login: null, failed_attempts: 0, last_failed_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      if (String(input) === '/api/admin/users' && !init?.method) return json({ users: [viewer] })
+      return Promise.reject(new TypeError('offline'))
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    renderPage(<UsersPage />)
+    expect(await screen.findByText('local-viewer')).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByTitle('Delete user')[0])
+    await waitFor(() => expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      message: 'Network error', type: 'error',
+    }))
+
+    useStore.setState({ toasts: [] })
+    fireEvent.click(screen.getAllByTitle('Change password')[0])
+    const passwordInputs = document.querySelectorAll('input[type="password"]')
+    fireEvent.change(passwordInputs[0], { target: { value: 'old-password' } })
+    fireEvent.change(passwordInputs[1], { target: { value: 'new-password' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
+
+    await waitFor(() => expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      message: 'Network error', type: 'error',
+    }))
+    // A failed change must keep the dialog open so the operator can retry.
+    expect(screen.getByRole('heading', { name: /Change Password for/ })).toBeInTheDocument()
   })
 })

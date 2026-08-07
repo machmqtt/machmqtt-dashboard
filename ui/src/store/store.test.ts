@@ -54,4 +54,19 @@ describe('dashboard store', () => {
     act(() => vi.advanceTimersByTime(1001))
     expect(useStore.getState().toasts).toEqual([])
   })
+
+  // Each toast owns its own expiry timer. One firing must retire exactly that
+  // toast, not sweep away a newer message the operator has not read yet.
+  it('expires only the toast whose own timer fired', () => {
+    vi.useFakeTimers()
+    act(() => useStore.getState().addToast('first', 'info'))
+    act(() => vi.advanceTimersByTime(1000))
+    act(() => useStore.getState().addToast('second', 'error'))
+
+    act(() => vi.advanceTimersByTime(3000))
+    expect(useStore.getState().toasts.map((toast) => toast.message)).toEqual(['second'])
+
+    act(() => vi.advanceTimersByTime(1000))
+    expect(useStore.getState().toasts).toEqual([])
+  })
 })

@@ -142,8 +142,12 @@ describe('App authentication and navigation', () => {
     expect(screen.queryByText(/must change your password/i)).not.toBeInTheDocument()
   })
 
-  it('redirects viewers away from the administrator route', async () => {
-    window.history.replaceState({}, '', '/admin/users')
+  it.each([
+    ['/admin/users', 'User Management'],
+    ['/admin/clusters', 'Cluster Management'],
+    ['/admin/logs', 'Server Logs'],
+  ])('redirects viewers away from the administrator route %s', async (path, heading) => {
+    window.history.replaceState({}, '', path)
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
       if (url === '/api/me') return response({ id: 1, username: 'viewer', role: 'viewer', auth_provider: 'oidc', must_change_password: false })
@@ -153,8 +157,11 @@ describe('App authentication and navigation', () => {
       return response({})
     })
     render(<App />)
+    // A viewer falls through to the catch-all redirect and lands on Overview
+    // rather than rendering the admin page.
     expect(await screen.findByRole('heading', { name: 'Overview' }, { timeout: 5000 })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'User Management' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
   })
 
   it('renders authenticated navigation and logs out', async () => {
@@ -181,6 +188,8 @@ describe('App authentication and navigation', () => {
     ['/accounts', 'Accounts'],
     ['/servers/server-1', 'server one'],
     ['/admin/users', 'User Management'],
+    ['/admin/clusters', 'Cluster Management'],
+    ['/admin/logs', 'Server Logs'],
     ['/mqtt', 'MachMQTT Fleet'],
     ['/mqtt/connections', 'All MQTT Connections'],
     ['/mqtt/bridge-1/connections', 'bridge-1 — MQTT Connections'],
@@ -212,5 +221,43 @@ describe('App authentication and navigation', () => {
     render(<App />)
     expect(await screen.findByRole('heading', { name: heading }, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByText('Loading view...')).not.toBeInTheDocument()
+  })
+
+  describe('active environment reconciliation', () => {
+    function mockClusters(environments: { id: string; name: string }[]) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+        const url = String(input)
+        if (url === '/api/me') return response({ id: 1, username: 'admin', role: 'admin', auth_provider: 'local', must_change_password: false })
+        if (url === '/api/auth/providers') return response({ providers: [] })
+        if (url === '/api/environments') return response({ environments })
+        if (url === '/api/version') return response({ version: 'test' })
+        return response({ points: [], servers: [], bridges: [], total: 0 })
+      })
+    }
+
+    // A cluster removed in the admin UI must not leave the dashboard pinned to
+    // an environment that no longer exists — every subsequent request would
+    // 404 against a dead id.
+    it('falls back to the first cluster when the active one no longer exists', async () => {
+      useStore.setState({ activeEnv: 'retired-cluster' })
+      mockClusters([{ id: 'prod', name: 'Production' }, { id: 'stage', name: 'Staging' }])
+      render(<App />)
+      await waitFor(() => expect(useStore.getState().activeEnv).toBe('prod'))
+    })
+
+    it('leaves a still-valid active cluster selected', async () => {
+      useStore.setState({ activeEnv: 'stage' })
+      mockClusters([{ id: 'prod', name: 'Production' }, { id: 'stage', name: 'Staging' }])
+      render(<App />)
+      await waitFor(() => expect(useStore.getState().environments).toHaveLength(2))
+      expect(useStore.getState().activeEnv).toBe('stage')
+    })
+
+    it('clears the selection when every cluster has been removed', async () => {
+      useStore.setState({ activeEnv: 'prod' })
+      mockClusters([])
+      render(<App />)
+      await waitFor(() => expect(useStore.getState().activeEnv).toBe(''))
+    })
   })
 })

@@ -77,4 +77,20 @@ describe('useMetrics', () => {
     await act(async () => { vi.runAllTimers(); await Promise.resolve() })
     expect(fetchWithTimeout).toHaveBeenCalledTimes(2)
   })
+
+  // A transient backend failure must leave the last good series on screen
+  // rather than blanking the chart on every hiccup.
+  it('retains the last successful series when a refresh fails', async () => {
+    vi.mocked(fetchWithTimeout)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ points: [{ ts: 1, cpu: 2 }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'upstream unavailable' }), { status: 502 }))
+    const { result } = renderHook(() => useMetrics('prod', 'metrics'))
+    await waitFor(() => expect(result.current.data).toEqual([{ ts: 1, cpu: 2 }]))
+
+    act(() => result.current.setRange('6h'))
+    await waitFor(() => expect(fetchWithTimeout).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(fetchWithTimeout).mock.calls[1][0]).toContain('from=1699978400')
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.data).toEqual([{ ts: 1, cpu: 2 }])
+  })
 })

@@ -29,7 +29,7 @@
   "timeoutMS": 10000,
   "thresholds": {
     "high": 90,
-    "low": 80,
-    "break": 80
+    "low": 85,
+    "break": 85
   }
 }

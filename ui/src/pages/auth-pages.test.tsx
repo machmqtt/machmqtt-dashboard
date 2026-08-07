@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
@@ -27,6 +27,29 @@ describe('LoginPage', () => {
     await user.click(screen.getByRole('button', { name: 'Sign In' }))
     await waitFor(() => expect(onLogin).toHaveBeenCalledWith('alice', 'secret'))
     expect(screen.getByRole('link', { name: 'Local administrator login' })).toHaveAttribute('href', '/login/local')
+    // No OIDC provider means no SSO section, so the "or" separator would be
+    // dangling above an empty area.
+    expect(screen.queryByText('or')).not.toBeInTheDocument()
+  })
+
+  // Double-submitting a login is a credential-stuffing amplifier and races two
+  // sessions, so the button must lock for the duration of the request.
+  it('locks the submit button while the credential check is in flight', async () => {
+    let release!: () => void
+    const onLogin = vi.fn(() => new Promise<void>((resolve) => { release = resolve }))
+    renderLogin({ onLogin })
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('Username'), 'alice')
+    await user.type(screen.getByLabelText('Password'), 'secret')
+    await user.click(screen.getByRole('button', { name: 'Sign In' }))
+
+    const pending = await screen.findByRole('button', { name: 'Signing in...' })
+    expect(pending).toBeDisabled()
+    await user.click(pending)
+    expect(onLogin).toHaveBeenCalledTimes(1)
+
+    await act(async () => { release() })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sign In' })).toBeEnabled())
   })
 
   it('reports rejected credentials and restores the submit button', async () => {
@@ -157,5 +180,24 @@ describe('ChangePasswordPage', () => {
     expect(fetch).toHaveBeenCalledWith('/api/users/21/password', expect.objectContaining({
       body: JSON.stringify({ old_password: 'old-pass', new_password: '12345678' }),
     }))
+  })
+
+  // A forced password change must not be submittable twice; the second request
+  // would carry an old_password the server has already rotated away.
+  it('locks the submit button until the change request settles', async () => {
+    let release!: (value: Response) => void
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise<Response>((resolve) => { release = resolve }))
+    render(<ChangePasswordPage userId={31} onChanged={vi.fn()} />)
+    await fillPasswordForm('old-pass', 'new-password', 'new-password')
+
+    const pending = await screen.findByRole('button', { name: 'Changing...' })
+    expect(pending).toBeDisabled()
+    fireEvent.click(pending)
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    await act(async () => { release(new Response(JSON.stringify({ error: 'wrong current password' }), { status: 401 })) })
+    expect(await screen.findByText('wrong current password')).toBeInTheDocument()
+    // The form must become usable again so the operator can correct and retry.
+    expect(screen.getByRole('button', { name: 'Change Password' })).toBeEnabled()
   })
 })
