@@ -195,15 +195,20 @@ func sanitizeHostPaths(req *clusterRequest, prev *store.Cluster) error {
 		}
 	}
 
-	if err := adoptCAFile(req.TLS, prevTLS, "tls.ca_file"); err != nil {
+	tlsCfg, err := sanitizedTLS(req.TLS, prevTLS, "tls.ca_file")
+	if err != nil {
 		return err
 	}
+	req.TLS = tlsCfg
+
 	if req.NATSConn == nil {
 		return nil
 	}
-	if err := adoptCAFile(req.NATSConn.TLS, prevNATS, "nats_conn.tls.ca_file"); err != nil {
+	natsTLS, err := sanitizedTLS(req.NATSConn.TLS, prevNATS, "nats_conn.tls.ca_file")
+	if err != nil {
 		return err
 	}
+	req.NATSConn.TLS = natsTLS
 	// Unlike ca_file, creds_file is never echoed back (only has_creds is), so any
 	// non-empty incoming value is an attempt to set it. A blank one means "keep
 	// the stored value", which mergeClusterSecrets restores.
@@ -214,22 +219,31 @@ func sanitizeHostPaths(req *clusterRequest, prev *store.Cluster) error {
 	return nil
 }
 
-// adoptCAFile forces a TLS block's CA path to come from the stored config rather
-// than the request body, pointing the caller at the inline PEM alternative.
-func adoptCAFile(incoming, stored *config.TLSConfig, field string) error {
+// sanitizedTLS returns a TLS config whose CA path is copied from the stored
+// config rather than the request body, pointing the caller at the inline PEM
+// alternative when they try to change it.
+//
+// It deliberately builds a new value instead of clearing the field on the
+// incoming one: rebuilding means no request-supplied string is ever assigned to
+// a field that reaches the filesystem, which keeps the guarantee obvious to a
+// reader and to CodeQL's taint analysis alike.
+func sanitizedTLS(incoming, stored *config.TLSConfig, field string) (*config.TLSConfig, error) {
 	if incoming == nil {
-		return nil
+		return nil, nil
 	}
 	storedPath := ""
 	if stored != nil {
 		storedPath = stored.CAFile
 	}
 	if incoming.CAFile != "" && incoming.CAFile != storedPath {
-		return fmt.Errorf("%s cannot be set through the API; supply the certificate inline with %s, or declare the path in the config file",
+		return nil, fmt.Errorf("%s cannot be set through the API; supply the certificate inline with %s, or declare the path in the config file",
 			field, strings.Replace(field, "ca_file", "ca_pem", 1))
 	}
-	incoming.CAFile = storedPath
-	return nil
+	return &config.TLSConfig{
+		CAFile:   storedPath,
+		CAPem:    incoming.CAPem,
+		Insecure: incoming.Insecure,
+	}, nil
 }
 
 // mergeClusterSecrets fills empty secret fields in cl from the previously-stored
