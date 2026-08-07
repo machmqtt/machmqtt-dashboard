@@ -394,6 +394,108 @@ func TestCAFileMustContainCertificate(t *testing.T) {
 	}
 }
 
+// testCertPEM returns a self-signed CA certificate in PEM form.
+func testCertPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "config-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestTLSConfigCertPool(t *testing.T) {
+	certificate := testCertPEM(t)
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No custom CA anywhere means "use the system roots", not an error.
+	for name, cfg := range map[string]*TLSConfig{
+		"nil receiver": nil,
+		"empty":        {},
+	} {
+		pool, err := cfg.CertPool()
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", name, err)
+		}
+		if pool != nil {
+			t.Errorf("%s: pool = %v, want nil", name, pool)
+		}
+	}
+
+	for name, cfg := range map[string]*TLSConfig{
+		"from file":   {CAFile: caFile},
+		"from inline": {CAPem: string(certificate)},
+		// The inline PEM wins, so a stale config-file path can be overridden.
+		"inline wins over file": {CAFile: filepath.Join(t.TempDir(), "missing.pem"), CAPem: string(certificate)},
+	} {
+		pool, err := cfg.CertPool()
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", name, err)
+			continue
+		}
+		if pool == nil {
+			t.Errorf("%s: pool is nil, want the configured CA", name)
+		}
+	}
+
+	for name, cfg := range map[string]*TLSConfig{
+		"missing file":    {CAFile: filepath.Join(t.TempDir(), "missing.pem")},
+		"unusable inline": {CAPem: "not a certificate"},
+	} {
+		if _, err := cfg.CertPool(); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// A CA bundle must be a regular file of bounded size. Without this, pointing
+// ca_file at /dev/zero would read until the process ran out of memory.
+func TestReadCertFileRejectsUnreasonableFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := readCertFile(dir); err == nil {
+		t.Error("expected a directory to be rejected")
+	}
+
+	oversized := filepath.Join(dir, "big.pem")
+	if err := os.WriteFile(oversized, make([]byte, maxCertFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCertFile(oversized); err == nil {
+		t.Error("expected an oversized CA bundle to be rejected")
+	}
+
+	// A bundle exactly at the limit is still accepted.
+	atLimit := filepath.Join(dir, "limit.pem")
+	if err := os.WriteFile(atLimit, make([]byte, maxCertFileBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCertFile(atLimit); err != nil {
+		t.Errorf("a bundle at the size limit was rejected: %v", err)
+	}
+
+	if _, err := os.Stat("/dev/zero"); err == nil {
+		if _, err := readCertFile("/dev/zero"); err == nil {
+			t.Error("expected a device file to be rejected")
+		}
+	}
+}
+
 func TestConfigurationHelperDefaultsAndValidCA(t *testing.T) {
 	env := Environment{}
 	if !env.MQTTDiscoveryEnabled() || len(env.MQTTDiscoveryPorts()) != 1 {

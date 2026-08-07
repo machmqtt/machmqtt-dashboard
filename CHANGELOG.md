@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security
+- **Filesystem paths are no longer settable through the cluster admin API**
+  (CodeQL `go/path-injection`). `tls.ca_file`, `nats_conn.tls.ca_file` and
+  `nats_conn.creds_file` name files on the dashboard host, and the resulting
+  error was returned verbatim to the caller — so anyone holding the `admin` role
+  (often an LDAP/OIDC-mapped identity with no shell on the host) could tell
+  "permission denied" from "no such file" and enumerate the filesystem, or stall
+  and OOM the process by naming a device file such as `/dev/zero`. These fields
+  are now config-file-only: the stored value always wins and a request that tries
+  to change one is rejected. Pin a custom CA over the API with the new inline
+  `tls.ca_pem` instead. CA bundles must now be regular files of at most 1 MiB.
+- **A CA bundle that contains no usable certificates is now an error.** The
+  monitoring-endpoint fetcher discarded `AppendCertsFromPEM`'s result, so a
+  malformed `ca_file` installed an empty trust pool and every TLS connection
+  failed later with an opaque verification error instead of at config time.
 - **`GET /metrics` is no longer anonymous.** The endpoint discloses environment
   names, collector endpoint names, configured auth provider names, and runtime
   internals. It now requires either the new `metrics_token` (sent by the scraper

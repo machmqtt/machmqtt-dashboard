@@ -82,7 +82,8 @@ environments:
       admin_ports: [8080]
       trusted_hosts: []
     tls:                        # optional: TLS for the HTTP monitoring endpoints above
-      ca_file: ""
+      ca_file: ""               # path on the dashboard host (config file only)
+      ca_pem: ""                # or the CA inline, as PEM
       insecure: false
     nats_conn:                  # optional: NATS client connection for push collection
       urls: ["nats://nats-1.internal:4222"]
@@ -95,6 +96,7 @@ environments:
       sys_collection: false
       tls:
         ca_file: ""
+        ca_pem: ""
         insecure: false
 ```
 
@@ -109,12 +111,20 @@ Key fields:
 | `mqtt_discovery.enabled` | Whether to auto-discover MachMQTT bridges. Defaults to `true`. |
 | `mqtt_discovery.admin_ports` | Ports to probe on a discovered bridge's host. Defaults to `[8080]`. |
 | `mqtt_discovery.trusted_hosts` | Extends the set of hosts the environment's `admin_token` may be sent to during auto-discovery. Loopback and any host already named in this environment's `servers`/`mqtt_bridges`/`nats_conn` URLs are always trusted. A discovered bridge whose host is **not** trusted is still probed, but **without** the admin token — so a rogue address that merely announces itself as a bridge can never capture the shared secret. |
-| `tls` | `ca_file` (custom CA for the HTTP monitoring endpoints) and `insecure` (skip TLS verification). |
+| `tls` | Custom CA for the HTTP monitoring endpoints, as either `ca_file` (a path on the dashboard host) or `ca_pem` (the PEM bundle inline); `ca_pem` wins if both are set. `insecure` skips TLS verification. |
 | `nats_conn.urls` | One or more `nats://` seed server URLs for push-based collection. Omit `nats_conn` entirely for HTTP-only polling. |
 | `nats_conn` auth | Set exactly one of `username`/`password`, `token`, `nkey`, or `creds_file`. |
 | `nats_conn.subject_prefix` | MachMQTT subject namespace; must match the prefix MachMQTT is configured with. Defaults to `$MQTT5`. |
 | `nats_conn.sys_collection` | Enables `$SYS`-based server collection (replaces HTTP polling for server stats; requires system-account credentials). Defaults to `false`. |
 | `nats_conn.tls` | TLS options for the NATS client connection itself. |
+
+> **Filesystem paths are config-file-only.** `tls.ca_file`, `nats_conn.tls.ca_file` and
+> `nats_conn.creds_file` name files on the dashboard host, so they can only be set here — the
+> admin API and UI refuse a client-supplied path. Otherwise anyone holding the `admin` role
+> (often an LDAP/OIDC-mapped identity with no shell on the host) could enumerate the
+> filesystem from the resulting error messages, or exhaust the process by naming a device
+> file such as `/dev/zero`. To pin a custom CA from the UI, paste it into `ca_pem` instead.
+> CA bundles must be regular files of at most 1 MiB.
 
 ## Polling Behavior
 

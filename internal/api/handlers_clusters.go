@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
@@ -166,6 +168,70 @@ func toClusterView(c store.Cluster) clusterView {
 	return v
 }
 
+// sanitizeHostPaths keeps client-chosen filesystem paths out of a cluster.
+//
+// ca_file and creds_file name files on the dashboard host. Honouring them over
+// HTTP would let the admin role enumerate that filesystem — the resulting error
+// distinguishes "no such file" from "permission denied" from "is a directory" —
+// and stall or exhaust the process by naming a device file such as /dev/zero.
+// The admin role is frequently an LDAP/OIDC-mapped identity with no shell on the
+// host, so that is a real privilege boundary.
+//
+// These fields are therefore config-file-only and the stored value always wins:
+// prev supplies it on update, and there is nothing to inherit on create. An
+// error is returned only when a client tries to *change* a path, so an edit that
+// round-trips the value the UI was shown still succeeds.
+func sanitizeHostPaths(req *clusterRequest, prev *store.Cluster) error {
+	var (
+		prevTLS   *config.TLSConfig
+		prevNATS  *config.TLSConfig
+		prevCreds string
+	)
+	if prev != nil {
+		prevTLS = prev.TLS
+		if prev.NATSConn != nil {
+			prevNATS = prev.NATSConn.TLS
+			prevCreds = prev.NATSConn.CredsFile
+		}
+	}
+
+	if err := adoptCAFile(req.TLS, prevTLS, "tls.ca_file"); err != nil {
+		return err
+	}
+	if req.NATSConn == nil {
+		return nil
+	}
+	if err := adoptCAFile(req.NATSConn.TLS, prevNATS, "nats_conn.tls.ca_file"); err != nil {
+		return err
+	}
+	// Unlike ca_file, creds_file is never echoed back (only has_creds is), so any
+	// non-empty incoming value is an attempt to set it. A blank one means "keep
+	// the stored value", which mergeClusterSecrets restores.
+	if req.NATSConn.CredsFile != "" && req.NATSConn.CredsFile != prevCreds {
+		return fmt.Errorf("nats_conn.creds_file cannot be set through the API; declare it in the config file")
+	}
+	req.NATSConn.CredsFile = prevCreds
+	return nil
+}
+
+// adoptCAFile forces a TLS block's CA path to come from the stored config rather
+// than the request body, pointing the caller at the inline PEM alternative.
+func adoptCAFile(incoming, stored *config.TLSConfig, field string) error {
+	if incoming == nil {
+		return nil
+	}
+	storedPath := ""
+	if stored != nil {
+		storedPath = stored.CAFile
+	}
+	if incoming.CAFile != "" && incoming.CAFile != storedPath {
+		return fmt.Errorf("%s cannot be set through the API; supply the certificate inline with %s, or declare the path in the config file",
+			field, strings.Replace(field, "ca_file", "ca_pem", 1))
+	}
+	incoming.CAFile = storedPath
+	return nil
+}
+
 // mergeClusterSecrets fills empty secret fields in cl from the previously-stored
 // cluster, so the edit UI (which never receives plaintext) can submit a blank
 // field to mean "leave unchanged". A non-empty incoming value overwrites.
@@ -242,6 +308,13 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A new cluster has no stored paths to inherit, so any supplied one is a
+	// client-chosen host path and is refused.
+	if err := sanitizeHostPaths(&req, nil); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	cl := &store.Cluster{
 		Name:          req.Name,
 		Servers:       req.Servers,
@@ -252,7 +325,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		NATSConn:      req.NATSConn,
 	}
 
-	// Validate the TLS config (e.g. CA file must be readable) before persisting.
+	// Validate the TLS config (e.g. the inline CA must parse) before persisting.
 	env := cl.ToEnvironment()
 	if _, err := collector.NewFetcher(env.TLS); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -287,6 +360,19 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The stored cluster supplies both the config-file-only host paths and any
+	// secret the edit UI never received, so it has to be loaded before the
+	// request body is turned into a cluster.
+	prev, err := s.store.GetCluster(id)
+	if err != nil {
+		prev = nil
+	}
+
+	if err := sanitizeHostPaths(&req, prev); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	cl := &store.Cluster{
 		ID:            id,
 		Name:          req.Name,
@@ -300,7 +386,7 @@ func (s *Server) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
 
 	// Blank secrets mean "keep the stored value" — the edit UI never receives the
 	// plaintext (see toClusterView), so preserve secrets it didn't resend.
-	if prev, err := s.store.GetCluster(id); err == nil {
+	if prev != nil {
 		mergeClusterSecrets(cl, prev)
 	}
 

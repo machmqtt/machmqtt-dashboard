@@ -191,7 +191,7 @@ List all clusters with their full (secret-redacted) configuration.
       "servers": [{ "url": "http://nats-1:8222" }],
       "mqtt_bridges": [{ "name": "edge-1", "url": "http://bridge-1:8080", "has_bearer_token": true }],
       "mqtt_discovery": { "enabled": true, "admin_ports": [8080], "trusted_hosts": [] },
-      "tls": { "ca_file": "", "insecure": false },
+      "tls": { "ca_file": "", "ca_pem": "", "insecure": false },
       "has_admin_token": true,
       "nats_conn": {
         "urls": ["nats://nats-1:4222"],
@@ -212,13 +212,20 @@ List all clusters with their full (secret-redacted) configuration.
 #### POST /api/admin/clusters
 
 Create a cluster. Body: same shape as one entry above, but with plaintext secret fields
-(`admin_token`, `nats_conn.password`/`token`/`nkey`/`creds_file`,
+(`admin_token`, `nats_conn.password`/`token`/`nkey`,
 `mqtt_bridges[].bearer_token`) instead of `has_*` booleans.
+
+**Filesystem paths are config-file-only.** `tls.ca_file`, `nats_conn.tls.ca_file` and
+`nats_conn.creds_file` name files on the dashboard host, so the API refuses to set them:
+honouring a client-chosen path would let the admin role probe the host filesystem and
+exhaust the process on a device file such as `/dev/zero`. Pin a custom CA over the API with
+`tls.ca_pem`, which carries the PEM bundle inline. Omitting these fields (or resubmitting the
+value the `GET` response showed) keeps whatever the config file declared.
 
 **Response (201):** The created cluster, in the redacted `GET` shape.
 
-**Response (400):** Missing `name`, no `servers` entries, or an unreadable/invalid TLS
-`ca_file`.
+**Response (400):** Missing `name`, no `servers` entries, an attempt to set a host path, or a
+`ca_pem` that contains no usable PEM certificates.
 
 #### PUT /api/admin/clusters/{id}
 

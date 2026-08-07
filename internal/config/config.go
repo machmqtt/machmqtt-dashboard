@@ -264,8 +264,80 @@ type Server struct {
 }
 
 type TLSConfig struct {
-	CAFile   string `yaml:"ca_file,omitempty" json:"ca_file,omitempty"`
-	Insecure bool   `yaml:"insecure"          json:"insecure"`
+	// CAFile names a file on the dashboard host. The API layer refuses to let a
+	// client set it (see sanitizeHostPaths) because choosing a host path over
+	// HTTP turns the admin role into a filesystem oracle; it is populated only
+	// from the config file. The json tag exists because the stored cluster row
+	// persists this struct as JSON, not because the field is client-writable.
+	CAFile string `yaml:"ca_file,omitempty" json:"ca_file,omitempty"`
+	// CAPem carries the PEM bundle inline. This is the API-facing way to pin a
+	// custom CA: it needs no filesystem access, so it is safe to accept over
+	// HTTP.
+	CAPem    string `yaml:"ca_pem,omitempty" json:"ca_pem,omitempty"`
+	Insecure bool   `yaml:"insecure"         json:"insecure"`
+}
+
+// maxCertFileBytes caps a CA bundle read. Without it, pointing CAFile at an
+// endless device file such as /dev/zero would allocate until the process dies.
+const maxCertFileBytes = 1 << 20
+
+// readCertFile reads a PEM bundle from disk, refusing anything that is not a
+// regular file (device nodes, FIFOs and directories) and anything oversized.
+func readCertFile(path string) ([]byte, error) {
+	f, err := os.Open(path) //nolint:gosec // config-file-only path; never client-supplied
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxCertFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxCertFileBytes {
+		return nil, fmt.Errorf("%s exceeds the %d byte CA bundle limit", path, maxCertFileBytes)
+	}
+	return data, nil
+}
+
+// CertPool builds the root pool for a custom CA, preferring the inline PEM over
+// the config-file path. It returns (nil, nil) when no custom CA is configured,
+// meaning "use the system roots".
+func (t *TLSConfig) CertPool() (*x509.CertPool, error) {
+	if t == nil {
+		return nil, nil
+	}
+
+	var (
+		pemBytes []byte
+		source   string
+	)
+	switch {
+	case t.CAPem != "":
+		pemBytes, source = []byte(t.CAPem), "ca_pem"
+	case t.CAFile != "":
+		var err error
+		if pemBytes, err = readCertFile(t.CAFile); err != nil {
+			return nil, fmt.Errorf("read CA file: %w", err)
+		}
+		source = t.CAFile
+	default:
+		return nil, nil
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("%s contains no usable PEM certificates", source)
+	}
+	return pool, nil
 }
 
 func Load(path string) (*Config, error) {
@@ -446,8 +518,8 @@ func validateEnvironments(environments []Environment) error {
 				return fmt.Errorf("environment %q: MQTT discovery port %d is invalid", env.Name, port)
 			}
 		}
-		if env.TLS != nil && env.TLS.CAFile != "" {
-			if err := validateCAFile(env.TLS.CAFile); err != nil {
+		if env.TLS != nil {
+			if _, err := env.TLS.CertPool(); err != nil {
 				return fmt.Errorf("environment %q TLS CA: %w", env.Name, err)
 			}
 		}
@@ -572,7 +644,7 @@ func validateHTTPURL(raw string) error {
 }
 
 func validateCAFile(path string) error {
-	pem, err := os.ReadFile(path)
+	pem, err := readCertFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}

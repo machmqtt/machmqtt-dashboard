@@ -559,8 +559,14 @@ func connectNATS(cfg *config.NATSConnConfig, log *slog.Logger) (*nats.Conn, erro
 	if cfg.TLS != nil {
 		if cfg.TLS.Insecure {
 			opts = append(opts, nats.Secure(&tls.Config{InsecureSkipVerify: true})) //nolint:gosec
-		} else if cfg.TLS.CAFile != "" {
-			opts = append(opts, nats.RootCAs(cfg.TLS.CAFile))
+		} else {
+			pool, err := cfg.TLS.CertPool()
+			if err != nil {
+				return nil, fmt.Errorf("nats tls: %w", err)
+			}
+			if pool != nil {
+				opts = append(opts, nats.Secure(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}))
+			}
 		}
 	}
 

@@ -19,6 +19,9 @@ interface MQTTBridgeEntry {
 
 interface TLSForm {
   enabled: boolean
+  ca_pem: string
+  // Display-only. A CA path names a file on the dashboard host, so it can only be
+  // set in the config file and is never sent back on save.
   ca_file: string
   insecure: boolean
 }
@@ -73,7 +76,7 @@ interface ManagedCluster {
   servers: ServerEntry[]
   mqtt_bridges: { name: string; url: string; has_bearer_token?: boolean }[]
   mqtt_discovery: { enabled?: boolean; admin_ports?: number[] } | null
-  tls: { ca_file?: string; insecure?: boolean } | null
+  tls: { ca_file?: string; ca_pem?: string; insecure?: boolean } | null
   has_admin_token?: boolean
   nats_conn: {
     urls?: string[]
@@ -99,7 +102,7 @@ const emptyForm = (): ClusterForm => ({
   servers: [{ url: '' }],
   mqtt_bridges: [],
   discovery: { enabled: true, admin_ports: '8080' },
-  tls: { enabled: false, ca_file: '', insecure: false },
+  tls: { enabled: false, ca_pem: '', ca_file: '', insecure: false },
   admin_token: '',
   nats_conn: {
     enabled: false,
@@ -129,8 +132,10 @@ function formToRequest(f: ClusterForm) {
       enabled: f.discovery.enabled,
       admin_ports: ports.length ? ports : [8080],
     },
+    // ca_file is deliberately omitted: it is config-file-only, and omitting it
+    // tells the server to keep whatever path the operator configured.
     tls: f.tls.enabled
-      ? { ca_file: f.tls.ca_file.trim() || undefined, insecure: f.tls.insecure }
+      ? { ca_pem: f.tls.ca_pem.trim() || undefined, insecure: f.tls.insecure }
       : null,
     admin_token: f.admin_token,
     nats_conn: natsEnabled
@@ -174,6 +179,7 @@ function clusterToForm(c: ManagedCluster): ClusterForm {
     },
     tls: {
       enabled: !!c.tls,
+      ca_pem: c.tls?.ca_pem || '',
       ca_file: c.tls?.ca_file || '',
       insecure: c.tls?.insecure ?? false,
     },
@@ -393,14 +399,21 @@ function ClusterFormEditor({ form, onChange, collapseOptional = false }: Cluster
         }
       >
         <div>
-          <FieldLabel hint="Path to the CA certificate file on the dashboard server's filesystem.">CA File Path</FieldLabel>
-          <input
-            value={form.tls.ca_file}
-            onChange={(e) => set({ tls: { ...form.tls, ca_file: e.target.value } })}
-            className={monoInputCls}
-            placeholder="/etc/ssl/certs/ca.pem"
+          <FieldLabel hint="Paste the PEM-encoded CA certificate used to verify the NATS monitoring endpoints.">CA Certificate (PEM)</FieldLabel>
+          <textarea
+            value={form.tls.ca_pem}
+            onChange={(e) => set({ tls: { ...form.tls, ca_pem: e.target.value } })}
+            className={`${monoInputCls} h-32 resize-y`}
+            placeholder="-----BEGIN CERTIFICATE-----"
           />
         </div>
+        {form.tls.ca_file && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Using CA file <code className="font-mono">{form.tls.ca_file}</code> from the server
+            config. Paths can only be changed in the config file; paste a certificate above to
+            override it here.
+          </p>
+        )}
         <label className="flex items-center gap-2.5 cursor-pointer group">
           <input
             type="checkbox"
