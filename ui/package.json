@@ -21,7 +21,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-table": "^8.21.3",
-    "lucide-react": "^0.577.0",
+    "lucide-react": "^1.28.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-force-graph-2d": "^1.29.1",
