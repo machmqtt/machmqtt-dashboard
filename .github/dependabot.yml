@@ -55,6 +55,13 @@ updates:
         update-types:
           - minor
           - patch
+    # Majors here mean toolchain migrations (typescript, eslint), so they are
+    # done deliberately rather than opened automatically. Security updates are
+    # exempt from ignore rules and still arrive at any version.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
