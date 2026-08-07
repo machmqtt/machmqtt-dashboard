@@ -260,3 +260,109 @@ func jsonNumber(value int64) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
+
+func TestHandleLogoutRevokesSessionsOnOtherDevices(t *testing.T) {
+	a, st, admin := handlerTestAuth(t)
+
+	token, err := a.IssueToken(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := a.ValidateToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	protected := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	probe := func() int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+		req.AddCookie(&http.Cookie{Name: "session", Value: token})
+		protected.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := probe(); code != http.StatusOK {
+		t.Fatalf("session rejected before logout: status=%d", code)
+	}
+
+	w := httptest.NewRecorder()
+	a.HandleLogout(w, requestWithClaims(http.MethodPost, "/api/logout", nil, claims))
+	if w.Code != http.StatusOK {
+		t.Fatalf("logout status=%d want=200 body=%s", w.Code, w.Body.String())
+	}
+
+	// The cookie this request cleared is only half the job; a copy of the same
+	// token held elsewhere must stop working too.
+	if code := probe(); code != http.StatusUnauthorized {
+		t.Fatalf("token still accepted after logout: status=%d", code)
+	}
+
+	updated, err := st.GetUser(admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SessionVersion == admin.SessionVersion {
+		t.Fatalf("session version unchanged at %d", updated.SessionVersion)
+	}
+}
+
+func TestHandleLogoutClearsCookieWhenRevocationFails(t *testing.T) {
+	a, st, admin := handlerTestAuth(t)
+	claims := &Claims{UserID: admin.ID, Username: admin.Username, Role: admin.Role}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	a.HandleLogout(w, requestWithClaims(http.MethodPost, "/api/logout", nil, claims))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=200 body=%s", w.Code, w.Body.String())
+	}
+
+	var cleared bool
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == "session" && cookie.Value == "" && cookie.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatalf("session cookie not cleared: %v", w.Result().Cookies())
+	}
+}
+
+func TestHandleChangePasswordEnforcesMinimumLength(t *testing.T) {
+	a, _, admin := handlerTestAuth(t)
+
+	short := strings.Repeat("a", store.MinPasswordLength-1)
+	body, err := json.Marshal(map[string]string{"old_password": "admin-password", "new_password": short})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id := jsonNumber(admin.ID)
+	w := httptest.NewRecorder()
+	req := requestWithClaims(http.MethodPut, "/api/users/"+id+"/password", bytes.NewReader(body), &Claims{UserID: admin.ID})
+	req.SetPathValue("id", id)
+	a.HandleChangePassword(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=400 body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), store.ErrPasswordTooShort.Error()) {
+		t.Errorf("response does not explain the rejection: %s", w.Body.String())
+	}
+	// The rejection must happen before the store is touched, so the old
+	// credential still works and no session was re-issued.
+	if _, err := a.AuthenticateLocal(admin.Username, "admin-password"); err != nil {
+		t.Errorf("original password no longer valid: %v", err)
+	}
+	if _, err := a.AuthenticateLocal(admin.Username, short); err == nil {
+		t.Error("short password was accepted by the store")
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Errorf("unexpected cookie on a rejected change: %v", w.Result().Cookies())
+	}
+}
