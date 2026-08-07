@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import {
   createColumnHelper,
   flexRender,
@@ -15,6 +15,7 @@ import { ColumnFilter } from '../components/ColumnFilter'
 import { useStore } from '../store/store'
 import { TableSkeleton } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown, ArrowLeft } from 'lucide-react'
+import { formatNumber as fmtNum, formatBytes as fmtBytes } from '../utils/format'
 
 interface MQTTClient {
   cid: number
@@ -42,6 +43,7 @@ interface MQTTClient {
   inflight_out: number
   username: string
   state: string
+  slow_consumer?: boolean
 }
 
 interface ConnzResponse {
@@ -55,7 +57,8 @@ interface ConnzResponse {
 
 const col = createColumnHelper<MQTTClient>()
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
-const REFRESH_INTERVAL = 10_000
+// Each refresh issues a live admin-API fetch to the bridge, so keep it moderate.
+const REFRESH_INTERVAL = 5_000
 
 export function MQTTConnectionsPage() {
   const { bridge } = useParams<{ bridge: string }>()
@@ -108,7 +111,19 @@ export function MQTTConnectionsPage() {
       header: 'IP',
       cell: (i) => <span className="font-mono text-xs">{i.getValue()}:{i.row.original.port}</span>,
     }),
-    col.accessor('state', { header: 'State' }),
+    col.accessor('state', {
+      header: 'State',
+      cell: (i) => (
+        <span className="flex items-center gap-1.5">
+          {i.getValue()}
+          {i.row.original.slow_consumer && (
+            <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              Slow
+            </span>
+          )}
+        </span>
+      ),
+    }),
     col.accessor('subscriptions', { header: 'Subs' }),
     col.accessor('in_msgs', { header: 'Msgs In', cell: (i) => fmtNum(i.getValue()) }),
     col.accessor('out_msgs', { header: 'Msgs Out', cell: (i) => fmtNum(i.getValue()) }),
@@ -120,6 +135,7 @@ export function MQTTConnectionsPage() {
     col.accessor('username', { header: 'User', cell: (i) => i.getValue() || '-' }),
   ], [])
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API is intentional
   const table = useReactTable({
     data: data?.connections || [],
     columns,
@@ -131,7 +147,10 @@ export function MQTTConnectionsPage() {
     getFilteredRowModel: getFilteredRowModel(),
   })
 
-  const total = data?.total ?? 0
+  // num_connections is the current connection count in the bridge snapshot. The
+  // connz `total` field is a cumulative lifetime CONNECT counter (machmqtt's
+  // socket-split clarified this), so it must NOT be used for pagination.
+  const total = data?.num_connections ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const currentPage = Math.floor(offset / pageSize) + 1
   const hasNext = offset + pageSize < total
@@ -252,6 +271,7 @@ export function MQTTConnectionsPage() {
               <DI label="Kind" value={selected.kind || '-'} />
               <DI label="Type" value={selected.type || '-'} />
               <DI label="State" value={selected.state} />
+              <DI label="Slow Consumer" value={selected.slow_consumer ? 'Yes' : 'No'} />
               <DI label="IP" value={`${selected.ip}:${selected.port}`} />
               <DI label="User" value={selected.username || '-'} />
               <DI label="Subscriptions" value={selected.subscriptions.toString()} />
@@ -291,17 +311,4 @@ function DI({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
 }

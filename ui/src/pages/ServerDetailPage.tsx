@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { CardSkeleton } from '../components/Skeleton'
@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatBytes as fmtBytes, formatRate as fmtRateAxis } from '../utils/format'
 
 interface Varz {
   server_id: string
@@ -35,6 +36,7 @@ interface Varz {
 export function ServerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const activeEnv = useStore((s) => s.activeEnv)
+  const addToast = useStore((s) => s.addToast)
   const [data, setData] = useState<Record<string, Varz> | null>(null)
   const [loading, setLoading] = useState(true)
   const metricsParams = useMemo(() => (id ? { server_id: id } : undefined), [id])
@@ -42,16 +44,21 @@ export function ServerDetailPage() {
 
   useEffect(() => {
     if (!activeEnv) return
+    let cancelled = false
     const run = async () => {
       setLoading(true)
       try {
         const r = await fetchWithTimeout(`/api/environments/${activeEnv}/varz`)
-        if (r.ok) setData(await r.json())
-      } catch { /* */ }
-      setLoading(false)
+        if (!cancelled && r.ok) setData(await r.json())
+      } catch {
+        if (!cancelled) addToast('Failed to load server data', 'error')
+      }
+      if (!cancelled) setLoading(false)
     }
     run()
-  }, [activeEnv])
+    // Guard against a late response for a previous env clobbering the current one.
+    return () => { cancelled = true }
+  }, [activeEnv, addToast])
 
   const server = data && id ? data[id] : null
 
@@ -71,7 +78,7 @@ export function ServerDetailPage() {
       <div className="text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 rounded-lg shadow p-8 text-center">
         Server not found.
         <div className="mt-4">
-          <Link to="/" className="text-nats-blue hover:underline">Back to Overview</Link>
+          <Link to="/" className="text-brand-blue hover:underline">Back to Overview</Link>
         </div>
       </div>
     )
@@ -83,7 +90,7 @@ export function ServerDetailPage() {
         <Link to="/" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
           <ArrowLeft className="w-5 h-5" />
         </Link>
-        <h1 className="text-2xl font-semibold">{server.server_name || server.server_id}</h1>
+        <h1 className="text-2xl font-semibold truncate min-w-0" title={server.server_name || server.server_id}>{server.server_name || server.server_id}</h1>
       </div>
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-6 text-sm">
@@ -160,24 +167,9 @@ export function ServerDetailPage() {
 
 function Item({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="text-gray-500 dark:text-gray-400 text-xs mb-1">{label}</div>
-      <div className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value}</div>
+      <div className={`font-medium truncate ${mono ? 'font-mono text-xs' : ''}`} title={value}>{value}</div>
     </div>
   )
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
-}
-
-function fmtRateAxis(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
 }

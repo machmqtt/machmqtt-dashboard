@@ -1,34 +1,110 @@
 listen: ":8080"
-poll_interval: 5s
-session_secret: "change-me-to-a-random-string-at-least-32-chars"
+poll_interval: 30s
+# Required. Must be >= 32 chars; this placeholder is intentionally too short so
+# the app refuses to start until you set a real one. Generate: openssl rand -hex 32
+# Can also be supplied via the SESSION_SECRET env var (which overrides this value).
+session_secret: "change-me"
 # secure_cookies: true  # Set to true when serving over HTTPS
 data_dir: "./data"
 
-# A default admin user (admin/admin) is created automatically on first startup.
-# You will be required to change the password on first login.
+# How long time-series metric samples are kept before the cleanup pass deletes
+# them. Default 24h.
+# metrics_retention: 24h
 
-environments:
-  - name: production
-    servers:
-      - url: "http://nats-1:8222"
-      - url: "http://nats-2:8222"
-      - url: "http://nats-3:8222"
-    # tls:
-    #   ca_file: "/path/to/ca.pem"
-    #   insecure: false
+# Authorizes Prometheus to scrape /metrics. Minimum 16 characters. /metrics is
+# never anonymous: it discloses environment names, collector endpoints, and
+# configured auth provider names. Without a token it falls back to requiring a
+# dashboard session, which a scraper cannot provide. Generate: openssl rand -hex 24
+# metrics_token: ""
+# metrics_token_file: "/run/secrets/metrics_token"
 
-    # MQTT bridge auto-discovery (enabled by default).
-    # Bridges are found from NATS connection data (connections named machmqtt-bridge / machmqtt-pool-*).
-    # mqtt_discovery:
-    #   enabled: true         # set to false to disable auto-discovery
-    #   admin_ports: [8080]   # ports to probe for bridge admin API
+# Honor the X-Forwarded-For header when identifying the client IP for login rate
+# limiting. Leave false (the default) unless the dashboard is behind a trusted
+# reverse proxy that sets the header — otherwise a client can spoof it to evade
+# the rate limiter.
+# trust_proxy_headers: false
 
-    # Manually configured MQTT bridges (in addition to auto-discovery).
-    # mqtt_bridges:
-    #   - name: mqtt-bridge-1
-    #     url: "http://mqtt-bridge-1:8080"
-    #     bearer_token: "optional-admin-token"
+# A fresh database requires an explicit one-time password for the local
+# break-glass administrator. Prefer a root-readable secret file; alternatively
+# set MACHMQTT_DASHBOARD_BOOTSTRAP_PASSWORD. The account must rotate this secret
+# at first login. Startup fails rather than installing a known default password.
+# authentication:
+#   local:
+#     enabled: true
+#     break_glass_login: true
+#     bootstrap_password_file: "/run/secrets/dashboard_bootstrap_password"
 
-  # - name: staging
-  #   servers:
-  #     - url: "http://nats-staging:8222"
+# Clusters don't have to be configured in YAML — they can be added and managed
+# entirely at runtime via the admin UI (log in as admin and navigate to Cluster
+# Management). Optionally, list clusters here under `environments:` to seed them
+# automatically on first startup: an environment whose name isn't already in the
+# database is created; one that already exists is left untouched, so later edits
+# made via the admin UI are never overwritten. This is how `docker compose up`
+# (see config.docker.yaml) polls its 3-node cluster with zero manual setup.
+#
+# environments:
+#   - name: production
+#     servers:
+#       - url: "http://nats-1.internal:8222"
+#       - url: "http://nats-2.internal:8222"
+#     # Optional: shared MachMQTT bridge admin bearer token for this environment
+#     # (used by both auto-discovered and configured bridges that don't set their
+#     # own bearer_token below).
+#     admin_token: ""
+#     # Optional: statically configured bridges, in addition to auto-discovery.
+#     mqtt_bridges:
+#       - name: "edge-broker-1"
+#         url: "http://bridge-1.internal:8080"
+#         bearer_token: ""
+#     # Optional: tune bridge auto-discovery.
+#     mqtt_discovery:
+#       enabled: true
+#       admin_ports: [8080]
+#       # Extends the set of hosts admin_token may be sent to during discovery.
+#       # Loopback and any host already named in this environment's server/bridge/
+#       # nats_conn URLs are always trusted. A discovered bridge at an address
+#       # that is NOT trusted is still probed, but WITHOUT the admin token — so a
+#       # connection merely announcing itself as a bridge from a rogue address can
+#       # never capture the shared secret.
+#       trusted_hosts: []
+#     # Optional TLS for the HTTP monitoring endpoints in `servers` above.
+#     tls:
+#       ca_file: ""
+#       insecure: false
+#     # Optional: NATS client connection, enabling two push-collection modes.
+#     # Omit nats_conn entirely for HTTP-only polling (the always-available
+#     # fallback; used automatically if push collection stops producing data).
+#     nats_conn:
+#       urls: ["nats://nats-1.internal:4222"]
+#       # Auth — set exactly one of username/password, token, nkey, creds_file.
+#       username: ""
+#       password: ""
+#       token: ""
+#       nkey: ""
+#       creds_file: ""
+#       # MachMQTT subject namespace; must match the prefix MachMQTT is
+#       # configured with. Default: $MQTT5.
+#       subject_prefix: "$MQTT5"
+#       # Enables $SYS-based server collection (2b below). Default: false.
+#       sys_collection: false
+#       tls:
+#         ca_file: ""
+#         insecure: false
+#
+# Each cluster supports two optional push-collection modes, both driven by nats_conn:
+#
+#   MQTT bridge metrics (2a)
+#     Requires nats_conn on the cluster. The dashboard subscribes to
+#     <subject_prefix>.metrics.> and maintains a live TTL cache of bridge state.
+#     No connz scanning, no HTTP probing — bridges self-announce and age out
+#     automatically.
+#
+#   $SYS server stats (2b)
+#     Requires nats_conn with sys_collection: true and system-account credentials
+#     (creds_file or nkey). The dashboard subscribes to $SYS.SERVER.*.STATSZ for
+#     continuous per-server CPU/mem/connections/JetStream data and uses
+#     $SYS.REQ.SERVER.PING.* fan-in for topology and detail. Replaces the HTTP
+#     poller; servers are auto-discovered — no static server list needed.
+#
+# When neither is configured the dashboard falls back to HTTP polling of the
+# NATS monitoring port (always available as a fallback).

@@ -8,7 +8,7 @@ import (
 
 func (s *Server) handleEnvMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.metrics == nil {
-		http.Error(w, `{"error":"metrics not enabled"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, `{"error":"metrics not enabled"}`, http.StatusServiceUnavailable)
 		return
 	}
 	env := r.PathValue("env")
@@ -16,7 +16,7 @@ func (s *Server) handleEnvMetrics(w http.ResponseWriter, r *http.Request) {
 
 	points, err := s.metrics.QueryEnvMetrics(r.Context(), env, from, to, step)
 	if err != nil {
-		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]any{"points": points})
@@ -24,7 +24,7 @@ func (s *Server) handleEnvMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServerMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.metrics == nil {
-		http.Error(w, `{"error":"metrics not enabled"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, `{"error":"metrics not enabled"}`, http.StatusServiceUnavailable)
 		return
 	}
 	env := r.PathValue("env")
@@ -33,7 +33,7 @@ func (s *Server) handleServerMetrics(w http.ResponseWriter, r *http.Request) {
 
 	points, err := s.metrics.QueryServerMetrics(r.Context(), env, serverID, from, to, step)
 	if err != nil {
-		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]any{"points": points})
@@ -41,7 +41,7 @@ func (s *Server) handleServerMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMQTTBridgeMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.metrics == nil {
-		http.Error(w, `{"error":"metrics not enabled"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, `{"error":"metrics not enabled"}`, http.StatusServiceUnavailable)
 		return
 	}
 	env := r.PathValue("env")
@@ -50,7 +50,7 @@ func (s *Server) handleMQTTBridgeMetrics(w http.ResponseWriter, r *http.Request)
 
 	points, err := s.metrics.QueryMQTTMetrics(r.Context(), env, bridgeID, from, to, step)
 	if err != nil {
-		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"query failed"}`, http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]any{"points": points})
@@ -77,5 +77,17 @@ func parseTimeRange(r *http.Request) (from, to, step int64) {
 			step = n
 		}
 	}
+	// Clamp step up so a caller can't force an unbounded number of points
+	// (e.g. step=1 over a 30-day window). At most maxMetricPoints are returned;
+	// a step of <=0 leaves auto-bucketing to the store, which is already bounded.
+	if step > 0 {
+		if minStep := (to - from) / maxMetricPoints; step < minStep {
+			step = minStep
+		}
+	}
 	return
 }
+
+// maxMetricPoints bounds the number of time-series points any single query can
+// return, regardless of the caller-supplied step.
+const maxMetricPoints = 5000

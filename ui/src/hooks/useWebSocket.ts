@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store/store'
+import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 
 export function useWebSocket() {
   const activeEnv = useStore((s) => s.activeEnv)
@@ -13,6 +14,29 @@ export function useWebSocket() {
     if (!activeEnv) return
 
     let cancelled = false
+
+    // Seed the live views once over REST so a page isn't stuck on a skeleton
+    // when the WebSocket is slow to connect or never connects. The WS stream
+    // then keeps them live. Only fill fields the WS hasn't already populated so
+    // a fresher live update is never clobbered by the (possibly staler) seed.
+    async function seed() {
+      try {
+        const [ov, topo] = await Promise.all([
+          fetchWithTimeout(`/api/environments/${activeEnv}/overview`),
+          fetchWithTimeout(`/api/environments/${activeEnv}/topology`),
+        ])
+        if (cancelled) return
+        if (ov.ok && useStore.getState().overview == null) {
+          setOverview(await ov.json())
+        }
+        if (topo.ok && useStore.getState().topology == null) {
+          setTopology(await topo.json())
+        }
+      } catch {
+        /* WS will populate if the REST seed fails */
+      }
+    }
+    seed()
 
     function connect() {
       if (cancelled) return

@@ -48,7 +48,7 @@ export interface TopologyLink {
   out_msgs_rate: number
 }
 
-export interface TopologyGraph {
+export interface TopologyData {
   nodes: TopologyNode[]
   links: TopologyLink[]
 }
@@ -63,19 +63,34 @@ export interface Toast {
   type: 'info' | 'error' | 'success'
 }
 
+// ClusterInfo is the minimal shape returned by GET /api/environments.
+// activeEnv holds the cluster ID (stable); name is the display label.
+export interface ClusterInfo {
+  id: string
+  name: string
+  // Lightweight health for the sidebar badge (from GET /api/environments).
+  degraded?: boolean
+  // Precise, server-computed reason a cluster is degraded (single source of
+  // truth, mirrors ClusterHealth.DegradedReason on the backend). Rendered
+  // verbatim; the UI can't re-derive it from the fields below alone.
+  degraded_reason?: string
+  collection_mode?: string
+  last_poll_age_seconds?: number
+}
+
 interface DashboardState {
   activeEnv: string
-  environments: string[]
+  environments: ClusterInfo[]
   overview: Overview | null
-  topology: TopologyGraph | null
+  topology: TopologyData | null
   health: HealthStatus | null
   darkMode: boolean
   sidebarOpen: boolean
   toasts: Toast[]
   setActiveEnv: (env: string) => void
-  setEnvironments: (envs: string[]) => void
+  setEnvironments: (envs: ClusterInfo[]) => void
   setOverview: (o: Overview) => void
-  setTopology: (t: TopologyGraph) => void
+  setTopology: (t: TopologyData) => void
   setHealth: (h: HealthStatus) => void
   toggleDarkMode: () => void
   toggleSidebar: () => void
@@ -87,7 +102,7 @@ let toastId = 0
 
 export const useStore = create<DashboardState>((set) => ({
   activeEnv: '',
-  environments: [],
+  environments: [] as ClusterInfo[],
   overview: null,
   topology: null,
   health: null,

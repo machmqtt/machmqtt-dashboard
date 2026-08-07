@@ -1,12 +1,14 @@
+/* eslint-disable react-hooks/refs -- force-graph maintains mutable simulation state outside React */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
-import type { TopologyGraph as TGraph, TopologyNode, TopologyLink } from '../store/store'
+import type { TopologyData, TopologyNode, TopologyLink } from '../store/store'
 import { useStore } from '../store/store'
 import { NodeDetailPanel } from './NodeDetailPanel'
 import { X, RotateCcw, Maximize } from 'lucide-react'
+import { formatRate as fmtRate } from '../utils/format'
 
 interface Props {
-  data: TGraph
+  data: TopologyData
 }
 
 const NODE_COLORS: Record<string, string> = {
@@ -25,15 +27,7 @@ const LINK_DASH: Record<string, number[]> = {
 
 const NODE_RADIUS = 10
 
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(1)
-  return '0'
-}
-
-function structureKey(data: TGraph): string {
+function structureKey(data: TopologyData): string {
   const nk = (data.nodes || []).map((n) => n.id).sort().join(',')
   const lk = (data.links || []).map((l) => `${l.source}>${l.target}`).sort().join(',')
   return nk + '|' + lk
@@ -72,8 +66,8 @@ async function persistLayout(env: string, positions: PositionMap, camera: Camera
 // Compute a static layout. If all nodes have saved positions, use those.
 // Otherwise, arrange in a circle with generous spacing and run a force sim.
 function computeLayout(
-  nodes: TGraph['nodes'],
-  links: TGraph['links'],
+  nodes: TopologyData['nodes'],
+  links: TopologyData['links'],
   savedPositions: PositionMap,
 ): Map<string, { x: number; y: number }> {
   const pos = new Map<string, { x: number; y: number }>()
@@ -179,11 +173,21 @@ export function TopologyGraphView({ data }: Props) {
   const dataRef = useRef(data)
   dataRef.current = data
 
+  // Re-render on window resize so the canvas width/height (derived from
+  // window.innerWidth/innerHeight below) track the viewport.
+  const [, bumpResize] = useState(0)
+  useEffect(() => {
+    const onResize = () => bumpResize((n) => n + 1)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   // Load saved positions + camera from server on mount / env change.
   const [ready, setReady] = useState(false)
   useEffect(() => {
     let cancelled = false
     positionsLoaded.current = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset loading state when the environment changes
     setReady(false)
     fetchLayout(activeEnv).then((layout) => {
       if (cancelled) return

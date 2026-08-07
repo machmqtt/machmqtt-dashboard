@@ -1,9 +1,20 @@
 import { useStore } from '../store/store'
 import { TopologyGraphView } from '../components/TopologyGraph'
-import { Skeleton } from '../components/Skeleton'
+import { Skeleton, NoClusterEmptyState } from '../components/Skeleton'
 
 export function TopologyPage() {
   const topology = useStore((s) => s.topology)
+  const environments = useStore((s) => s.environments)
+  const activeEnv = useStore((s) => s.activeEnv)
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="Cluster Topology"
+        description="Add a NATS cluster to visualize server routes, gateways, leaf nodes, and MachMQTT bridges."
+      />
+    )
+  }
 
   if (!topology) {
     return (

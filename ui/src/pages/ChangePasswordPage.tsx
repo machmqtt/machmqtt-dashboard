@@ -46,49 +46,55 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-nats-dark flex items-center justify-center">
+    <div className="min-h-screen bg-brand-dark flex items-center justify-center">
       <div className="bg-white rounded-lg shadow-xl p-8 w-96">
         <div className="flex items-center justify-center gap-2 mb-4">
-          <Server className="w-8 h-8 text-nats-blue" />
-          <h1 className="text-2xl font-semibold">NATS Dashboard</h1>
+          <Server className="w-8 h-8 text-brand-blue" />
+          <h1 className="text-2xl font-semibold">MachMQTT Dashboard</h1>
         </div>
         <p className="text-sm text-gray-600 text-center mb-6">
           You must change your password before continuing.
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
+            <label htmlFor="current-password" className="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
             <input
+              id="current-password"
               type="password"
+              autoComplete="current-password"
               value={oldPassword}
               onChange={(e) => setOldPassword(e.target.value)}
-              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-nats-blue"
+              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
               autoFocus
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+            <label htmlFor="new-password" className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
             <input
+              id="new-password"
               type="password"
+              autoComplete="new-password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-nats-blue"
+              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
+            <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
             <input
+              id="confirm-password"
               type="password"
+              autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-nats-blue"
+              className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
             />
           </div>
           {error && <p className="text-red-500 text-sm">{error}</p>}
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-nats-blue text-white rounded py-2 font-medium hover:opacity-90 disabled:opacity-50"
+            className="w-full bg-brand-blue text-white rounded py-2 font-medium hover:opacity-90 disabled:opacity-50"
           >
             {loading ? 'Changing...' : 'Change Password'}
           </button>

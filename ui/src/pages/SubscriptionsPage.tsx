@@ -12,7 +12,7 @@ import {
 } from '@tanstack/react-table'
 import { ColumnFilter } from '../components/ColumnFilter'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, Search, X } from 'lucide-react'
 
 // --- Types ---
@@ -43,8 +43,8 @@ interface SubsSummary {
   num_cache: number
   num_inserts: number
   num_removes: number
-  num_matching: number
-  cache_hit_rate: number
+  num_matches: number
+  cache_hit_rate: number // 0..1 ratio from NATS /subsz (rendered as a percentage)
   max_fanout: number
   avg_fanout: number
 }
@@ -69,6 +69,7 @@ function useDebounce<T>(value: T, delay: number): T {
 
 export function SubscriptionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const overview = useStore((s) => s.overview)
   const addToast = useStore((s) => s.addToast)
 
@@ -202,6 +203,7 @@ export function SubscriptionsPage() {
     }),
   ], [])
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API is intentional
   const table = useReactTable({
     data: detail?.subscriptions || [],
     columns,
@@ -219,6 +221,15 @@ export function SubscriptionsPage() {
   const hasNext = offset + pageSize < total
   const hasPrev = offset > 0
   const totalSubs = overview?.subscriptions ?? 0
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="Subscriptions"
+        description="Add a NATS cluster to browse and search active subscriptions."
+      />
+    )
+  }
 
   return (
     <div>
@@ -258,7 +269,7 @@ export function SubscriptionsPage() {
             <button
               onClick={fetchDetail}
               disabled={detailFetching}
-              className="bg-nats-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+              className="bg-brand-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${detailFetching ? 'animate-spin' : ''}`} />
               Refresh
@@ -296,13 +307,13 @@ export function SubscriptionsPage() {
                     <td className="px-4 py-3">{s.num_subscriptions.toLocaleString()}</td>
                     <td className="px-4 py-3">{s.num_cache.toLocaleString()}</td>
                     <td className="px-4 py-3">{s.num_inserts.toLocaleString()}</td>
-                    <td className="px-4 py-3">{s.num_matching.toLocaleString()}</td>
+                    <td className="px-4 py-3">{s.num_matches.toLocaleString()}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <div className="w-16 bg-gray-200 dark:bg-gray-600 rounded-full h-2">
-                          <div className="bg-nats-blue h-2 rounded-full" style={{ width: `${Math.min(100, s.cache_hit_rate)}%` }} />
+                          <div className="bg-brand-blue h-2 rounded-full" style={{ width: `${Math.min(100, s.cache_hit_rate * 100)}%` }} />
                         </div>
-                        <span>{s.cache_hit_rate}%</span>
+                        <span>{(s.cache_hit_rate * 100).toFixed(1)}%</span>
                       </div>
                     </td>
                     <td className="px-4 py-3">{s.max_fanout} / {s.avg_fanout.toFixed(1)}</td>
@@ -413,4 +424,3 @@ function SC({ label, value, sub }: { label: string; value: string; sub?: string 
     </div>
   )
 }
-

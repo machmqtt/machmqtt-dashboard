@@ -1,14 +1,39 @@
+import { Link } from 'react-router'
 import { useStore } from '../store/store'
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton'
 import { Activity, Cable, ArrowDownToLine, ArrowUpFromLine, Database, GitBranch, Server } from 'lucide-react'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatNumber as fmtNum, formatRate as fmtRate, formatBytes as fmtBytes } from '../utils/format'
 
 export function OverviewPage() {
   const overview = useStore((s) => s.overview)
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const metrics = useMetrics(activeEnv, 'metrics/overview')
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold mb-6">Overview</h1>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-12 text-center">
+          <Server className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+          <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-200 mb-2">No clusters configured</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">
+            Add a NATS cluster to start monitoring servers, connections, and message rates.
+          </p>
+          <Link
+            to="/admin/clusters"
+            className="inline-flex items-center gap-2 bg-brand-blue text-white rounded-lg px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            <Server className="w-4 h-4" />
+            Go to Cluster Management
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   if (!overview) {
     return (
@@ -31,7 +56,7 @@ export function OverviewPage() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <Card
-          icon={<Server className="w-5 h-5 text-nats-blue" />}
+          icon={<Server className="w-5 h-5 text-brand-blue" />}
           label="Servers"
           value={`${overview.healthy_count}/${overview.server_count}`}
           sub="healthy"
@@ -119,7 +144,9 @@ export function OverviewPage() {
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {overview.servers?.map((s) => (
               <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                <td className="px-4 py-3 font-medium">{s.name || s.id}</td>
+                <td className="px-4 py-3 font-medium">
+                  <Link to={`/servers/${s.id}`} className="block max-w-[220px] truncate text-brand-blue hover:underline" title={s.name || s.id}>{s.name || s.id}</Link>
+                </td>
                 <td className="px-4 py-3">{s.version}</td>
                 <td className="px-4 py-3">{fmtNum(s.connections)}</td>
                 <td className="px-4 py-3">{s.cpu.toFixed(1)}%</td>
@@ -156,25 +183,4 @@ function Card({ icon, label, value, sub }: { icon: React.ReactNode; label: strin
       {sub && <div className="text-xs text-gray-400">{sub}</div>}
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toString()
-}
-
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b.toFixed(0) + ' B'
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import {
   createColumnHelper,
   flexRender,
@@ -13,9 +13,10 @@ import {
   type ColumnFiltersState,
 } from '@tanstack/react-table'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown, ArrowLeft } from 'lucide-react'
 import { ColumnFilter } from '../components/ColumnFilter'
+import { formatNumber as fmtNum, formatBytes as fmtBytes } from '../utils/format'
 
 interface MQTTClient {
   cid: number
@@ -43,6 +44,7 @@ interface MQTTClient {
   inflight_out: number
   username: string
   state: string
+  slow_consumer?: boolean
 }
 
 interface MQTTClientRow extends MQTTClient {
@@ -68,11 +70,14 @@ interface BridgeInstance {
 }
 
 const col = createColumnHelper<MQTTClientRow>()
-const REFRESH_INTERVAL = 10_000
+// Each refresh issues one live admin-API fetch per bridge, so keep it moderate.
+const REFRESH_INTERVAL = 5_000
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250]
 
 export function MQTTAllConnectionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
+  const addToast = useStore((s) => s.addToast)
   const [rows, setRows] = useState<MQTTClientRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([])
@@ -94,7 +99,11 @@ export function MQTTAllConnectionsPage() {
       const bridges: BridgeInstance[] = bridgeData.bridges || []
       setBridgeCount(bridges.length)
 
-      const reachable = bridges.filter(b => b.reachable && b.status?.connz_available)
+      // Try connz for every reachable bridge. We can't rely on status.connz_available
+      // here: push-discovered bridges never report it, yet their connz is reachable
+      // through the configured admin URL. The per-bridge connz endpoint returns a
+      // clean error for bridges that genuinely lack it, handled as zero rows below.
+      const reachable = bridges.filter(b => b.reachable)
       const connTotal = bridges.reduce((s, b) => s + (b.status?.connections ?? 0), 0)
       setTotalConns(connTotal)
 
@@ -120,9 +129,11 @@ export function MQTTAllConnectionsPage() {
         if (r.status === 'fulfilled') allRows.push(...r.value)
       }
       setRows(allRows)
-    } catch { /* ignore */ }
+    } catch {
+      if (isInitial) addToast('Network error loading MQTT connections', 'error')
+    }
     setLoading(false)
-  }, [activeEnv])
+  }, [activeEnv, addToast])
 
   useEffect(() => { fetchData() }, [fetchData])
   useEffect(() => {
@@ -142,7 +153,19 @@ export function MQTTAllConnectionsPage() {
       cell: (i) => <span className="font-mono text-xs">{i.getValue()}:{i.row.original.port}</span>,
     }),
     col.accessor('username', { header: 'User', cell: (i) => i.getValue() || '-' }),
-    col.accessor('state', { header: 'State' }),
+    col.accessor('state', {
+      header: 'State',
+      cell: (i) => (
+        <span className="flex items-center gap-1.5">
+          {i.getValue()}
+          {i.row.original.slow_consumer && (
+            <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              Slow
+            </span>
+          )}
+        </span>
+      ),
+    }),
     col.accessor('subscriptions', { header: 'Subs' }),
     col.accessor('in_msgs', { header: 'Msgs In', cell: (i) => fmtNum(i.getValue()) }),
     col.accessor('out_msgs', { header: 'Msgs Out', cell: (i) => fmtNum(i.getValue()) }),
@@ -174,6 +197,15 @@ export function MQTTAllConnectionsPage() {
     getPaginationRowModel: getPaginationRowModel(),
     initialState: { pagination: { pageSize: 50 } },
   })
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="All MQTT Connections"
+        description="Add a NATS cluster to see MQTT client connections across all bridges."
+      />
+    )
+  }
 
   return (
     <div>
@@ -292,6 +324,7 @@ export function MQTTAllConnectionsPage() {
               <DI label="Kind" value={selected.kind || '-'} />
               <DI label="Type" value={selected.type || '-'} />
               <DI label="State" value={selected.state} />
+              <DI label="Slow Consumer" value={selected.slow_consumer ? 'Yes' : 'No'} />
               <DI label="IP" value={`${selected.ip}:${selected.port}`} />
               <DI label="User" value={selected.username || '-'} />
               <DI label="Subscriptions" value={selected.subscriptions.toString()} />
@@ -340,17 +373,4 @@ function DI({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
 }

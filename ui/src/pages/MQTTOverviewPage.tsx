@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton'
-import { Link } from 'react-router-dom'
-import { TimeSeriesChart } from '../components/TimeSeriesChart'
+import { Link } from 'react-router'
+import { Radio } from 'lucide-react'
+import { TimeSeriesChart, type LineDef } from '../components/TimeSeriesChart'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { useMetrics } from '../hooks/useMetrics'
+import { formatNumber as fmtNum, formatBytes as fmtBytes, formatRatePerSec as fmtRate, formatRate as fmtRateAxis, formatBytesPerSec as fmtBytesRate } from '../utils/format'
 
 interface NATSConn {
   connected: boolean
@@ -42,33 +44,20 @@ interface PoolSlot {
   flush_count: number
 }
 
-interface MQTTMetrics {
-  connections_active: number
-  connections_total: number
-  connections_rejected: number
-  ws_connections_active?: number
-  ws_connections_total?: number
-  auth_success: number
-  auth_failure: number
-  msgs_recv_qos0: number
-  msgs_recv_qos1: number
-  msgs_recv_qos2: number
-  msgs_sent_qos0: number
-  msgs_sent_qos1: number
-  msgs_sent_qos2: number
-  subscribes: number
-  unsubscribes: number
-  keepalive_timeouts: number
-  pool_publishes?: number
-  pool_subscribes?: number
-  nats_disconnects: number
-  nats_reconnects: number
-}
+// MQTTMetrics is typed as any to avoid drift with the broker's expanding
+// /metrics output. Field access is guarded with optional chaining at the
+// call sites below.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MQTTMetrics = any
 
 interface BridgeStatus {
   name: string
   url: string
   ready: boolean
+  draining?: boolean
+  // MQTT service up, JetStream currently unavailable (bridge readyz state
+  // "jetstream-degraded"). Distinct from unreachable: the admin API answered.
+  jetstream_degraded?: boolean
   connections: number
   nats_connected: boolean
   connz_available: boolean
@@ -97,27 +86,61 @@ interface BridgeInstance {
   admin_url: string
   status?: BridgeStatus
   reachable: boolean
+  // RFC3339; absent when the backend has no freshness signal for this entry.
+  last_seen?: string
 }
 
-const REFRESH_INTERVAL = 10_000
+// Mirrors probePendingReason in internal/api/handlers_mqtt.go: a configured
+// bridge whose first background probe hasn't answered yet. Rendered as a
+// neutral "Probing" state, not as an error.
+const PROBE_PENDING = 'probing the bridge admin API'
+
+// A push bridge republishes every ~10-15s and the backend expires entries at
+// 45s; beyond this the card's counters are shown as stale rather than live.
+const STALE_AFTER_MS = 90_000
+
+// Served from the collector's cached bridge list (no upstream fetch), so a
+// snappy refresh is cheap and surfaces newly discovered bridges quickly.
+const REFRESH_INTERVAL = 3_000
+
+// Hoisted so the array reference is stable across renders — an inline array
+// would defeat TimeSeriesChart's memo and re-render recharts on every 3s poll.
+const CONN_LINES: LineDef[] = [{ key: 'connections_active', color: '#a855f7', label: 'Active' }]
+const MSG_RATE_LINES: LineDef[] = [
+  { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
+  { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
+]
 
 export function MQTTOverviewPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
+  // bridges === null means "not loaded yet" → show the skeleton. Background
+  // refreshes update it in place, so the fleet doesn't strobe a skeleton (and
+  // lose the user's scroll position) on every poll.
   const [bridges, setBridges] = useState<BridgeInstance[] | null>(null)
-  const [loading, setLoading] = useState(true)
+  // Captured when the fleet data lands, so staleness is computed against a
+  // stable timestamp instead of calling Date.now() during render (which the
+  // React compiler's purity rule rejects); the 3s poll keeps it fresh.
+  const [fetchedAt, setFetchedAt] = useState(0)
   const mqttMetrics = useMetrics(activeEnv, 'metrics/mqtt')
 
   const fetchData = useCallback(async () => {
     if (!activeEnv) return
-    setLoading(true)
     try {
       const res = await fetchWithTimeout(`/api/environments/${activeEnv}/mqtt/bridges`)
       if (res.ok) {
         const data = await res.json()
         setBridges(data.bridges || [])
+        setFetchedAt(Date.now())
       }
     } catch { /* ignore */ }
-    setLoading(false)
+  }, [activeEnv])
+
+  // Clear the fleet when switching environments so the previous env's cards don't
+  // linger while the new env loads (bridges is local state, unlike the store-backed
+  // overview which setActiveEnv resets).
+  useEffect(() => {
+    setBridges(null) // eslint-disable-line react-hooks/set-state-in-effect -- intentional reset on env change
   }, [activeEnv])
 
   useEffect(() => {
@@ -129,10 +152,32 @@ export function MQTTOverviewPage() {
     return () => clearInterval(id)
   }, [activeEnv, fetchData])
 
-  if (loading) {
+  if (environments.length === 0 || !activeEnv) {
     return (
       <div>
-        <h1 className="text-2xl font-semibold mb-6">MachMQTT Bridges</h1>
+        <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-12 text-center">
+          <Radio className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+          <h2 className="text-lg font-semibold text-gray-700 dark:text-gray-200 mb-2">No clusters configured</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">
+            Add a NATS cluster to start monitoring MachMQTT bridge instances.
+          </p>
+          <Link
+            to="/admin/clusters"
+            className="inline-flex items-center gap-2 bg-brand-blue text-white rounded-lg px-5 py-2 text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            <Radio className="w-4 h-4" />
+            Go to Cluster Management
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (!bridges) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[1,2,3].map(i => <CardSkeleton key={i} />)}
         </div>
@@ -141,12 +186,16 @@ export function MQTTOverviewPage() {
     )
   }
 
-  if (!bridges || bridges.length === 0) {
+  if (bridges.length === 0) {
     return (
       <div>
-        <h1 className="text-2xl font-semibold mb-6">MachMQTT Bridges</h1>
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-8 text-center text-gray-500 dark:text-gray-400">
-          No MQTT bridges configured. Add <code className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs">mqtt_bridges</code> to your environment config.
+        <h1 className="text-2xl font-semibold mb-6">MachMQTT Fleet</h1>
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-10 text-center">
+          <Radio className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <p className="text-gray-500 dark:text-gray-400 text-sm">
+            No MachMQTT bridges discovered yet. Configure MachMQTT discovery or add bridges manually in{' '}
+            <Link to="/admin/clusters" className="text-brand-blue hover:underline">Cluster Management</Link>.
+          </p>
         </div>
       </div>
     )
@@ -158,7 +207,7 @@ export function MQTTOverviewPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">MachMQTT Bridges</h1>
+        <h1 className="text-2xl font-semibold">MachMQTT Fleet</h1>
         <span className="text-xs text-gray-400">Auto-refreshes every {REFRESH_INTERVAL / 1000}s</span>
       </div>
 
@@ -180,9 +229,7 @@ export function MQTTOverviewPage() {
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">MQTT Connections</h3>
           <TimeSeriesChart
             data={mqttMetrics.data}
-            lines={[
-              { key: 'connections_active', color: '#a855f7', label: 'Active' },
-            ]}
+            lines={CONN_LINES}
             yFormatter={(v) => v.toFixed(0)}
           />
         </div>
@@ -190,10 +237,7 @@ export function MQTTOverviewPage() {
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Message Rate</h3>
           <TimeSeriesChart
             data={mqttMetrics.data}
-            lines={[
-              { key: 'in_msgs_rate', color: '#22c55e', label: 'In msgs/s' },
-              { key: 'out_msgs_rate', color: '#f97316', label: 'Out msgs/s' },
-            ]}
+            lines={MSG_RATE_LINES}
             yFormatter={fmtRateAxis}
           />
         </div>
@@ -203,25 +247,57 @@ export function MQTTOverviewPage() {
         {bridges.map((b) => {
           const s = b.status
           const healthy = b.reachable && s?.ready && s?.nats_connected
+          // The display name is the cache key server-side, so it is unique per
+          // card; b.ip is empty for push-discovered bridges and would collide.
           const displayName = b.configured_name || b.status?.name || `mqtt@${b.ip}`
+          const probing = s?.error === PROBE_PENDING
+          const staleMs = b.last_seen ? fetchedAt - Date.parse(b.last_seen) : 0
+          const stale = staleMs > STALE_AFTER_MS
           return (
-          <div key={b.ip} className="bg-white dark:bg-gray-800 rounded-lg shadow">
+          <div key={displayName} className={`bg-white dark:bg-gray-800 rounded-lg shadow${stale ? ' opacity-60' : ''}`}>
             <div className="p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${healthy ? 'bg-healthy' : b.reachable ? 'bg-yellow-400' : 'bg-unhealthy'}`} />
-                  <h2 className="font-semibold text-lg">{displayName}</h2>
-                  <span className="text-xs text-gray-400">on {b.server_name}</span>
-                  {b.admin_url && <span className="text-xs text-gray-400 font-mono">{b.admin_url}</span>}
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className={`shrink-0 w-2.5 h-2.5 rounded-full ${healthy ? 'bg-healthy' : b.reachable ? 'bg-yellow-400' : 'bg-unhealthy'}`} />
+                  <h2 className="font-semibold text-lg shrink-0">{displayName}</h2>
+                  {s?.draining && (
+                    <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="Operator-drained: not accepting new connections">
+                      Draining
+                    </span>
+                  )}
+                  {s?.jetstream_degraded && (
+                    <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="MQTT service is up; JetStream is currently unavailable">
+                      JS Degraded
+                    </span>
+                  )}
+                  {/* Reachable but in none of the named states (e.g. still starting,
+                      or NATS down): label it rather than leaving only a yellow dot. */}
+                  {b.reachable && s && !s.ready && !s.draining && !s.jetstream_degraded && (
+                    <span className="shrink-0 text-xs font-medium text-amber-700 bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 rounded px-2 py-0.5" title="The bridge reports it is not ready to accept MQTT connections">
+                      Not Ready
+                    </span>
+                  )}
+                  {probing && (
+                    <span className="shrink-0 text-xs font-medium text-gray-600 bg-gray-100 dark:bg-gray-700 dark:text-gray-300 rounded px-2 py-0.5" title="First contact with the bridge admin API is in progress">
+                      Probing…
+                    </span>
+                  )}
+                  {stale && (
+                    <span className="shrink-0 text-xs text-gray-400" title="No fresh data from this bridge; counters below are its last report">
+                      last seen {Math.round(staleMs / 1000)}s ago
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-400 truncate" title={b.server_name}>on {b.server_name}</span>
+                  {b.admin_url && <span className="shrink-0 text-xs text-gray-400 font-mono">{b.admin_url}</span>}
                 </div>
                 <div className="flex items-center gap-4">
                   {s?.connz_available && (
-                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/connections`} className="text-nats-blue text-sm hover:underline">
+                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/connections`} className="text-brand-blue text-sm hover:underline">
                       Connections ({s.connections})
                     </Link>
                   )}
                   {b.reachable && (
-                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/detail`} className="text-nats-blue text-sm hover:underline">
+                    <Link to={`/mqtt/${encodeURIComponent(displayName)}/detail`} className="text-brand-blue text-sm hover:underline">
                       Details
                     </Link>
                   )}
@@ -231,15 +307,21 @@ export function MQTTOverviewPage() {
                 </div>
               </div>
 
-              {s?.error && (
+              {s?.error && !probing && (
                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2 mb-3 text-sm text-red-600 dark:text-red-400">
                   {s.error}
                 </div>
               )}
 
-              {!b.reachable && (
+              {!b.reachable && !probing && (
                 <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 mb-3 text-sm text-yellow-700 dark:text-yellow-400">
                   Bridge admin API not reachable. Showing NATS-side data only.
+                </div>
+              )}
+
+              {s?.jetstream_degraded && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded p-2 mb-3 text-sm text-amber-700 dark:text-amber-400">
+                  JetStream unavailable — MQTT is still serving clients; QoS 1/2 persistence is affected until JetStream recovers.
                 </div>
               )}
 
@@ -271,7 +353,6 @@ export function MQTTOverviewPage() {
                     <DI label="Sent QoS 0/1/2" value={`${fmtNum(s.metrics.msgs_sent_qos0)} / ${fmtNum(s.metrics.msgs_sent_qos1)} / ${fmtNum(s.metrics.msgs_sent_qos2)}`} />
                     <DI label="Sub / Unsub" value={`${fmtNum(s.metrics.subscribes)} / ${fmtNum(s.metrics.unsubscribes)}`} />
                     <DI label="Keepalive Timeouts" value={fmtNum(s.metrics.keepalive_timeouts)} />
-                    <DI label="Pool Pub / Sub" value={`${fmtNum(s.metrics.pool_publishes ?? 0)} / ${fmtNum(s.metrics.pool_subscribes ?? 0)}`} />
                     <DI label="NATS Disconn / Reconn" value={`${fmtNum(s.metrics.nats_disconnects)} / ${fmtNum(s.metrics.nats_reconnects)}`} />
                   </>
                 )}
@@ -383,47 +464,9 @@ function SC({ label, value, sub }: { label: string; value: string; sub?: string 
 
 function DI({ label, value }: { label: string; value: string }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="text-gray-500 dark:text-gray-400 text-xs">{label}</div>
-      <div className="font-medium">{value}</div>
+      <div className="font-medium truncate" title={value}>{value}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toLocaleString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
-}
-
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M/s'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K/s'
-  if (r >= 1) return r.toFixed(0) + '/s'
-  if (r > 0) return r.toFixed(1) + '/s'
-  return '0/s'
-}
-
-function fmtRateAxis(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  if (r >= 1) return r.toFixed(0)
-  if (r > 0) return r.toFixed(2)
-  return '0'
-}
-
-function fmtBytesRate(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB/s'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB/s'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB/s'
-  if (b > 0) return b.toFixed(0) + ' B/s'
-  return '0 B/s'
 }

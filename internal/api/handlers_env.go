@@ -3,31 +3,150 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/machmqtt/nats-dashboard/internal/collector"
-	"github.com/machmqtt/nats-dashboard/internal/store"
+	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
+	"github.com/noodlebit/machmqtt-dashboard/internal/store"
+	"golang.org/x/sync/errgroup"
 )
+
+const (
+	connzPageSize       = 1024
+	connzMaxPerServer   = 50000
+	connzMaxClusterRows = 100000
+	connzFanoutLimit    = 4
+	connzRequestTimeout = 20 * time.Second
+)
+
+type connzPageFetcher func(context.Context, string, int, int) (*collector.Connz, error)
+
+type connzServerResult struct {
+	conns     []collector.ConnInfo
+	total     int
+	serverID  string
+	failed    bool
+	truncated bool
+}
+
+// fetchConnzPages concurrently fetches complete, bounded per-server result sets.
+// Results retain configuration order here and are sorted by callers before paging.
+func fetchConnzPages(ctx context.Context, servers []string, fetch connzPageFetcher) []connzServerResult {
+	results := make([]connzServerResult, len(servers))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(connzFanoutLimit)
+	for i, serverURL := range servers {
+		i, serverURL := i, serverURL
+		g.Go(func() error {
+			result := &results[i]
+			for offset := 0; offset < connzMaxPerServer; {
+				page, err := fetch(gctx, serverURL, connzPageSize, offset)
+				if err != nil {
+					result.failed = true
+					return nil
+				}
+				if result.serverID == "" {
+					result.serverID = page.ServerID
+					result.total = page.Total
+				}
+				for j := range page.Conns {
+					page.Conns[j].ServerID = page.ServerID
+				}
+				result.conns = append(result.conns, page.Conns...)
+				next := offset + len(page.Conns)
+				if len(page.Conns) == 0 || next <= offset || (page.Total > 0 && next >= page.Total) || len(page.Conns) < connzPageSize {
+					break
+				}
+				offset = next
+			}
+			if result.total == 0 {
+				result.total = len(result.conns)
+			}
+			if result.total > len(result.conns) || len(result.conns) >= connzMaxPerServer {
+				result.truncated = true
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return results
+}
+
+func flattenConnz(results []connzServerResult) (conns []collector.ConnInfo, reportedTotal, failedServers int, partial bool) {
+	for _, result := range results {
+		reportedTotal += result.total
+		if result.failed {
+			failedServers++
+			partial = true
+		}
+		if result.truncated {
+			partial = true
+		}
+		conns = append(conns, result.conns...)
+	}
+	sort.SliceStable(conns, func(i, j int) bool {
+		if conns[i].ServerID != conns[j].ServerID {
+			return conns[i].ServerID < conns[j].ServerID
+		}
+		if conns[i].Cid != conns[j].Cid {
+			return conns[i].Cid < conns[j].Cid
+		}
+		if conns[i].IP != conns[j].IP {
+			return conns[i].IP < conns[j].IP
+		}
+		return conns[i].Port < conns[j].Port
+	})
+	if len(conns) > connzMaxClusterRows {
+		conns = conns[:connzMaxClusterRows]
+		partial = true
+	}
+	return conns, reportedTotal, failedServers, partial
+}
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"version": s.version})
 }
 
 func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
-	envs := s.manager.Environments()
-	writeJSON(w, map[string]any{"environments": envs})
+	clusters, err := s.store.ListClusters()
+	if err != nil {
+		http.Error(w, `{"error":"failed to list clusters"}`, http.StatusInternalServerError)
+		return
+	}
+	// Lightweight per-cluster health for the sidebar badge. The full diagnostic
+	// detail lives behind the admin-only /api/admin/health; these three fields are
+	// safe for any authenticated user and reuse the call the UI already polls.
+	type clusterInfo struct {
+		ID                 string  `json:"id"`
+		Name               string  `json:"name"`
+		Degraded           bool    `json:"degraded"`
+		DegradedReason     string  `json:"degraded_reason,omitempty"`
+		CollectionMode     string  `json:"collection_mode"`
+		LastPollAgeSeconds float64 `json:"last_poll_age_seconds"`
+	}
+	list := make([]clusterInfo, len(clusters))
+	for i, c := range clusters {
+		ci := clusterInfo{ID: c.ID, Name: c.Name}
+		if h := s.manager.ClusterHealth(c.ID); h != nil {
+			ci.Degraded = h.Degraded()
+			ci.DegradedReason = h.DegradedReason()
+			ci.CollectionMode = h.CollectionMode
+			ci.LastPollAgeSeconds = h.LastPollAgeSeconds
+		}
+		list[i] = ci
+	}
+	writeJSON(w, map[string]any{"environments": list})
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	overview := s.manager.Overview(env)
 	if overview == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 	writeJSON(w, overview)
@@ -37,7 +156,7 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	topo := s.manager.Topology(env)
 	if topo == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 	writeJSON(w, topo)
@@ -47,7 +166,7 @@ func (s *Server) handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	positions, err := s.store.GetTopologyPositions(env)
 	if err != nil {
-		http.Error(w, `{"error":"failed to load positions"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"failed to load positions"}`, http.StatusInternalServerError)
 		return
 	}
 	if positions == nil {
@@ -68,16 +187,16 @@ func (s *Server) handleSavePositions(w http.ResponseWriter, r *http.Request) {
 		Camera    *store.CameraState   `json:"camera,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	if err := s.store.SaveTopologyPositions(env, body.Positions); err != nil {
-		http.Error(w, `{"error":"failed to save positions"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"failed to save positions"}`, http.StatusInternalServerError)
 		return
 	}
 	if body.Camera != nil {
 		if err := s.store.SaveTopologyCamera(env, *body.Camera); err != nil {
-			http.Error(w, `{"error":"failed to save camera"}`, http.StatusInternalServerError)
+			writeJSONError(w, `{"error":"failed to save camera"}`, http.StatusInternalServerError)
 			return
 		}
 	}
@@ -104,34 +223,82 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	fetcher := s.manager.Fetcher(env)
 	servers := s.manager.EnvServers(env)
 	if fetcher == nil || len(servers) == 0 {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	var allConns []collector.ConnInfo
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnz(r.Context(), url, 0, 0, "", acc, state, filterSubject)
-		if err != nil {
-			continue
+	ctx, cancel := context.WithTimeout(r.Context(), connzRequestTimeout)
+	defer cancel()
+	results := fetchConnzPages(ctx, servers, func(ctx context.Context, serverURL string, pageLimit, pageOffset int) (*collector.Connz, error) {
+		// Subject filtering is applied below from the subscription-detail source.
+		// Fetching the full connection page here preserves the server-wide total and
+		// lets us report when either source is incomplete. Account and state remain
+		// upstream filters because NATS implements them directly.
+		return fetcher.FetchConnz(ctx, serverURL, pageLimit, pageOffset, "", acc, state, "")
+	})
+	allConns, reportedTotal, failedServers, partial := flattenConnz(results)
+
+	// Some monitoring-compatible endpoints ignore the account query parameter.
+	// Enforce it locally as well so the API contract is stable across providers.
+	if acc != "" {
+		filtered := allConns[:0]
+		for _, conn := range allConns {
+			if conn.Account == acc {
+				filtered = append(filtered, conn)
+			}
 		}
-		allConns = append(allConns, connz.Conns...)
+		allConns = filtered
 	}
 
-	total := len(allConns)
-	if offset > total {
-		offset = total
+	subsAvailable := false
+	subsTruncated := false
+	if filterSubject != "" {
+		rows, truncated := s.getSubsRows(ctx, env)
+		subsAvailable = len(rows) > 0
+		subsTruncated = truncated
+		type connectionKey struct {
+			serverID string
+			cid      uint64
+		}
+		matchingConnections := make(map[connectionKey]struct{}, len(rows))
+		for _, row := range rows {
+			if strings.Contains(row.Subject, filterSubject) {
+				matchingConnections[connectionKey{serverID: row.ServerID, cid: row.ConnCid}] = struct{}{}
+			}
+		}
+		filtered := allConns[:0]
+		for _, conn := range allConns {
+			if _, ok := matchingConnections[connectionKey{serverID: conn.ServerID, cid: conn.Cid}]; ok {
+				filtered = append(filtered, conn)
+			}
+		}
+		allConns = filtered
+	}
+
+	loadedTotal := len(allConns)
+	if offset > loadedTotal {
+		offset = loadedTotal
 	}
 	end := offset + limit
-	if end > total {
-		end = total
+	if end > loadedTotal {
+		end = loadedTotal
 	}
 
-	writeJSON(w, map[string]any{
-		"connections": allConns[offset:end],
-		"total":       total,
-		"limit":       limit,
-		"offset":      offset,
-	})
+	resp := map[string]any{
+		"connections":    allConns[offset:end],
+		"total":          loadedTotal,
+		"server_total":   reportedTotal,
+		"loaded_total":   loadedTotal,
+		"limit":          limit,
+		"offset":         offset,
+		"partial":        partial || subsTruncated,
+		"truncated":      partial || subsTruncated,
+		"failed_servers": failedServers,
+	}
+	if filterSubject != "" {
+		resp["subs_available"] = subsAvailable
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {
@@ -139,30 +306,53 @@ func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {
 	cidStr := r.PathValue("cid")
 	cid, err := strconv.ParseUint(cidStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid cid"}`, http.StatusBadRequest)
+		writeJSONError(w, `{"error":"invalid cid"}`, http.StatusBadRequest)
 		return
 	}
 
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
+	snap := s.manager.Snapshot(env)
+	if snap == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnzWithSubs(r.Context(), url, 1024)
-		if err != nil {
-			continue
+	var found *collector.ConnInfo
+	for _, connz := range snap.Connz {
+		for i := range connz.Conns {
+			if connz.Conns[i].Cid == cid {
+				cp := connz.Conns[i]
+				found = &cp
+				break
+			}
 		}
-		for _, c := range connz.Conns {
-			if c.Cid == cid {
-				writeJSON(w, c)
-				return
+		if found != nil {
+			break
+		}
+	}
+
+	if found == nil {
+		http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Enrich subs from the cache when the snapshot doesn't carry them.
+	if len(found.SubsDetail) == 0 && len(found.Subs) == 0 {
+		rows, _ := s.getSubsRows(r.Context(), env)
+		for _, row := range rows {
+			if row.ConnCid == cid {
+				found.SubsDetail = append(found.SubsDetail, collector.SubDetail{
+					Subject: row.Subject,
+					Queue:   row.Queue,
+					Sid:     row.Sid,
+					Msgs:    row.Msgs,
+					Account: row.Account,
+					Cid:     cid,
+				})
 			}
 		}
 	}
-	http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+
+	writeJSON(w, found)
 }
 
 func (s *Server) handleRoutez(w http.ResponseWriter, r *http.Request) {
@@ -212,29 +402,80 @@ type subRow struct {
 }
 
 // subsDetailCache caches the expensive /connz?subs=detail fetch across all servers.
-var subsDetailCacheMu sync.Mutex
-var subsDetailCacheData = make(map[string]*struct {
+type subsCacheEntry struct {
 	rows      []subRow
+	truncated bool
 	fetchedAt time.Time
-})
+}
 
 const subsCacheTTL = 15 * time.Second
 const subsCacheMaxEntries = 50
 
-func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
-	subsDetailCacheMu.Lock()
-	cached := subsDetailCacheData[env]
-	if cached != nil && time.Since(cached.fetchedAt) < subsCacheTTL {
-		rows := cached.rows
-		subsDetailCacheMu.Unlock()
-		return rows
-	}
-	subsDetailCacheMu.Unlock()
+// subsFetchTimeout bounds the detached single-flight fetch. It is longer than a
+// typical request so a slow cluster still fills the cache, but finite so a
+// wedged endpoint cannot hold the flight open indefinitely.
+const subsFetchTimeout = 30 * time.Second
 
+// getSubsRows returns the subscription rows and whether they are incomplete —
+// true when a server reported more connections than the fetch returned, so some
+// connections' subscriptions are missing from the table.
+func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
+	s.subsCacheMu.Lock()
+	cached := s.subsCacheData[env]
+	if cached != nil && time.Since(cached.fetchedAt) < subsCacheTTL {
+		s.subsCacheHits.Add(1)
+		rows := append([]subRow(nil), cached.rows...)
+		truncated := cached.truncated
+		s.subsCacheMu.Unlock()
+		return rows, truncated
+	}
+	s.subsCacheMu.Unlock()
+	s.subsCacheMisses.Add(1)
+	// The shared fetch outlives whichever caller happened to win the flight, so
+	// it runs on a detached context with its own deadline. Using the winner's
+	// request context would let one client disconnecting cancel the fetch for
+	// every caller waiting behind it — and poison the cache with the empty
+	// result for a full TTL.
+	value, _, _ := s.subsGroup.Do(env, func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subsFetchTimeout)
+		defer cancel()
+		rows, truncated := s.loadSubsRows(fetchCtx, env)
+		return &subsCacheEntry{rows: rows, truncated: truncated}, nil
+	})
+	if value == nil {
+		return nil, false
+	}
+	result := value.(*subsCacheEntry)
+	return append([]subRow(nil), result.rows...), result.truncated
+}
+
+func (s *Server) loadSubsRows(ctx context.Context, env string) ([]subRow, bool) {
+	// A request may have populated the cache while this caller waited for the
+	// single-flight lock.
+	s.subsCacheMu.Lock()
+	cached := s.subsCacheData[env]
+	if cached != nil && time.Since(cached.fetchedAt) < subsCacheTTL {
+		s.subsCacheHits.Add(1)
+		rows := append([]subRow(nil), cached.rows...)
+		s.subsCacheMu.Unlock()
+		return rows, cached.truncated
+	}
+	s.subsCacheMu.Unlock()
+
+	// Fast path: use snapshot Connz when sys_collection is active and the slow
+	// poll has populated per-connection subscription detail via PING.CONNZ.
+	if snap := s.manager.Snapshot(env); snap != nil {
+		if rows, truncated := subsRowsFromConnz(snap); rows != nil {
+			s.cacheSubsRows(env, rows, truncated)
+			return rows, truncated
+		}
+	}
+
+	// Fall back to HTTP (clusters without sys_collection=true).
 	fetcher := s.manager.Fetcher(env)
 	servers := s.manager.EnvServers(env)
 	if fetcher == nil || len(servers) == 0 {
-		return nil
+		return nil, false
 	}
 
 	snap := s.manager.Snapshot(env)
@@ -247,23 +488,32 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		return id
 	}
 
-	const maxRows = 50000 // Hard cap to prevent OOM.
+	const maxRows = 50000
+
+	ctx, cancel := context.WithTimeout(ctx, connzRequestTimeout)
+	defer cancel()
+	results := fetchConnzPages(ctx, servers, func(ctx context.Context, serverURL string, pageLimit, pageOffset int) (*collector.Connz, error) {
+		page, err := fetcher.FetchConnzSubsDetailPage(ctx, serverURL, pageLimit, pageOffset, "")
+		if err != nil {
+			// Older NATS versions may not support subs=detail.
+			return fetcher.FetchConnzWithSubsPage(ctx, serverURL, pageLimit, pageOffset, "")
+		}
+		return page, nil
+	})
 
 	var all []subRow
-	for _, url := range servers {
+	truncated := false
+	for _, result := range results {
+		if result.failed {
+			truncated = true
+			continue
+		}
+		truncated = truncated || result.truncated
 		if len(all) >= maxRows {
 			break
 		}
-		connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 256)
-		if err != nil {
-			// Fallback to subs=true (string list) if subs=detail fails.
-			connz, err = fetcher.FetchConnzWithSubs(ctx, url, 256)
-			if err != nil {
-				continue
-			}
-		}
-		srvName := serverName(connz.ServerID)
-		for _, c := range connz.Conns {
+		srvName := serverName(result.serverID)
+		for _, c := range result.conns {
 			if len(all) >= maxRows {
 				break
 			}
@@ -278,7 +528,7 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 						Subject: sd.Subject, Queue: sd.Queue, Sid: sd.Sid,
 						Msgs: sd.Msgs, ConnCid: c.Cid, ConnName: c.Name,
 						ConnIP: c.IP, Account: a,
-						ServerID: connz.ServerID, ServerName: srvName,
+						ServerID: result.serverID, ServerName: srvName,
 					})
 					if len(all) >= maxRows {
 						break
@@ -290,7 +540,7 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 						Subject: sub, Sid: strconv.Itoa(i + 1),
 						ConnCid: c.Cid, ConnName: c.Name,
 						ConnIP: c.IP, Account: acct,
-						ServerID: connz.ServerID, ServerName: srvName,
+						ServerID: result.serverID, ServerName: srvName,
 					})
 					if len(all) >= maxRows {
 						break
@@ -300,31 +550,98 @@ func (s *Server) getSubsRows(ctx context.Context, env string) []subRow {
 		}
 	}
 
+	if len(all) >= maxRows {
+		truncated = true
+	}
+
 	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
+	s.cacheSubsRows(env, all, truncated)
+	return all, truncated
+}
 
-	subsDetailCacheMu.Lock()
-	subsDetailCacheData[env] = &struct {
-		rows      []subRow
-		fetchedAt time.Time
-	}{rows: all, fetchedAt: time.Now()}
+// subsRowsFromConnz builds the subscription row table from snapshot Connz entries
+// that carry per-connection subscription detail (populated by PING.CONNZ with
+// subscriptions_detail=true on slow polls when sys_collection=true). Returns nil
+// when no Connz entry has subscription data, signalling a fall-through to HTTP.
+// The bool reports whether some connections were left out of the rows.
+func subsRowsFromConnz(snap *collector.Snapshot) ([]subRow, bool) {
+	const maxRows = 50000
+	var all []subRow
+	truncated := false
+	for srvID, connz := range snap.Connz {
+		if len(connz.Conns) < connz.Total {
+			truncated = true
+		}
+		srvName := srvID
+		if v, ok := snap.Varz[srvID]; ok && v.ServerName != "" {
+			srvName = v.ServerName
+		}
+		for _, c := range connz.Conns {
+			if len(c.SubsDetail) == 0 && len(c.Subs) == 0 {
+				continue
+			}
+			acct := c.Account
+			if len(c.SubsDetail) > 0 {
+				for _, sd := range c.SubsDetail {
+					a := sd.Account
+					if a == "" {
+						a = acct
+					}
+					all = append(all, subRow{
+						Subject: sd.Subject, Queue: sd.Queue, Sid: sd.Sid,
+						Msgs: sd.Msgs, ConnCid: c.Cid, ConnName: c.Name,
+						ConnIP: c.IP, Account: a,
+						ServerID: srvID, ServerName: srvName,
+					})
+					if len(all) >= maxRows {
+						break
+					}
+				}
+			} else {
+				for i, sub := range c.Subs {
+					all = append(all, subRow{
+						Subject: sub, Sid: strconv.Itoa(i + 1),
+						ConnCid: c.Cid, ConnName: c.Name,
+						ConnIP: c.IP, Account: acct,
+						ServerID: srvID, ServerName: srvName,
+					})
+					if len(all) >= maxRows {
+						break
+					}
+				}
+			}
+		}
+	}
+	if len(all) == 0 {
+		return nil, false
+	}
+	if len(all) >= maxRows {
+		truncated = true
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
+	return all, truncated
+}
 
-	// Evict stale entries and enforce max cache size.
-	if len(subsDetailCacheData) > subsCacheMaxEntries {
+func (s *Server) cacheSubsRows(env string, rows []subRow, truncated bool) {
+	s.subsCacheMu.Lock()
+	s.subsCacheData[env] = &subsCacheEntry{
+		rows: append([]subRow(nil), rows...), truncated: truncated, fetchedAt: time.Now(),
+	}
+	if len(s.subsCacheData) > subsCacheMaxEntries {
 		var oldestKey string
 		var oldestTime time.Time
-		for k, v := range subsDetailCacheData {
+		for k, v := range s.subsCacheData {
 			if oldestKey == "" || v.fetchedAt.Before(oldestTime) {
 				oldestKey = k
 				oldestTime = v.fetchedAt
 			}
 		}
 		if oldestKey != "" {
-			delete(subsDetailCacheData, oldestKey)
+			delete(s.subsCacheData, oldestKey)
+			s.subsCacheEvictions.Add(1)
 		}
 	}
-	subsDetailCacheMu.Unlock()
-
-	return all
+	s.subsCacheMu.Unlock()
 }
 
 func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
@@ -337,20 +654,9 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	filterServer := q.Get("server")
 	hideSystem := q.Get("hide_system") == "true"
 
-	var all []subRow
-
-	if filterSubject != "" {
-		// Targeted fetch: push filter_subject to NATS so it only returns
-		// connections with matching subscriptions. Much faster than fetching
-		// everything and filtering in-memory.
-		all = s.fetchSubsFiltered(r.Context(), env, filterSubject)
-	} else {
-		// Unfiltered: use cache.
-		all = s.getSubsRows(r.Context(), env)
-	}
-
+	all, truncated := s.getSubsRows(r.Context(), env)
 	if all == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -359,9 +665,6 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 		if hideSystem && isSystemSubject(row.Subject) {
 			continue
 		}
-		// If we used a targeted NATS fetch, filter_subject was already applied
-		// server-side. But NATS matches by subscription interest, not substring,
-		// so still apply our substring filter for exact UI behavior.
 		if filterSubject != "" && !strings.Contains(row.Subject, filterSubject) {
 			continue
 		}
@@ -386,52 +689,12 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"subscriptions": filtered[offset:end],
 		"total":         total,
-		"limit":         limit,
-		"offset":        offset,
+		// The source connz fetch is capped per server, so rows can be missing for
+		// connections beyond the cap.
+		"truncated": truncated,
+		"limit":     limit,
+		"offset":    offset,
 	})
-}
-
-// fetchSubsFiltered uses subs=true + filter_subject for a fast, lightweight fetch.
-// NATS returns only connections with matching subscriptions, and only the subject
-// string list (no per-sub message counts), making this very fast even on large clusters.
-func (s *Server) fetchSubsFiltered(ctx context.Context, env, filterSubject string) []subRow {
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
-		return nil
-	}
-
-	snap := s.manager.Snapshot(env)
-	serverName := func(id string) string {
-		if snap != nil {
-			if v, ok := snap.Varz[id]; ok && v.ServerName != "" {
-				return v.ServerName
-			}
-		}
-		return id
-	}
-
-	var all []subRow
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnzWithSubsFiltered(ctx, url, 1024, filterSubject)
-		if err != nil {
-			continue
-		}
-		srvName := serverName(connz.ServerID)
-		for _, c := range connz.Conns {
-			for i, sub := range c.Subs {
-				all = append(all, subRow{
-					Subject: sub, Sid: strconv.Itoa(i + 1),
-					ConnCid: c.Cid, ConnName: c.Name,
-					ConnIP: c.IP, Account: c.Account,
-					ServerID: connz.ServerID, ServerName: srvName,
-				})
-			}
-		}
-	}
-
-	sort.Slice(all, func(i, j int) bool { return all[i].Subject < all[j].Subject })
-	return all
 }
 
 func (s *Server) handleJSz(w http.ResponseWriter, r *http.Request) {
@@ -454,69 +717,82 @@ func (s *Server) handleAccountDetail(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	acc := r.PathValue("acc")
 
-	fetcher := s.manager.Fetcher(env)
-	servers := s.manager.EnvServers(env)
-	if fetcher == nil || len(servers) == 0 {
+	snap := s.manager.Snapshot(env)
+	if snap == nil {
 		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// Aggregate account detail across all servers.
-	var merged *collector.AccountInfo
-	for _, url := range servers {
-		detail, err := fetcher.FetchAccountDetail(r.Context(), url, acc)
-		if err != nil || detail.Account == nil {
-			continue
-		}
-		if merged == nil {
-			copy := *detail.Account
-			merged = &copy
-		} else {
-			merged.ClientCnt += detail.Account.ClientCnt
-			merged.LeafCnt += detail.Account.LeafCnt
-			merged.SubCnt += detail.Account.SubCnt
-		}
-	}
-
-	if merged == nil {
-		http.Error(w, `{"error":"account not found"}`, http.StatusNotFound)
-		return
-	}
-
-	// Also count actual connections from connz for accuracy.
-	var clientConns int
-	var leafConns int
-	for _, url := range servers {
-		connz, err := fetcher.FetchConnz(r.Context(), url, 0, 0, "", acc, "", "")
-		if err != nil {
-			continue
-		}
-		clientConns += len(connz.Conns)
-	}
-
-	snap := s.manager.Snapshot(env)
-	if snap != nil {
-		for _, lz := range snap.Leafz {
-			for _, l := range lz.Leafs {
-				if l.Account == acc {
-					leafConns++
-				}
+	// ClientCnt from snapshot connz.
+	var clientCnt int
+	for _, connz := range snap.Connz {
+		for _, c := range connz.Conns {
+			if c.Account == acc {
+				clientCnt++
 			}
 		}
 	}
 
-	// Use the live-counted values.
-	merged.ClientCnt = clientConns
-	merged.LeafCnt = leafConns
+	// LeafCnt from snapshot leafz.
+	var leafCnt int
+	for _, lz := range snap.Leafz {
+		for _, l := range lz.Leafs {
+			if l.Account == acc {
+				leafCnt++
+			}
+		}
+	}
 
-	writeJSON(w, merged)
+	// SubCnt from the subs cache (15s TTL).
+	var subCnt uint32
+	subsRows, _ := s.getSubsRows(r.Context(), env)
+	for _, row := range subsRows {
+		if row.Account == acc {
+			subCnt++
+		}
+	}
+
+	// IsSystem: check whether this account is the system account on any server.
+	var isSystem bool
+	for _, az := range snap.Accountz {
+		if az.SystemAccount == acc {
+			isSystem = true
+			break
+		}
+	}
+
+	// Account existence: present in any server's account list, or has active connections.
+	var knownAccount bool
+	for _, az := range snap.Accountz {
+		for _, name := range az.Accounts {
+			if name == acc {
+				knownAccount = true
+				break
+			}
+		}
+		if knownAccount {
+			break
+		}
+	}
+	if !knownAccount && clientCnt == 0 && leafCnt == 0 && subCnt == 0 && !isSystem {
+		http.Error(w, `{"error":"account not found"}`, http.StatusNotFound)
+		return
+	}
+
+	writeJSON(w, &collector.AccountInfo{
+		AccountName: acc,
+		IsSystem:    isSystem,
+		LeafCnt:     leafCnt,
+		ClientCnt:   clientCnt,
+		SubCnt:      subCnt,
+	})
 }
 
 func (s *Server) envSnapshot(w http.ResponseWriter, r *http.Request) *collector.Snapshot {
 	env := r.PathValue("env")
 	snap := s.manager.Snapshot(env)
 	if snap == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return nil
 	}
 	return snap
@@ -543,7 +819,37 @@ func clampInt(s string, defaultVal, maxVal int) int {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// The status line is already committed, so we can't change it — but a
+		// silent encode failure is otherwise invisible. Log it once here, the
+		// single chokepoint every JSON handler funnels through.
+		slog.Warn("writeJSON encode failed", "err", err)
+	}
+}
+
+// writeRawJSON writes pre-encoded JSON bytes (e.g. a cached response body).
+func writeRawJSON(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(body); err != nil {
+		slog.Warn("writeRawJSON write failed", "err", err)
+	}
+}
+
+// writeError writes a JSON error body with the given status. It marshals the
+// message so error text containing quotes/newlines can't corrupt the response
+// (unlike hand-built `{"error":"..."}` string concatenation).
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		slog.Warn("writeError encode failed", "err", err)
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, payload string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(payload + "\n"))
 }
 
 var nonSystemPrefixes = []string{"$MQTT5"}

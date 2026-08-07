@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // MQTTBridgeInstance represents a discovered MQTT bridge instance.
@@ -30,10 +31,25 @@ type MQTTBridgeInstance struct {
 	AdminURL       string            `json:"admin_url,omitempty"`
 	Status         *MQTTBridgeStatus `json:"status,omitempty"`
 	Reachable      bool              `json:"reachable"`
+
+	// LastSeen is when this instance's data was obtained: the receive time of its
+	// last metrics publish on the push path, the snapshot time on the connz-scan
+	// path, or the probe time for a configured bridge read over HTTP. It is the
+	// only staleness signal a viewer has — a push instance keeps its last counters
+	// for up to the cache TTL after it stops publishing. Zero when unknown.
+	LastSeen time.Time `json:"last_seen,omitzero"`
 }
 
 // DiscoverMQTTBridges finds MQTT bridge instances from NATS connection data.
-func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts []int) []MQTTBridgeInstance {
+// adminToken is the environment-level bearer token used to authenticate the
+// admin-API probe against each discovered bridge ("" = send no token).
+//
+// trustedHosts is the set of hosts (lowercased, no port) the admin token may be
+// sent to. A discovered bridge whose IP/host is neither loopback nor trusted is
+// still probed, but without the token — this prevents a NATS client that merely
+// names itself "machmqtt-bridge" from a rogue address from capturing the shared
+// admin secret via the callback probe.
+func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts []int, adminToken string, trustedHosts map[string]bool) []MQTTBridgeInstance {
 	if snap == nil {
 		return nil
 	}
@@ -64,29 +80,13 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 		return id
 	}
 
-	resolveIP := func(srvID, ip string, s *Snapshot) string {
-		if ip == "127.0.0.1" || ip == "::1" {
-			// First try the config URL hostname (most reliable).
-			if s.ServerURLs != nil {
-				if host, ok := s.ServerURLs[srvID]; ok && host != "" {
-					return host
-				}
-			}
-			// Fallback to varz host.
-			if v, ok := s.Varz[srvID]; ok && v.Host != "" && v.Host != "0.0.0.0" {
-				return v.Host
-			}
-		}
-		return ip
-	}
-
 	// Accumulate current snapshot.
 	for srvID, connz := range snap.Connz {
 		for _, c := range connz.Conns {
 			if !isMQTTBridgeConn(c.Name) {
 				continue
 			}
-			ip := resolveIP(srvID, c.IP, snap)
+			ip := resolveBridgeIP(srvID, c.IP, snap)
 			key := bridgeKey{serverID: srvID, ip: ip}
 			g := groups[key]
 			if g == nil {
@@ -109,7 +109,7 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 				if !isMQTTBridgeConn(c.Name) {
 					continue
 				}
-				ip := resolveIP(srvID, c.IP, prev)
+				ip := resolveBridgeIP(srvID, c.IP, prev)
 				key := bridgeKey{serverID: srvID, ip: ip}
 				g := prevGroups[key]
 				if g == nil {
@@ -171,6 +171,7 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 			OutMsgsRate:   rate(g.outMsgs, prevOut),
 			InBytesRate:   rate(g.inBytes, prevInB),
 			OutBytesRate:  rate(g.outBytes, prevOutB),
+			LastSeen:      snap.Timestamp,
 		}
 
 		wg.Add(1)
@@ -182,13 +183,19 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 			case <-ctx.Done():
 				return
 			}
+			// Only send the shared admin token to loopback or explicitly-trusted
+			// hosts; withhold it from any other discovered address.
+			probeToken := adminToken
+			if adminToken != "" && !discoveryHostTrusted(inst.IP, trustedHosts) {
+				probeToken = ""
+			}
 			for _, port := range adminPorts {
 				host := inst.IP
 				if net.ParseIP(host) != nil && strings.Contains(host, ":") {
 					host = "[" + host + "]"
 				}
 				url := fmt.Sprintf("http://%s:%d", host, port)
-				f := NewMQTTBridgeFetcher(url, inst.IP, "")
+				f := NewMQTTBridgeFetcher(url, inst.IP, probeToken)
 				status := f.FetchStatus(ctx)
 				if status.Error == "" {
 					inst.AdminURL = url
@@ -207,7 +214,40 @@ func DiscoverMQTTBridges(ctx context.Context, snap, prev *Snapshot, adminPorts [
 	return instances
 }
 
+// discoveryHostTrusted reports whether the environment admin token may be sent
+// to a discovered bridge at host. Loopback is always trusted (a colocated
+// bridge); otherwise the host must appear in the configured trusted set.
+func discoveryHostTrusted(host string, trusted map[string]bool) bool {
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	h := strings.ToLower(host)
+	if h == "localhost" {
+		return true
+	}
+	return trusted[h]
+}
+
 func isMQTTBridgeConn(name string) bool {
 	return name == "machmqtt-bridge" ||
 		strings.HasPrefix(name, "machmqtt-pool-")
+}
+
+// resolveBridgeIP maps a bridge connection's loopback IP back to a routable
+// host. A bridge running on the same box as its NATS server shows up in connz
+// as 127.0.0.1/::1; we prefer the server's config URL hostname, then its varz
+// host, so bridges from different servers don't all collapse to "localhost".
+// Non-loopback IPs are returned unchanged. Shared by discovery and topology.
+func resolveBridgeIP(srvID, ip string, s *Snapshot) string {
+	if ip == "127.0.0.1" || ip == "::1" {
+		if s.ServerURLs != nil {
+			if host, ok := s.ServerURLs[srvID]; ok && host != "" {
+				return host
+			}
+		}
+		if v, ok := s.Varz[srvID]; ok && v.Host != "" && v.Host != "0.0.0.0" {
+			return v.Host
+		}
+	}
+	return ip
 }

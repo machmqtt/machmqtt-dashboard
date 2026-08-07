@@ -1,6 +1,6 @@
 services:
   nats-1:
-    image: nats:2.11-alpine
+    image: nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00
     command: >
       -n nats-1
       -p 4222
@@ -17,7 +17,7 @@ services:
       - nats1-data:/data
 
   nats-2:
-    image: nats:2.11-alpine
+    image: nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00
     command: >
       -n nats-2
       -p 4222
@@ -34,7 +34,7 @@ services:
       - nats2-data:/data
 
   nats-3:
-    image: nats:2.11-alpine
+    image: nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00
     command: >
       -n nats-3
       -p 4222
@@ -54,8 +54,14 @@ services:
     build: .
     ports:
       - "8080:8080"
+    environment:
+      # Set a real secret before `docker compose up`, e.g.:
+      #   export SESSION_SECRET=$(openssl rand -hex 32)
+      # If unset, the short fallback fails the >= 32 char check and the
+      # dashboard refuses to start.
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
     volumes:
-      - ./config.docker.yaml:/etc/nats-dashboard/config.yaml:ro
+      - ./config.docker.yaml:/etc/machmqtt-dashboard/config.yaml:ro
       - dashboard-data:/data
     depends_on:
       - nats-1

@@ -1,12 +1,12 @@
 # Getting Started
 
-This guide covers building and running the NATS Dashboard from source or via Docker.
+This guide covers building and running the MachMQTT Dashboard from source or via Docker.
 
 ## Prerequisites
 
 ### From Source
 
-- **Go** 1.24+
+- **Go** 1.26+
 - **Node.js** 22+
 - **npm** (ships with Node.js)
 
@@ -21,20 +21,25 @@ The fastest way to get a working dashboard with a 3-node NATS cluster:
 
 ```bash
 # Clone and enter the project
-cd nats-dashboard
+cd machmqtt-dashboard
 
 # Start the 3-node NATS cluster + dashboard
+export NATS_DASHBOARD_BOOTSTRAP_PASSWORD="$(openssl rand -base64 24)"
 docker compose up -d
 
 # Open the dashboard
 open http://localhost:8080
 ```
 
-Login with `admin` / `admin`.
+Login as `admin` with the exported one-time password and rotate it when prompted. Compose refuses to start the dashboard if this secret is missing.
 
 The compose stack runs:
 - 3 NATS servers (nats-1, nats-2, nats-3) with JetStream enabled, clustered
 - The dashboard on port 8080, polling all three servers
+
+No manual cluster-creation step is needed: `config.docker.yaml` (mounted into the
+dashboard container) declares an `environments:` entry naming the three servers, which
+the dashboard seeds into its database on first startup.
 
 ### Generating Test Traffic
 
@@ -62,19 +67,19 @@ nats sub "test.>"
 make build
 ```
 
-This runs `npm install` + `vite build` for the frontend, then compiles the Go binary with version info to `bin/nats-dashboard`.
+This runs `npm install` + `vite build` for the frontend, then compiles the Go binary with version info to `bin/machmqtt-dashboard`.
 
 ### Build Steps (Manual)
 
 ```bash
 # 1. Build the frontend
 cd ui
-npm install
-npx vite build   # outputs to ../internal/api/dist/
+npm ci
+npm run build   # outputs to ../internal/api/dist/
 cd ..
 
 # 2. Build the backend
-go build -o bin/nats-dashboard ./cmd/nats-dashboard
+go build -o bin/machmqtt-dashboard ./cmd/machmqtt-dashboard
 ```
 
 The Go binary embeds the frontend build output. The resulting binary is fully self-contained.
@@ -87,7 +92,7 @@ cp config.example.yaml config.yaml
 # Edit config.yaml — set session_secret and server URLs
 
 # Run
-./bin/nats-dashboard -config config.yaml
+./bin/machmqtt-dashboard -config config.yaml
 ```
 
 ### Development Mode
@@ -111,23 +116,23 @@ Build a standalone Docker image:
 ```bash
 make docker-build
 # or
-docker build -t nats-dashboard .
+docker build -t machmqtt-dashboard .
 ```
 
 Run it:
 
 ```bash
 docker run -p 8080:8080 \
-  -v $(pwd)/config.yaml:/etc/nats-dashboard/config.yaml:ro \
+  -v $(pwd)/config.yaml:/etc/machmqtt-dashboard/config.yaml:ro \
   -v dashboard-data:/data \
-  nats-dashboard
+  machmqtt-dashboard
 ```
 
 The Docker image:
-- Uses a 3-stage build (Node.js -> Go -> Alpine 3.21)
+- Uses a 3-stage build (Node.js -> Go -> minimal Alpine runtime)
 - Produces a `CGO_ENABLED=0` static binary
 - Runs as non-root user `app` (uid 1000)
-- Expects config at `/etc/nats-dashboard/config.yaml`
+- Expects config at `/etc/machmqtt-dashboard/config.yaml`
 - Stores SQLite database in `/data`
 
 ## Running Tests
@@ -136,16 +141,33 @@ The Docker image:
 make test
 ```
 
-This runs all Go unit tests with a 120-second timeout.
+This runs the first-party Go and frontend test/coverage gates. Fast authentication integration tests use in-process LDAP/LDAPS and OIDC protocol servers, so no external identity infrastructure is required.
+
+To verify that the tests detect injected behavioral faults, run:
+
+```bash
+make test-mutation
+```
+
+The Go gate mutation-tests code changed from `GREMLINS_DIFF` (default `HEAD`). Pull-request CI sets that reference to the target branch. The frontend gate exhaustively mutates the authentication, authorization, networking, state, WebSocket, password-rotation, and user-administration surfaces while excluding presentation-only string mutations.
+
+For end-to-end testing against real identity-provider software, Docker must be running:
+
+```bash
+make test-enterprise-auth
+```
+
+That target starts OpenLDAP and Dex containers and explicitly tests Local, LDAP + Local, OIDC + Local, and LDAP + OIDC + Local configurations. It tests direct LDAP login, provider ordering, identity collisions, local break-glass fallback, and a real Chromium OIDC authorization-code flow through Dex with OpenLDAP as its identity source. Containers and test volumes are removed afterward.
 
 ## CLI Flags
 
 ```
-nats-dashboard [flags]
+machmqtt-dashboard [flags]
 
 Flags:
-  -config string   Path to config file (default "config.yaml")
-  -version         Print version and exit
+  -config string    Path to config file (default "config.yaml")
+  -version          Print version and exit
+  -example-config   Print a fully commented example config.yaml to stdout and exit
 ```
 
 ## Ports

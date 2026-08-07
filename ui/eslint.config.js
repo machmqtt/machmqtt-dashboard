@@ -6,7 +6,9 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // e2e/ has its own toolchain (Playwright runs its own TS transpile); keep it
+  // out of the app lint so Node/Playwright globals don't trip the browser config.
+  globalIgnores(['dist', 'coverage', 'e2e', 'playwright-report', 'reports', '.stryker-tmp']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

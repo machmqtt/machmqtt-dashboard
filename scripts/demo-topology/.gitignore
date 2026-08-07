@@ -1,0 +1,6 @@
+# Runtime state (configs, logs, pids, JetStream stores, dashboard data).
+.run/
+# Dev license token — never commit (this is a public repo).
+.license
+# Built loadgen binary.
+loadgen/loadgen

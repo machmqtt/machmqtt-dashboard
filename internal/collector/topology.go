@@ -146,19 +146,16 @@ func buildTopology(snap, prev *Snapshot) *TopologyGraph {
 
 	// Gateway edges.
 	for srcID, gw := range snap.Gatewayz {
-		for gwName, remote := range gw.OutboundGateways {
+		for gwName := range gw.OutboundGateways {
 			targetID := "gw:" + gwName
 			addNode(targetID, gwName, "gateway")
 
 			linkKey := srcID + "->" + targetID
 			if !seenLinks[linkKey] {
 				seenLinks[linkKey] = true
+				// Gateway links don't carry msg-rate deltas (no simple prev
+				// lookup), so they render with zero rates.
 				link := TopologyLink{Source: srcID, Target: targetID, Type: "gateway"}
-				if remote.Connection != nil && dt > 0 {
-					// Gateway connections don't have a simple prev lookup;
-					// show 0 until we have delta data.
-					_ = remote.Connection
-				}
 				g.Links = append(g.Links, link)
 			}
 		}
@@ -208,26 +205,12 @@ func buildTopology(snap, prev *Snapshot) *TopologyGraph {
 		conns     int
 	})
 
-	resolveLoopback := func(srvID, ip string, s *Snapshot) string {
-		if ip == "127.0.0.1" || ip == "::1" {
-			if s.ServerURLs != nil {
-				if host, ok := s.ServerURLs[srvID]; ok && host != "" {
-					return host
-				}
-			}
-			if v, ok := s.Varz[srvID]; ok && v.Host != "" && v.Host != "0.0.0.0" {
-				return v.Host
-			}
-		}
-		return ip
-	}
-
 	for srvID, connz := range snap.Connz {
 		for _, c := range connz.Conns {
 			if !isMQTTBridgeConn(c.Name) {
 				continue
 			}
-			ip := resolveLoopback(srvID, c.IP, snap)
+			ip := resolveBridgeIP(srvID, c.IP, snap)
 			key := mqttBridgeKey{serverID: srvID, ip: ip}
 			b := mqttBridges[key]
 			if b == nil {
@@ -255,7 +238,7 @@ func buildTopology(snap, prev *Snapshot) *TopologyGraph {
 				if !isMQTTBridgeConn(c.Name) {
 					continue
 				}
-				ip := resolveLoopback(srvID, c.IP, prev)
+				ip := resolveBridgeIP(srvID, c.IP, prev)
 				key := mqttBridgeKey{serverID: srvID, ip: ip}
 				if b, ok := mqttBridges[key]; ok {
 					b.prevIn += c.InMsgs
@@ -266,12 +249,21 @@ func buildTopology(snap, prev *Snapshot) *TopologyGraph {
 	}
 
 	for key, b := range mqttBridges {
-		nodeID := "mqtt:" + key.ip
+		// Key the node by the server it attaches to as well as its IP. Co-located
+		// brokers (several on one host, or an all-loopback demo) share an IP but
+		// attach to different servers; keying on IP alone would collapse them into
+		// one node. Name it after that server so each broker reads as "the broker
+		// on <edge>".
+		nodeID := "mqtt:" + key.serverID + ":" + key.ip
+		name := "mqtt@" + key.ip
+		if v, ok := snap.Varz[key.serverID]; ok && v.ServerName != "" {
+			name = "mqtt@" + v.ServerName
+		}
 		if !seenNodes[nodeID] {
 			seenNodes[nodeID] = true
 			g.Nodes = append(g.Nodes, TopologyNode{
 				ID:          nodeID,
-				Name:        "mqtt@" + key.ip,
+				Name:        name,
 				Type:        "mqtt",
 				Connections: b.conns,
 				Healthy:     true,

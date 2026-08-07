@@ -12,8 +12,9 @@ import {
 } from '@tanstack/react-table'
 import { ColumnFilter } from '../components/ColumnFilter'
 import { useStore } from '../store/store'
-import { TableSkeleton } from '../components/Skeleton'
+import { TableSkeleton, NoClusterEmptyState } from '../components/Skeleton'
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { formatNumber as fmtNum, formatBytes as fmtBytes } from '../utils/format'
 
 interface Connection {
   cid: number
@@ -38,9 +39,17 @@ interface Connection {
 
 interface ConnzResponse {
   connections: Connection[]
+  // total counts the rows the poll fetched (and that pagination walks), while
+  // server_total is what the cluster reports it holds. truncated is set when the
+  // poll's per-server connz limit cut the fetch short, so the table is a prefix.
   total: number
+  server_total?: number
+  truncated?: boolean
   limit: number
   offset: number
+  // Present only when a subject filter is applied: false means the subscription
+  // source had no data to filter against (so a zero result is inconclusive).
+  subs_available?: boolean
 }
 
 const col = createColumnHelper<Connection>()
@@ -50,6 +59,7 @@ const REFRESH_INTERVAL = 10_000
 
 export function ConnectionsPage() {
   const activeEnv = useStore((s) => s.activeEnv)
+  const environments = useStore((s) => s.environments)
   const addToast = useStore((s) => s.addToast)
   const [data, setData] = useState<ConnzResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -64,10 +74,14 @@ export function ConnectionsPage() {
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const fetchCounter = useRef(0)
+  const detailReqId = useRef(0)
 
   const fetchData = useCallback(async () => {
     if (!activeEnv) return
-    const isInitial = !data
+    // The first load (counter 0) shows the skeleton and reports errors loudly;
+    // background refreshes (auto/manual, which bump fetchCounter) update silently.
+    // Reading the ref avoids the stale-closure bug of capturing `data`.
+    const isInitial = fetchCounter.current === 0
     if (isInitial) setLoading(true)
     try {
       const params = new URLSearchParams()
@@ -88,8 +102,7 @@ export function ConnectionsPage() {
     } finally {
       setLoading(false)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeEnv, offset, pageSize, acc, state, filterSubject])
+  }, [activeEnv, offset, pageSize, acc, state, filterSubject, addToast])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -105,16 +118,18 @@ export function ConnectionsPage() {
 
   // Fetch connection detail with subscription list.
   const openDetail = async (conn: Connection) => {
+    const reqId = ++detailReqId.current
     setSelected(conn)
     setDetailLoading(true)
     try {
       const res = await fetchWithTimeout(`/api/environments/${activeEnv}/connz/${conn.cid}`)
-      if (res.ok) {
+      // Ignore a stale response if a newer row was clicked meanwhile.
+      if (res.ok && reqId === detailReqId.current) {
         const detail = await res.json()
         setSelected(detail)
       }
     } catch { /* keep the basic connection data */ }
-    setDetailLoading(false)
+    if (reqId === detailReqId.current) setDetailLoading(false)
   }
 
   const columns = useMemo(() => [
@@ -181,6 +196,7 @@ export function ConnectionsPage() {
     )
   }, [data, user])
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API is intentional
   const table = useReactTable({
     data: filtered,
     columns,
@@ -193,10 +209,24 @@ export function ConnectionsPage() {
   })
 
   const total = data?.total ?? 0
+  const serverTotal = data?.server_total ?? total
+  const truncated = data?.truncated === true
+  // server_total is the unfiltered cluster count, so it can only be quoted as
+  // the denominator when no filter is narrowing the rows.
+  const filtersActive = Boolean(acc || state || filterSubject)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const currentPage = Math.floor(offset / pageSize) + 1
   const hasNext = offset + pageSize < total
   const hasPrev = offset > 0
+
+  if (environments.length === 0 || !activeEnv) {
+    return (
+      <NoClusterEmptyState
+        title="Connections"
+        description="Add a NATS cluster to inspect active client connections."
+      />
+    )
+  }
 
   return (
     <div>
@@ -235,7 +265,7 @@ export function ConnectionsPage() {
         </select>
         <button
           onClick={() => { fetchCounter.current++; fetchData() }}
-          className="bg-nats-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90"
+          className="bg-brand-blue text-white rounded px-4 py-1.5 text-sm hover:opacity-90"
         >
           Refresh
         </button>
@@ -247,9 +277,21 @@ export function ConnectionsPage() {
         <>
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm text-gray-500 dark:text-gray-400">
-              {total} connections total
+              {!truncated
+                ? `${total.toLocaleString()} connections total`
+                : filtersActive
+                  ? `${total.toLocaleString()} matching connections`
+                  : `Showing first ${total.toLocaleString()} of ${serverTotal.toLocaleString()} connections`}
+              {truncated && (
+                <span className="ml-2 text-xs text-amber-500">
+                  (each server reports more connections than the poll fetches — this view is a sample)
+                </span>
+              )}
               {total > 0 && !data.connections?.some(c => c.account || c.authorized_user) && (
                 <span className="ml-2 text-xs text-gray-400">(no auth configured — Account/User will be empty)</span>
+              )}
+              {filterSubject && data.subs_available === false && (
+                <span className="ml-2 text-xs text-amber-500">(subscription data unavailable — subject filter could not be applied)</span>
               )}
             </div>
             <div className="flex items-center gap-2 text-sm">
@@ -420,17 +462,4 @@ function DI({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value || '-'}</div>
     </div>
   )
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return n.toString()
-}
-
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB'
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB'
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB'
-  return b + ' B'
 }

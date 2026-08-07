@@ -12,10 +12,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/machmqtt/nats-dashboard/internal/config"
+	"github.com/noodlebit/machmqtt-dashboard/internal/config"
 )
 
 const fetchTimeout = 3 * time.Second
+const maxMonitoringResponseBytes = 16 << 20
 
 type Fetcher struct {
 	client *http.Client
@@ -47,7 +48,14 @@ func NewFetcher(tlsCfg *config.TLSConfig) (*Fetcher, error) {
 }
 
 func (f *Fetcher) fetch(ctx context.Context, baseURL, path string, params url.Values, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	return f.fetchWithTimeout(ctx, fetchTimeout, baseURL, path, params, out)
+}
+
+// fetchWithTimeout performs a GET + JSON decode with a per-request timeout. Most
+// callers use fetch (the default 3s timeout); the heavier connz+subs detail
+// endpoints pass a longer timeout.
+func (f *Fetcher) fetchWithTimeout(ctx context.Context, timeout time.Duration, baseURL, path string, params url.Values, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	u := baseURL + path
@@ -64,14 +72,21 @@ func (f *Fetcher) fetch(ctx context.Context, baseURL, path string, params url.Va
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("fetch %s: status %d: %s", path, resp.StatusCode, body)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMonitoringResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(body) > maxMonitoringResponseBytes {
+		return fmt.Errorf("fetch %s: response exceeds %d bytes", path, maxMonitoringResponseBytes)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
@@ -108,60 +123,55 @@ func (f *Fetcher) FetchConnz(ctx context.Context, baseURL string, limit, offset 
 }
 
 func (f *Fetcher) FetchConnzWithSubs(ctx context.Context, baseURL string, limit int) (*Connz, error) {
+	return f.FetchConnzWithSubsPage(ctx, baseURL, limit, 0, "")
+}
+
+func (f *Fetcher) FetchConnzWithSubsPage(ctx context.Context, baseURL string, limit, offset int, filterSubject string) (*Connz, error) {
 	params := url.Values{"subs": {"true"}}
 	if limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if offset > 0 {
+		params.Set("offset", fmt.Sprintf("%d", offset))
+	}
+	if filterSubject != "" {
+		params.Set("filter_subject", filterSubject)
 	}
 	var c Connz
 	return &c, f.fetch(ctx, baseURL, "/connz", params, &c)
 }
 
 func (f *Fetcher) FetchConnzWithSubsFiltered(ctx context.Context, baseURL string, limit int, filterSubject string) (*Connz, error) {
-	params := url.Values{"subs": {"true"}}
-	if limit > 0 {
-		params.Set("limit", fmt.Sprintf("%d", limit))
-	}
-	if filterSubject != "" {
-		params.Set("filter_subject", filterSubject)
-	}
-	var c Connz
-	return &c, f.fetch(ctx, baseURL, "/connz", params, &c)
+	return f.FetchConnzWithSubsPage(ctx, baseURL, limit, 0, filterSubject)
 }
 
 func (f *Fetcher) FetchConnzSubsDetail(ctx context.Context, baseURL string, limit int) (*Connz, error) {
-	return f.fetchConnzSubs(ctx, baseURL, "detail", limit, "")
+	return f.FetchConnzSubsDetailPage(ctx, baseURL, limit, 0, "")
 }
 
 func (f *Fetcher) FetchConnzSubsDetailFiltered(ctx context.Context, baseURL string, limit int, filterSubject string) (*Connz, error) {
-	return f.fetchConnzSubs(ctx, baseURL, "detail", limit, filterSubject)
+	return f.FetchConnzSubsDetailPage(ctx, baseURL, limit, 0, filterSubject)
 }
 
-func (f *Fetcher) fetchConnzSubs(ctx context.Context, baseURL, subsMode string, limit int, filterSubject string) (*Connz, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+func (f *Fetcher) FetchConnzSubsDetailPage(ctx context.Context, baseURL string, limit, offset int, filterSubject string) (*Connz, error) {
+	return f.fetchConnzSubs(ctx, baseURL, "detail", limit, offset, filterSubject)
+}
 
+func (f *Fetcher) fetchConnzSubs(ctx context.Context, baseURL, subsMode string, limit, offset int, filterSubject string) (*Connz, error) {
 	params := url.Values{"subs": {subsMode}}
 	if limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", limit))
 	}
+	if offset > 0 {
+		params.Set("offset", fmt.Sprintf("%d", offset))
+	}
 	if filterSubject != "" {
 		params.Set("filter_subject", filterSubject)
 	}
 	var c Connz
-	u := baseURL + "/connz?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
+	// connz+subs detail is heavier than the other endpoints, so allow a longer
+	// timeout than the default fetch.
+	if err := f.fetchWithTimeout(ctx, 10*time.Second, baseURL, "/connz", params, &c); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -188,7 +198,11 @@ func (f *Fetcher) FetchSubsz(ctx context.Context, baseURL string) (*SubszResp, e
 }
 
 func (f *Fetcher) FetchJSInfo(ctx context.Context, baseURL string) (*JSInfo, error) {
-	params := url.Values{"streams": {"true"}, "consumers": {"true"}}
+	// config=true is required for nats-server to include each stream's and
+	// consumer's config block (storage, replicas, limits, retention, deliver/ack
+	// policy, filter subject). Without it those come back null and the JetStream
+	// page can't show stream settings or consumer policies.
+	params := url.Values{"streams": {"true"}, "consumers": {"true"}, "config": {"true"}}
 	var j JSInfo
 	return &j, f.fetch(ctx, baseURL, "/jsz", params, &j)
 }

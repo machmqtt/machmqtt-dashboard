@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,16 +54,36 @@ type ServerMetricSample struct {
 }
 
 type MQTTBridgeMetricSample struct {
-	BridgeID          string
-	ConnectionsActive int64
-	InMsgsRate        float64
-	OutMsgsRate       float64
-	InBytesRate       float64
-	OutBytesRate      float64
-	MsgsRecvQoS0      int64
-	MsgsRecvQoS1      int64
-	MsgsSentQoS0      int64
-	MsgsSentQoS1      int64
+	BridgeID                string
+	ConnectionsActive       int64
+	InMsgsRate              float64
+	OutMsgsRate             float64
+	InBytesRate             float64
+	OutBytesRate            float64
+	MsgsRecvQoS0            int64
+	MsgsRecvQoS1            int64
+	MsgsSentQoS0            int64
+	MsgsSentQoS1            int64
+	MsgsRecvQoS2            int64
+	MsgsSentQoS2            int64
+	SessionWriteBehindDepth int64
+	// ConsumerPendingMessages is nil when JetStream is unavailable (metric absent);
+	// stored as NULL in SQLite so AVG() skips absent-JS samples correctly.
+	ConsumerPendingMessages *int64
+	StalledConsumers        int64
+
+	// Trend-line gauges.
+	SocketsOpen          int64
+	InflightOutMessages  int64
+	OpQueueDepth         int64
+	OpSuspendedConns     int64
+	WorkerPoolQueueDepth int64
+	PoolSlotConnected    int64
+	RetainedMessages     int64
+	SubscriptionsActive  int64
+	GoHeapInuseBytes     int64
+	GoGoroutines         int64
+	ScramSessionsActive  int64
 }
 
 // MetricPoint represents a single time-series data point returned by queries.
@@ -68,55 +91,199 @@ type MetricPoint map[string]any
 
 // MetricsWriter buffers metric samples and writes them to SQLite in batches.
 type MetricsWriter struct {
-	db  *sql.DB
-	ch  chan MetricSample
-	log *slog.Logger
+	db           *sql.DB
+	ch           chan MetricSample
+	log          *slog.Logger
+	retention    time.Duration
+	dropped      atomic.Uint64 // dropped since the last periodic report (reset by Run)
+	droppedTotal atomic.Uint64 // cumulative dropped, never reset (for /api/admin/health)
+	pruning      atomic.Bool   // guards against overlapping retention prunes
+	written      atomic.Uint64
+	failed       atomic.Uint64
+	busy         atomic.Uint64
+	queryErrs    atomic.Uint64
+	writeNS      atomic.Int64
+	queryNS      atomic.Int64
+	cleanupNS    atomic.Int64
+	batchRows    atomic.Int64
+	oldestNS     atomic.Int64
+	submitMu     sync.RWMutex
+	stopped      bool
+	done         chan struct{}
+	runOnce      sync.Once
 }
 
-// NewMetricsWriter creates a new metrics writer. Call Run() to start the background goroutine.
-func NewMetricsWriter(db *sql.DB, log *slog.Logger) *MetricsWriter {
+type MetricsWriterStats struct {
+	QueueDepth     int    `json:"queue_depth"`
+	QueueCapacity  int    `json:"queue_capacity"`
+	Dropped        uint64 `json:"dropped"`
+	Written        uint64 `json:"written"`
+	Failed         uint64 `json:"failed"`
+	Busy           uint64 `json:"busy"`
+	QueryErrors    uint64 `json:"query_errors"`
+	LastWriteNanos int64  `json:"last_write_nanos"`
+	QueryNanos     int64  `json:"query_nanos"`
+	CleanupNanos   int64  `json:"cleanup_nanos"`
+	LastBatchRows  int64  `json:"last_batch_rows"`
+	OldestQueueAge int64  `json:"oldest_queue_age_nanos"`
+}
+
+// Dropped returns the cumulative number of metric samples dropped because the
+// writer buffer was full, since process start.
+func (w *MetricsWriter) Dropped() uint64 { return w.droppedTotal.Load() }
+
+// MetricsSource is the set of handles a MetricsWriter can be built from. The
+// union is enforced at compile time, so an unsupported source is a build
+// failure rather than a runtime panic.
+type MetricsSource interface {
+	*Store | *sql.DB
+}
+
+// NewMetricsWriter accepts either a Store or its database handle so existing
+// integrations can share the same bounded writer. Call Run exactly once.
+func NewMetricsWriter[T MetricsSource](source T, log *slog.Logger, retention ...time.Duration) *MetricsWriter {
+	var db *sql.DB
+	switch value := any(source).(type) {
+	case *Store:
+		db = value.db
+	case *sql.DB:
+		db = value
+	}
+	keep := 24 * time.Hour
+	if len(retention) > 0 && retention[0] > 0 {
+		keep = retention[0]
+	}
+	if log == nil {
+		log = slog.Default()
+	}
 	return &MetricsWriter{
-		db:  db,
-		ch:  make(chan MetricSample, 32),
-		log: log,
+		db:        db,
+		ch:        make(chan MetricSample, 256),
+		log:       log,
+		retention: keep,
+		done:      make(chan struct{}),
 	}
 }
 
-// Submit sends a sample to the writer. Non-blocking; drops if buffer is full.
-func (w *MetricsWriter) Submit(s MetricSample) {
+func (w *MetricsWriter) Stats() MetricsWriterStats {
+	oldestAge := int64(0)
+	if len(w.ch) > 0 {
+		if oldest := w.oldestNS.Load(); oldest > 0 {
+			oldestAge = time.Now().UnixNano() - oldest
+		}
+	}
+	return MetricsWriterStats{
+		QueueDepth: len(w.ch), QueueCapacity: cap(w.ch),
+		Dropped: w.droppedTotal.Load(), Written: w.written.Load(), Failed: w.failed.Load(),
+		Busy: w.busy.Load(), QueryErrors: w.queryErrs.Load(), LastWriteNanos: w.writeNS.Load(),
+		QueryNanos: w.queryNS.Load(), CleanupNanos: w.cleanupNS.Load(), LastBatchRows: w.batchRows.Load(),
+		OldestQueueAge: oldestAge,
+	}
+}
+
+// Submit sends a sample to the writer without blocking a collector. A rejected
+// sample is explicitly counted and logged rather than disappearing silently.
+func (w *MetricsWriter) Submit(s MetricSample) bool {
+	w.submitMu.RLock()
+	defer w.submitMu.RUnlock()
+	if w.stopped {
+		w.dropped.Add(1)
+		w.droppedTotal.Add(1)
+		return false
+	}
 	select {
 	case w.ch <- s:
+		w.oldestNS.CompareAndSwap(0, time.Now().UnixNano())
+		return true
 	default:
-		// Drop sample — monitoring is best-effort.
+		// Drop sample — monitoring is best-effort. Counted and reported
+		// periodically by Run so sustained loss isn't silent.
+		w.dropped.Add(1)
+		w.droppedTotal.Add(1)
+		return false
 	}
 }
 
 // Run starts the writer goroutine. Blocks until ctx is cancelled.
 func (w *MetricsWriter) Run(ctx context.Context) {
+	ran := false
+	w.runOnce.Do(func() { ran = true })
+	if !ran {
+		return
+	}
+	defer close(w.done)
 	cleanup := time.NewTicker(10 * time.Minute)
 	defer cleanup.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			w.submitMu.Lock()
+			w.stopped = true
+			w.submitMu.Unlock()
+			// Account for and persist every sample already accepted before shutdown.
+			for {
+				select {
+				case s := <-w.ch:
+					w.persist(s)
+				default:
+					return
+				}
+			}
 		case s := <-w.ch:
-			w.writeSample(s)
+			w.persist(s)
+			if len(w.ch) == 0 {
+				w.oldestNS.Store(0)
+			}
 		case <-cleanup.C:
-			w.deleteOld()
+			// Prune on a separate goroutine (guarded so at most one runs at a
+			// time) so a large or slow DELETE never blocks the sample-draining
+			// loop above — otherwise the buffer would fill and live samples for
+			// every cluster would be dropped while pruning ran.
+			if w.pruning.CompareAndSwap(false, true) {
+				go func() {
+					defer w.pruning.Store(false)
+					w.deleteOld()
+				}()
+			}
+			if n := w.dropped.Swap(0); n > 0 {
+				w.log.Warn("metrics samples dropped (writer buffer full)", "count", n, "window", "10m")
+			}
 		}
 	}
 }
 
-func (w *MetricsWriter) writeSample(s MetricSample) {
+func (w *MetricsWriter) Wait(ctx context.Context) error {
+	select {
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *MetricsWriter) persist(s MetricSample) {
+	started := time.Now()
+	w.batchRows.Store(int64(1 + len(s.Servers) + len(s.MQTTBridges)))
+	if err := w.writeSample(s); err != nil {
+		w.writeNS.Store(time.Since(started).Nanoseconds())
+		w.failed.Add(1)
+		w.recordBusy(err)
+		w.log.Warn("metrics sample write failed", "env", s.Env, "err", err)
+		return
+	}
+	w.writeNS.Store(time.Since(started).Nanoseconds())
+	w.written.Add(1)
+}
+
+func (w *MetricsWriter) writeSample(s MetricSample) error {
 	ts := s.Timestamp.Unix()
 
 	tx, err := w.db.Begin()
 	if err != nil {
-		w.log.Warn("metrics tx begin", "err", err)
-		return
+		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Insert env-level metrics.
 	_, err = tx.Exec(`INSERT INTO env_metrics (ts, env, server_count, healthy_count, connection_count,
@@ -125,9 +292,17 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 		ts, s.Env, s.ServerCount, s.HealthyCount, s.ConnectionCount,
 		s.InMsgsRate, s.OutMsgsRate, s.InBytesRate, s.OutBytesRate, s.Subscriptions)
 	if err != nil {
-		w.log.Warn("metrics insert env", "err", err)
-		return
+		return fmt.Errorf("insert environment: %w", err)
 	}
+	serverStmt, err := tx.Prepare(`INSERT INTO server_metrics (ts, env, server_id,
+		connections, in_msgs, out_msgs, in_bytes, out_bytes,
+		cpu, mem, subscriptions, slow_consumers, routes, leafnodes,
+		in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate, healthy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare server insert: %w", err)
+	}
+	defer func() { _ = serverStmt.Close() }()
 
 	// Insert per-server metrics.
 	for _, srv := range s.Servers {
@@ -135,45 +310,151 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 		if srv.Healthy {
 			healthy = 1
 		}
-		_, err = tx.Exec(`INSERT INTO server_metrics (ts, env, server_id,
-			connections, in_msgs, out_msgs, in_bytes, out_bytes,
-			cpu, mem, subscriptions, slow_consumers, routes, leafnodes,
-			in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate, healthy)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		_, err = serverStmt.Exec(
 			ts, s.Env, srv.ServerID,
 			srv.Connections, srv.InMsgs, srv.OutMsgs, srv.InBytes, srv.OutBytes,
 			srv.CPU, srv.Mem, srv.Subscriptions, srv.SlowConsumers, srv.Routes, srv.LeafNodes,
 			srv.InMsgsRate, srv.OutMsgsRate, srv.InBytesRate, srv.OutBytesRate, healthy)
 		if err != nil {
-			w.log.Warn("metrics insert server", "server", srv.ServerID, "err", err)
+			return fmt.Errorf("insert server %q: %w", srv.ServerID, err)
 		}
 	}
+	mqttStmt, err := tx.Prepare(`INSERT INTO mqtt_bridge_metrics (ts, env, bridge_id,
+		connections_active, in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate,
+		msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1,
+		msgs_recv_qos2, msgs_sent_qos2,
+		session_write_behind_depth, consumer_pending_messages, stalled_consumers,
+		sockets_open, inflight_out_messages, op_queue_depth, op_suspended_conns,
+		worker_pool_queue_depth, pool_slot_connected, retained_messages,
+		subscriptions_active, go_heap_inuse_bytes, go_goroutines, scram_sessions_active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare MQTT insert: %w", err)
+	}
+	defer func() { _ = mqttStmt.Close() }()
 
 	// Insert per-MQTT bridge metrics.
 	for _, b := range s.MQTTBridges {
-		_, err = tx.Exec(`INSERT INTO mqtt_bridge_metrics (ts, env, bridge_id,
-			connections_active, in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate,
-			msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		_, err = mqttStmt.Exec(
 			ts, s.Env, b.BridgeID,
 			b.ConnectionsActive, b.InMsgsRate, b.OutMsgsRate, b.InBytesRate, b.OutBytesRate,
-			b.MsgsRecvQoS0, b.MsgsRecvQoS1, b.MsgsSentQoS0, b.MsgsSentQoS1)
+			b.MsgsRecvQoS0, b.MsgsRecvQoS1, b.MsgsSentQoS0, b.MsgsSentQoS1,
+			b.MsgsRecvQoS2, b.MsgsSentQoS2,
+			b.SessionWriteBehindDepth, b.ConsumerPendingMessages, b.StalledConsumers,
+			b.SocketsOpen, b.InflightOutMessages, b.OpQueueDepth, b.OpSuspendedConns,
+			b.WorkerPoolQueueDepth, b.PoolSlotConnected, b.RetainedMessages,
+			b.SubscriptionsActive, b.GoHeapInuseBytes, b.GoGoroutines, b.ScramSessionsActive)
 		if err != nil {
-			w.log.Warn("metrics insert mqtt", "bridge", b.BridgeID, "err", err)
+			return fmt.Errorf("insert MQTT bridge %q: %w", b.BridgeID, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		w.log.Warn("metrics tx commit", "err", err)
+		return fmt.Errorf("commit transaction: %w", err)
 	}
+	return nil
 }
 
 func (w *MetricsWriter) deleteOld() {
-	cutoff := time.Now().Add(-24 * time.Hour).Unix()
+	started := time.Now()
+	defer func() { w.cleanupNS.Store(time.Since(started).Nanoseconds()) }()
+	cutoff := time.Now().Add(-w.retention).Unix()
+	freed := false
 	for _, table := range []string{"server_metrics", "env_metrics", "mqtt_bridge_metrics"} {
-		if _, err := w.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ts < ?", table), cutoff); err != nil {
+		// Bound each maintenance pass so retention cannot hold SQLite's single
+		// writer lock while deleting an arbitrarily large backlog. Later cleanup
+		// ticks continue draining old rows in the same fixed-size batches.
+		query := fmt.Sprintf(
+			"DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE ts < ? LIMIT 10000)",
+			table, table,
+		)
+		res, err := w.db.Exec(query, cutoff)
+		if err != nil {
 			w.log.Warn("metrics cleanup", "table", table, "err", err)
+			continue
 		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			freed = true
+		}
+	}
+	// Return the pages freed by the deletes to the OS. Incremental auto_vacuum
+	// keeps them on a freelist (they'd otherwise be reused by future inserts, so
+	// the file plateaus); reclaiming here shrinks the file after a large prune,
+	// e.g. when retention is reduced. Only runs when rows were actually deleted.
+	if freed {
+		if _, err := w.db.Exec("PRAGMA incremental_vacuum"); err != nil {
+			w.log.Warn("metrics incremental_vacuum", "err", err)
+		}
+	}
+}
+
+// buildMetricsQuery assembles the bucketed-average query shared by all three
+// metric queries: a `(ts/step)*step` time bucket, an env+time-range predicate,
+// an optional id (server_id/bridge_id) predicate, and GROUP BY/ORDER BY. The
+// table, idCol, and aggCols fragments are built from constant literals in this
+// package (never user input); env and idVal are bound as parameters.
+func buildMetricsQuery(table, idCol, aggCols, env, idVal string, from, to, step int64) (string, []any) {
+	q := "SELECT (ts / ? ) * ? AS bucket"
+	if idCol != "" {
+		q += ", " + idCol
+	}
+	q += ", " + aggCols + " FROM " + table + " WHERE env = ? AND ts >= ? AND ts <= ?"
+	args := []any{step, step, env, from, to}
+	if idCol != "" && idVal != "" {
+		q += " AND " + idCol + " = ?"
+		args = append(args, idVal)
+	}
+	q += " GROUP BY bucket"
+	if idCol != "" {
+		q += ", " + idCol
+	}
+	q += " ORDER BY bucket"
+	return q, args
+}
+
+// mqttMetricCols lists the mqtt_bridge_metrics value columns exposed as time
+// series, in the order QueryMQTTMetrics scans them. Both the per-bridge AVG
+// fragment and the fleet-wide SUM wrapper are generated from this slice so the
+// two can never drift out of sync. Constant literals, never user input.
+var mqttMetricCols = []string{
+	"connections_active",
+	"in_msgs_rate", "out_msgs_rate", "in_bytes_rate", "out_bytes_rate",
+	"msgs_recv_qos0", "msgs_recv_qos1", "msgs_sent_qos0", "msgs_sent_qos1",
+	"msgs_recv_qos2", "msgs_sent_qos2",
+	"session_write_behind_depth", "consumer_pending_messages", "stalled_consumers",
+	"sockets_open", "inflight_out_messages", "op_queue_depth", "op_suspended_conns",
+	"worker_pool_queue_depth", "pool_slot_connected", "retained_messages",
+	"subscriptions_active", "go_heap_inuse_bytes", "go_goroutines", "scram_sessions_active",
+}
+
+// aggList renders `fn(col), ...` for the given columns. With alias, each term is
+// aliased back to its column name so an enclosing aggregate can reference it.
+func aggList(fn string, cols []string, alias bool) string {
+	parts := make([]string, len(cols))
+	for i, c := range cols {
+		parts[i] = fn + "(" + c + ")"
+		if alias {
+			parts[i] += " AS " + c
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (w *MetricsWriter) recordBusy(err error) {
+	if err == nil {
+		return
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "busy") || strings.Contains(message, "locked") {
+		w.busy.Add(1)
+	}
+}
+
+func (w *MetricsWriter) observeQuery(started time.Time, err *error) {
+	w.queryNS.Add(time.Since(started).Nanoseconds())
+	if *err != nil {
+		w.queryErrs.Add(1)
+		w.recordBusy(*err)
 	}
 }
 
@@ -191,26 +472,21 @@ func autoStep(from, to int64, targetPoints int) int64 {
 }
 
 // QueryEnvMetrics returns environment-level time series.
-func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, to, step int64) ([]MetricPoint, error) {
+func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, to, step int64) (points []MetricPoint, err error) {
+	started := time.Now()
+	defer w.observeQuery(started, &err)
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
-	rows, err := w.db.QueryContext(ctx, `
-		SELECT (ts / ? ) * ? AS bucket,
-			AVG(server_count), AVG(healthy_count), AVG(connection_count),
-			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(subscriptions)
-		FROM env_metrics
-		WHERE env = ? AND ts >= ? AND ts <= ?
-		GROUP BY bucket
-		ORDER BY bucket`,
-		step, step, env, from, to)
+	q, args := buildMetricsQuery("env_metrics", "", `AVG(server_count), AVG(healthy_count), AVG(connection_count),
+		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
+		AVG(subscriptions)`, env, "", from, to, step)
+	rows, err := w.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var points []MetricPoint
 	for rows.Next() {
 		var ts int64
 		var serverCount, healthyCount, connCount float64
@@ -236,34 +512,23 @@ func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, t
 }
 
 // QueryServerMetrics returns per-server time series.
-func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID string, from, to, step int64) ([]MetricPoint, error) {
+func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID string, from, to, step int64) (points []MetricPoint, err error) {
+	started := time.Now()
+	defer w.observeQuery(started, &err)
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
 
-	query := `
-		SELECT (ts / ? ) * ? AS bucket, server_id,
-			AVG(connections), AVG(cpu), AVG(mem),
-			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(subscriptions), AVG(slow_consumers)
-		FROM server_metrics
-		WHERE env = ? AND ts >= ? AND ts <= ?`
-	args := []any{step, step, env, from, to}
-
-	if serverID != "" {
-		query += " AND server_id = ?"
-		args = append(args, serverID)
-	}
-
-	query += " GROUP BY bucket, server_id ORDER BY bucket"
+	query, args := buildMetricsQuery("server_metrics", "server_id", `AVG(connections), AVG(cpu), AVG(mem),
+		AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
+		AVG(subscriptions), AVG(slow_consumers)`, env, serverID, from, to, step)
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var points []MetricPoint
 	for rows.Next() {
 		var ts int64
 		var sid string
@@ -291,59 +556,110 @@ func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID st
 	return points, rows.Err()
 }
 
-// QueryMQTTMetrics returns per-bridge time series.
-func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID string, from, to, step int64) ([]MetricPoint, error) {
+// QueryMQTTMetrics returns a per-bridge time series when bridgeID is set, and a
+// fleet-wide series (one point per bucket, values summed across bridges) when it
+// is empty.
+func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID string, from, to, step int64) (points []MetricPoint, err error) {
+	started := time.Now()
+	defer w.observeQuery(started, &err)
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
 
-	query := `
-		SELECT (ts / ? ) * ? AS bucket, bridge_id,
-			AVG(connections_active),
-			AVG(in_msgs_rate), AVG(out_msgs_rate), AVG(in_bytes_rate), AVG(out_bytes_rate),
-			AVG(msgs_recv_qos0), AVG(msgs_recv_qos1), AVG(msgs_sent_qos0), AVG(msgs_sent_qos1)
-		FROM mqtt_bridge_metrics
-		WHERE env = ? AND ts >= ? AND ts <= ?`
-	args := []any{step, step, env, from, to}
+	query, args := buildMetricsQuery("mqtt_bridge_metrics", "bridge_id",
+		aggList("AVG", mqttMetricCols, true), env, bridgeID, from, to, step)
 
-	if bridgeID != "" {
-		query += " AND bridge_id = ?"
-		args = append(args, bridgeID)
+	// With no bridge_id filter the inner query yields one row per (bucket,
+	// bridge) — N rows sharing a timestamp, which a single-series chart draws as
+	// a sawtooth between bridges. Sum the per-bridge bucket averages into one
+	// fleet total per bucket instead. SUM skips NULLs, so a bridge that doesn't
+	// report a metric doesn't drag the fleet value down, and a bucket where no
+	// bridge reports it stays NULL (rendered as a gap, not a false zero).
+	fleet := bridgeID == ""
+	if fleet {
+		query = "SELECT bucket, " + aggList("SUM", mqttMetricCols, false) +
+			" FROM (" + query + ") GROUP BY bucket ORDER BY bucket"
 	}
-
-	query += " GROUP BY bucket, bridge_id ORDER BY bucket"
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var points []MetricPoint
 	for rows.Next() {
 		var ts int64
 		var bid string
 		var connActive float64
 		var inMR, outMR, inBR, outBR float64
 		var rQ0, rQ1, sQ0, sQ1 float64
-		if err := rows.Scan(&ts, &bid, &connActive,
+		var rQ2, sQ2 float64
+		var writeBehind, stalledC float64
+		// consumer_pending_messages is NULL when JetStream was unavailable for the
+		// entire bucket; AVG of NULLs returns NULL, so use a nullable scan target.
+		var pendingMsg sql.NullFloat64
+		// Trend-line gauges. These columns were added later, so pre-migration
+		// buckets are entirely NULL → AVG returns NULL; scan as nullable and omit
+		// the key when absent so the chart shows a gap rather than a false zero.
+		var socketsOpen, inflightOut, opQ, opSusp, workerQ sql.NullFloat64
+		var poolSlot, retained, subsActive, heap, goroutines, scram sql.NullFloat64
+		// Fleet rows have no bridge_id column — they aggregate every bridge.
+		dest := []any{&ts}
+		if !fleet {
+			dest = append(dest, &bid)
+		}
+		// Order must match mqttMetricCols.
+		dest = append(dest, &connActive,
 			&inMR, &outMR, &inBR, &outBR,
-			&rQ0, &rQ1, &sQ0, &sQ1); err != nil {
+			&rQ0, &rQ1, &sQ0, &sQ1,
+			&rQ2, &sQ2,
+			&writeBehind, &pendingMsg, &stalledC,
+			&socketsOpen, &inflightOut, &opQ, &opSusp,
+			&workerQ, &poolSlot, &retained,
+			&subsActive, &heap, &goroutines, &scram)
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
-		points = append(points, MetricPoint{
-			"ts":                 ts,
-			"bridge_id":          bid,
-			"connections_active": connActive,
-			"in_msgs_rate":       inMR,
-			"out_msgs_rate":      outMR,
-			"in_bytes_rate":      inBR,
-			"out_bytes_rate":     outBR,
-			"msgs_recv_qos0":     rQ0,
-			"msgs_recv_qos1":     rQ1,
-			"msgs_sent_qos0":     sQ0,
-			"msgs_sent_qos1":     sQ1,
-		})
+		pt := MetricPoint{
+			"ts":                         ts,
+			"connections_active":         connActive,
+			"in_msgs_rate":               inMR,
+			"out_msgs_rate":              outMR,
+			"in_bytes_rate":              inBR,
+			"out_bytes_rate":             outBR,
+			"msgs_recv_qos0":             rQ0,
+			"msgs_recv_qos1":             rQ1,
+			"msgs_sent_qos0":             sQ0,
+			"msgs_sent_qos1":             sQ1,
+			"msgs_recv_qos2":             rQ2,
+			"msgs_sent_qos2":             sQ2,
+			"session_write_behind_depth": writeBehind,
+			"stalled_consumers":          stalledC,
+		}
+		if !fleet {
+			pt["bridge_id"] = bid
+		}
+		if pendingMsg.Valid {
+			pt["consumer_pending_messages"] = pendingMsg.Float64
+		}
+		for key, v := range map[string]sql.NullFloat64{
+			"sockets_open":            socketsOpen,
+			"inflight_out_messages":   inflightOut,
+			"op_queue_depth":          opQ,
+			"op_suspended_conns":      opSusp,
+			"worker_pool_queue_depth": workerQ,
+			"pool_slot_connected":     poolSlot,
+			"retained_messages":       retained,
+			"subscriptions_active":    subsActive,
+			"go_heap_inuse_bytes":     heap,
+			"go_goroutines":           goroutines,
+			"scram_sessions_active":   scram,
+		} {
+			if v.Valid {
+				pt[key] = v.Float64
+			}
+		}
+		points = append(points, pt)
 	}
 	return points, rows.Err()
 }

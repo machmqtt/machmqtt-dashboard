@@ -1,7 +1,8 @@
 import { memo } from 'react'
 import { X } from 'lucide-react'
 import type { TopologyNode } from '../store/store'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
+import { formatRate as fmtRate } from '../utils/format'
 
 interface Props {
   node: TopologyNode
@@ -29,7 +30,7 @@ export const NodeDetailPanel = memo(function NodeDetailPanel({ node, onClose }: 
         {node.type === 'server' && (
           <Link
             to={`/servers/${node.id}`}
-            className="block text-center bg-nats-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
+            className="block text-center bg-brand-blue text-white rounded px-4 py-2 text-sm hover:opacity-90"
           >
             View Server Detail
           </Link>
@@ -46,10 +47,4 @@ function InfoItem({ label, value }: { label: string; value: string }) {
       <div className="font-medium">{value}</div>
     </div>
   )
-}
-
-function fmtRate(r: number): string {
-  if (r >= 1e6) return (r / 1e6).toFixed(1) + 'M'
-  if (r >= 1e3) return (r / 1e3).toFixed(1) + 'K'
-  return r.toFixed(0)
 }
