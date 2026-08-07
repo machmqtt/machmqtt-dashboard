@@ -74,11 +74,19 @@ describe('JetStreamPage cluster semantics', () => {
     expect(screen.queryByText('ORDERS')).not.toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } })
 
-    for (const name of ['ORDERS', 'SECONDS', 'MINUTES', 'HOURS', 'DAYS']) {
-      fireEvent.click(screen.getByRole('button', { name: new RegExp(name) }))
+    // Resolve each stream's toggle once. *ByRole with a name matcher computes an
+    // accessible name for every candidate button, which means a jsdom
+    // getComputedStyle walk per element -- ten of those inside the loop cost
+    // more than everything else in this file combined. React keeps the same DOM
+    // node across the expand/collapse re-render, so the references stay valid.
+    const streams = ['ORDERS', 'SECONDS', 'MINUTES', 'HOURS', 'DAYS']
+    const toggles = new Map(streams.map((name) => [name, screen.getByRole('button', { name: new RegExp(name) })]))
+    for (const name of streams) {
+      const toggle = toggles.get(name)!
+      fireEvent.click(toggle)
       if (name === 'ORDERS') expect(screen.getByText('Consumers (1)')).toBeInTheDocument()
       else expect(screen.getByText('No consumers.')).toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: new RegExp(name) }))
+      fireEvent.click(toggle)
     }
 
     const leaderGroup = screen.getByRole('button', { name: /leader-one.*streams/ })
