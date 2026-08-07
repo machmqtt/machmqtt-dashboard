@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,8 +15,10 @@ import (
 	"github.com/noodlebit/machmqtt-dashboard/internal/ws"
 )
 
+const testBootstrapPassword = "bootstrap-password"
+
 // setupDefaultAdminServer builds a full API server whose only user is the
-// bootstrap admin (username "admin", password "admin", must_change_password set).
+// break-glass admin, provisioned with an explicit secret and marked for rotation.
 func setupDefaultAdminServer(t *testing.T) *Server {
 	t.Helper()
 	s, err := store.Open(t.TempDir())
@@ -23,11 +26,12 @@ func setupDefaultAdminServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if _, err := s.EnsureDefaultAdmin(); err != nil {
+	if _, err := s.EnsureBreakGlassAdmin(testBootstrapPassword); err != nil {
 		t.Fatal(err)
 	}
-	log := slog.New(slog.NewTextHandler(nil, nil))
-	a := auth.New(s, "test-secret-please-ignore", false, false, log)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := auth.New(s, "test-secret-please-ignore", false)
+	t.Cleanup(a.Close)
 	cfg := &config.Config{PollInterval: 5e9}
 	hub := ws.NewHub(log)
 	mgr, _ := collector.NewManager(cfg, nil, log, s)
@@ -72,7 +76,7 @@ func TestAuthFlowForcedChangeAndRevocation(t *testing.T) {
 
 	// 1. Log in as the bootstrap admin.
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, reqWithSession("POST", "/api/login", "", `{"username":"admin","password":"admin"}`))
+	h.ServeHTTP(w, reqWithSession("POST", "/api/login", "", `{"username":"admin","password":"bootstrap-password"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", w.Code)
 	}
@@ -98,7 +102,7 @@ func TestAuthFlowForcedChangeAndRevocation(t *testing.T) {
 	// 3. Change the password. This clears must_change and re-issues the cookie.
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, reqWithSession("PUT", "/api/users/1/password", oldSession,
-		`{"old_password":"admin","new_password":"newpassword123"}`))
+		`{"old_password":"bootstrap-password","new_password":"newpassword123"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("password change status = %d, want 200", w.Code)
 	}
@@ -141,12 +145,12 @@ func TestAuthFlowWeakPasswordRejected(t *testing.T) {
 	h := srv.Handler()
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, reqWithSession("POST", "/api/login", "", `{"username":"admin","password":"admin"}`))
+	h.ServeHTTP(w, reqWithSession("POST", "/api/login", "", `{"username":"admin","password":"bootstrap-password"}`))
 	session := sessionCookie(w)
 
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, reqWithSession("PUT", "/api/users/1/password", session,
-		`{"old_password":"admin","new_password":"short"}`))
+		`{"old_password":"bootstrap-password","new_password":"short"}`))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("weak password status = %d, want 400", w.Code)
 	}

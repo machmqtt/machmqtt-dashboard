@@ -1,0 +1,18 @@
+name: machmqtt-enterprise-auth-test
+
+services:
+  openldap:
+    image: ghcr.io/rroemhild/docker-test-openldap@sha256:fbc1f74db96bc6a87fb89894d93e67b122f780d3ee476019a5ab35abb6c3c4fd
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:1389:10389"
+
+  dex:
+    image: dexidp/dex@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    depends_on:
+      - openldap
+    ports:
+      - "127.0.0.1:5556:5556"
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro

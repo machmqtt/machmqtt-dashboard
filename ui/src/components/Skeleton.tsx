@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Server } from 'lucide-react'
 
 export function NoClusterEmptyState({ title, description }: { title: string; description?: string }) {

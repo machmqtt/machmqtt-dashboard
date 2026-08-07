@@ -6,7 +6,7 @@ All endpoints are served from the dashboard's HTTP server (default `:8080`).
 
 Authentication uses JWT tokens stored in an `httpOnly` cookie named `session`. The cookie is set on successful login and cleared on logout.
 
-All `/api/*` endpoints except `POST /api/login` require authentication. Unauthenticated requests receive a `401 Unauthorized` response.
+The public authentication endpoints are `POST /api/login`, `POST /api/auth/local/login`, `GET /api/auth/providers`, and the OIDC login/callback routes. Other `/api/*` endpoints require authentication. Operational endpoints are `GET /livez` and `GET /readyz` (both unauthenticated, for probes) and `GET /metrics`, which requires either the configured `metrics_token` as a bearer token or a dashboard session. Errors are JSON and every response includes `X-Request-ID`.
 
 ### Roles
 
@@ -25,11 +25,13 @@ Admin endpoints (`/api/admin/*`) return `403 Forbidden` for non-admin users.
 
 Authenticate and receive a session cookie.
 
+External LDAP providers are evaluated in configured order. Local authentication is attempted only if no external provider contains the identity.
+
 **Request body:**
 ```json
 {
   "username": "admin",
-  "password": "admin"
+  "password": "<operator-supplied-bootstrap-password>"
 }
 ```
 
@@ -39,6 +41,7 @@ Authenticate and receive a session cookie.
   "id": 1,
   "username": "admin",
   "role": "admin",
+  "auth_provider": "local",
   "created_at": "2026-03-20T10:00:00Z"
 }
 ```
@@ -70,6 +73,7 @@ Get the current authenticated user.
   "id": 1,
   "username": "admin",
   "role": "admin",
+  "auth_provider": "local",
   "created_at": "2026-03-20T10:00:00Z"
 }
 ```
@@ -494,9 +498,11 @@ fetched live from NATS).
 }
 ```
 
+`total` is the sum reported by upstream NATS servers. `loaded_total` is the bounded number materialized by the dashboard. Results have stable server-ID/CID ordering. If a server fails or a safety cap truncates materialization, `partial` is true and `failed_servers` reports the unavailable-server count.
+
 ### GET /api/environments/{env}/connz/{cid}
 
-Single connection detail by CID (from cached snapshot).
+Single connection detail by CID, using complete bounded upstream pagination.
 
 **Response:** A single connection object (same fields as above).
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -97,51 +98,143 @@ type MetricsWriter struct {
 	dropped      atomic.Uint64 // dropped since the last periodic report (reset by Run)
 	droppedTotal atomic.Uint64 // cumulative dropped, never reset (for /api/admin/health)
 	pruning      atomic.Bool   // guards against overlapping retention prunes
+	written      atomic.Uint64
+	failed       atomic.Uint64
+	busy         atomic.Uint64
+	queryErrs    atomic.Uint64
+	writeNS      atomic.Int64
+	queryNS      atomic.Int64
+	cleanupNS    atomic.Int64
+	batchRows    atomic.Int64
+	oldestNS     atomic.Int64
+	submitMu     sync.RWMutex
+	stopped      bool
+	done         chan struct{}
+	runOnce      sync.Once
+}
+
+type MetricsWriterStats struct {
+	QueueDepth     int    `json:"queue_depth"`
+	QueueCapacity  int    `json:"queue_capacity"`
+	Dropped        uint64 `json:"dropped"`
+	Written        uint64 `json:"written"`
+	Failed         uint64 `json:"failed"`
+	Busy           uint64 `json:"busy"`
+	QueryErrors    uint64 `json:"query_errors"`
+	LastWriteNanos int64  `json:"last_write_nanos"`
+	QueryNanos     int64  `json:"query_nanos"`
+	CleanupNanos   int64  `json:"cleanup_nanos"`
+	LastBatchRows  int64  `json:"last_batch_rows"`
+	OldestQueueAge int64  `json:"oldest_queue_age_nanos"`
 }
 
 // Dropped returns the cumulative number of metric samples dropped because the
 // writer buffer was full, since process start.
 func (w *MetricsWriter) Dropped() uint64 { return w.droppedTotal.Load() }
 
-// NewMetricsWriter creates a new metrics writer that keeps samples for the given
-// retention (<=0 falls back to 24h). Call Run() to start the background goroutine.
-// It reads the store's connection directly (same package) so the store need not
-// expose its raw *sql.DB.
-func NewMetricsWriter(s *Store, log *slog.Logger, retention time.Duration) *MetricsWriter {
-	if retention <= 0 {
-		retention = 24 * time.Hour
+// MetricsSource is the set of handles a MetricsWriter can be built from. The
+// union is enforced at compile time, so an unsupported source is a build
+// failure rather than a runtime panic.
+type MetricsSource interface {
+	*Store | *sql.DB
+}
+
+// NewMetricsWriter accepts either a Store or its database handle so existing
+// integrations can share the same bounded writer. Call Run exactly once.
+func NewMetricsWriter[T MetricsSource](source T, log *slog.Logger, retention ...time.Duration) *MetricsWriter {
+	var db *sql.DB
+	switch value := any(source).(type) {
+	case *Store:
+		db = value.db
+	case *sql.DB:
+		db = value
+	}
+	keep := 24 * time.Hour
+	if len(retention) > 0 && retention[0] > 0 {
+		keep = retention[0]
+	}
+	if log == nil {
+		log = slog.Default()
 	}
 	return &MetricsWriter{
-		db:        s.db,
+		db:        db,
 		ch:        make(chan MetricSample, 256),
 		log:       log,
-		retention: retention,
+		retention: keep,
+		done:      make(chan struct{}),
 	}
 }
 
-// Submit sends a sample to the writer. Non-blocking; drops if buffer is full.
-func (w *MetricsWriter) Submit(s MetricSample) {
+func (w *MetricsWriter) Stats() MetricsWriterStats {
+	oldestAge := int64(0)
+	if len(w.ch) > 0 {
+		if oldest := w.oldestNS.Load(); oldest > 0 {
+			oldestAge = time.Now().UnixNano() - oldest
+		}
+	}
+	return MetricsWriterStats{
+		QueueDepth: len(w.ch), QueueCapacity: cap(w.ch),
+		Dropped: w.droppedTotal.Load(), Written: w.written.Load(), Failed: w.failed.Load(),
+		Busy: w.busy.Load(), QueryErrors: w.queryErrs.Load(), LastWriteNanos: w.writeNS.Load(),
+		QueryNanos: w.queryNS.Load(), CleanupNanos: w.cleanupNS.Load(), LastBatchRows: w.batchRows.Load(),
+		OldestQueueAge: oldestAge,
+	}
+}
+
+// Submit sends a sample to the writer without blocking a collector. A rejected
+// sample is explicitly counted and logged rather than disappearing silently.
+func (w *MetricsWriter) Submit(s MetricSample) bool {
+	w.submitMu.RLock()
+	defer w.submitMu.RUnlock()
+	if w.stopped {
+		w.dropped.Add(1)
+		w.droppedTotal.Add(1)
+		return false
+	}
 	select {
 	case w.ch <- s:
+		w.oldestNS.CompareAndSwap(0, time.Now().UnixNano())
+		return true
 	default:
 		// Drop sample — monitoring is best-effort. Counted and reported
 		// periodically by Run so sustained loss isn't silent.
 		w.dropped.Add(1)
 		w.droppedTotal.Add(1)
+		return false
 	}
 }
 
 // Run starts the writer goroutine. Blocks until ctx is cancelled.
 func (w *MetricsWriter) Run(ctx context.Context) {
+	ran := false
+	w.runOnce.Do(func() { ran = true })
+	if !ran {
+		return
+	}
+	defer close(w.done)
 	cleanup := time.NewTicker(10 * time.Minute)
 	defer cleanup.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			w.submitMu.Lock()
+			w.stopped = true
+			w.submitMu.Unlock()
+			// Account for and persist every sample already accepted before shutdown.
+			for {
+				select {
+				case s := <-w.ch:
+					w.persist(s)
+				default:
+					return
+				}
+			}
 		case s := <-w.ch:
-			w.writeSample(s)
+			w.persist(s)
+			if len(w.ch) == 0 {
+				w.oldestNS.Store(0)
+			}
 		case <-cleanup.C:
 			// Prune on a separate goroutine (guarded so at most one runs at a
 			// time) so a large or slow DELETE never blocks the sample-draining
@@ -160,15 +253,37 @@ func (w *MetricsWriter) Run(ctx context.Context) {
 	}
 }
 
-func (w *MetricsWriter) writeSample(s MetricSample) {
+func (w *MetricsWriter) Wait(ctx context.Context) error {
+	select {
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *MetricsWriter) persist(s MetricSample) {
+	started := time.Now()
+	w.batchRows.Store(int64(1 + len(s.Servers) + len(s.MQTTBridges)))
+	if err := w.writeSample(s); err != nil {
+		w.writeNS.Store(time.Since(started).Nanoseconds())
+		w.failed.Add(1)
+		w.recordBusy(err)
+		w.log.Warn("metrics sample write failed", "env", s.Env, "err", err)
+		return
+	}
+	w.writeNS.Store(time.Since(started).Nanoseconds())
+	w.written.Add(1)
+}
+
+func (w *MetricsWriter) writeSample(s MetricSample) error {
 	ts := s.Timestamp.Unix()
 
 	tx, err := w.db.Begin()
 	if err != nil {
-		w.log.Warn("metrics tx begin", "err", err)
-		return
+		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Insert env-level metrics.
 	_, err = tx.Exec(`INSERT INTO env_metrics (ts, env, server_count, healthy_count, connection_count,
@@ -177,9 +292,17 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 		ts, s.Env, s.ServerCount, s.HealthyCount, s.ConnectionCount,
 		s.InMsgsRate, s.OutMsgsRate, s.InBytesRate, s.OutBytesRate, s.Subscriptions)
 	if err != nil {
-		w.log.Warn("metrics insert env", "err", err)
-		return
+		return fmt.Errorf("insert environment: %w", err)
 	}
+	serverStmt, err := tx.Prepare(`INSERT INTO server_metrics (ts, env, server_id,
+		connections, in_msgs, out_msgs, in_bytes, out_bytes,
+		cpu, mem, subscriptions, slow_consumers, routes, leafnodes,
+		in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate, healthy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare server insert: %w", err)
+	}
+	defer func() { _ = serverStmt.Close() }()
 
 	// Insert per-server metrics.
 	for _, srv := range s.Servers {
@@ -187,31 +310,32 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 		if srv.Healthy {
 			healthy = 1
 		}
-		_, err = tx.Exec(`INSERT INTO server_metrics (ts, env, server_id,
-			connections, in_msgs, out_msgs, in_bytes, out_bytes,
-			cpu, mem, subscriptions, slow_consumers, routes, leafnodes,
-			in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate, healthy)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		_, err = serverStmt.Exec(
 			ts, s.Env, srv.ServerID,
 			srv.Connections, srv.InMsgs, srv.OutMsgs, srv.InBytes, srv.OutBytes,
 			srv.CPU, srv.Mem, srv.Subscriptions, srv.SlowConsumers, srv.Routes, srv.LeafNodes,
 			srv.InMsgsRate, srv.OutMsgsRate, srv.InBytesRate, srv.OutBytesRate, healthy)
 		if err != nil {
-			w.log.Warn("metrics insert server", "server", srv.ServerID, "err", err)
+			return fmt.Errorf("insert server %q: %w", srv.ServerID, err)
 		}
 	}
+	mqttStmt, err := tx.Prepare(`INSERT INTO mqtt_bridge_metrics (ts, env, bridge_id,
+		connections_active, in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate,
+		msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1,
+		msgs_recv_qos2, msgs_sent_qos2,
+		session_write_behind_depth, consumer_pending_messages, stalled_consumers,
+		sockets_open, inflight_out_messages, op_queue_depth, op_suspended_conns,
+		worker_pool_queue_depth, pool_slot_connected, retained_messages,
+		subscriptions_active, go_heap_inuse_bytes, go_goroutines, scram_sessions_active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare MQTT insert: %w", err)
+	}
+	defer func() { _ = mqttStmt.Close() }()
 
 	// Insert per-MQTT bridge metrics.
 	for _, b := range s.MQTTBridges {
-		_, err = tx.Exec(`INSERT INTO mqtt_bridge_metrics (ts, env, bridge_id,
-			connections_active, in_msgs_rate, out_msgs_rate, in_bytes_rate, out_bytes_rate,
-			msgs_recv_qos0, msgs_recv_qos1, msgs_sent_qos0, msgs_sent_qos1,
-			msgs_recv_qos2, msgs_sent_qos2,
-			session_write_behind_depth, consumer_pending_messages, stalled_consumers,
-			sockets_open, inflight_out_messages, op_queue_depth, op_suspended_conns,
-			worker_pool_queue_depth, pool_slot_connected, retained_messages,
-			subscriptions_active, go_heap_inuse_bytes, go_goroutines, scram_sessions_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		_, err = mqttStmt.Exec(
 			ts, s.Env, b.BridgeID,
 			b.ConnectionsActive, b.InMsgsRate, b.OutMsgsRate, b.InBytesRate, b.OutBytesRate,
 			b.MsgsRecvQoS0, b.MsgsRecvQoS1, b.MsgsSentQoS0, b.MsgsSentQoS1,
@@ -221,20 +345,30 @@ func (w *MetricsWriter) writeSample(s MetricSample) {
 			b.WorkerPoolQueueDepth, b.PoolSlotConnected, b.RetainedMessages,
 			b.SubscriptionsActive, b.GoHeapInuseBytes, b.GoGoroutines, b.ScramSessionsActive)
 		if err != nil {
-			w.log.Warn("metrics insert mqtt", "bridge", b.BridgeID, "err", err)
+			return fmt.Errorf("insert MQTT bridge %q: %w", b.BridgeID, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		w.log.Warn("metrics tx commit", "err", err)
+		return fmt.Errorf("commit transaction: %w", err)
 	}
+	return nil
 }
 
 func (w *MetricsWriter) deleteOld() {
+	started := time.Now()
+	defer func() { w.cleanupNS.Store(time.Since(started).Nanoseconds()) }()
 	cutoff := time.Now().Add(-w.retention).Unix()
 	freed := false
 	for _, table := range []string{"server_metrics", "env_metrics", "mqtt_bridge_metrics"} {
-		res, err := w.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ts < ?", table), cutoff)
+		// Bound each maintenance pass so retention cannot hold SQLite's single
+		// writer lock while deleting an arbitrarily large backlog. Later cleanup
+		// ticks continue draining old rows in the same fixed-size batches.
+		query := fmt.Sprintf(
+			"DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE ts < ? LIMIT 10000)",
+			table, table,
+		)
+		res, err := w.db.Exec(query, cutoff)
 		if err != nil {
 			w.log.Warn("metrics cleanup", "table", table, "err", err)
 			continue
@@ -306,6 +440,24 @@ func aggList(fn string, cols []string, alias bool) string {
 	return strings.Join(parts, ", ")
 }
 
+func (w *MetricsWriter) recordBusy(err error) {
+	if err == nil {
+		return
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "busy") || strings.Contains(message, "locked") {
+		w.busy.Add(1)
+	}
+}
+
+func (w *MetricsWriter) observeQuery(started time.Time, err *error) {
+	w.queryNS.Add(time.Since(started).Nanoseconds())
+	if *err != nil {
+		w.queryErrs.Add(1)
+		w.recordBusy(*err)
+	}
+}
+
 // autoStep calculates a step size to return approximately targetPoints data points.
 func autoStep(from, to int64, targetPoints int) int64 {
 	duration := to - from
@@ -320,7 +472,9 @@ func autoStep(from, to int64, targetPoints int) int64 {
 }
 
 // QueryEnvMetrics returns environment-level time series.
-func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, to, step int64) ([]MetricPoint, error) {
+func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, to, step int64) (points []MetricPoint, err error) {
+	started := time.Now()
+	defer w.observeQuery(started, &err)
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
@@ -331,9 +485,8 @@ func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, t
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var points []MetricPoint
 	for rows.Next() {
 		var ts int64
 		var serverCount, healthyCount, connCount float64
@@ -359,7 +512,9 @@ func (w *MetricsWriter) QueryEnvMetrics(ctx context.Context, env string, from, t
 }
 
 // QueryServerMetrics returns per-server time series.
-func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID string, from, to, step int64) ([]MetricPoint, error) {
+func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID string, from, to, step int64) (points []MetricPoint, err error) {
+	started := time.Now()
+	defer w.observeQuery(started, &err)
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
@@ -372,9 +527,8 @@ func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var points []MetricPoint
 	for rows.Next() {
 		var ts int64
 		var sid string
@@ -405,7 +559,9 @@ func (w *MetricsWriter) QueryServerMetrics(ctx context.Context, env, serverID st
 // QueryMQTTMetrics returns a per-bridge time series when bridgeID is set, and a
 // fleet-wide series (one point per bucket, values summed across bridges) when it
 // is empty.
-func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID string, from, to, step int64) ([]MetricPoint, error) {
+func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID string, from, to, step int64) (points []MetricPoint, err error) {
+	started := time.Now()
+	defer w.observeQuery(started, &err)
 	if step <= 0 {
 		step = autoStep(from, to, 200)
 	}
@@ -429,9 +585,8 @@ func (w *MetricsWriter) QueryMQTTMetrics(ctx context.Context, env, bridgeID stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var points []MetricPoint
 	for rows.Next() {
 		var ts int64
 		var bid string

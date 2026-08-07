@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -103,7 +102,7 @@ func TestAdminUpdateCluster(t *testing.T) {
 	st.CreateCluster(cl)
 
 	w := httptest.NewRecorder()
-	body := fmt.Sprintf(`{"name":"renamed","servers":[{"url":"http://nats2:8222"}]}`)
+	body := `{"name":"renamed","servers":[{"url":"http://nats2:8222"}]}`
 	srv.Handler().ServeHTTP(w, authedReq("PUT", "/api/admin/clusters/"+cl.ID, token, body))
 
 	if w.Code != http.StatusOK {

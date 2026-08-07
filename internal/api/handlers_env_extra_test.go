@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
@@ -30,28 +31,35 @@ func TestHandleEnvironmentsWithHealth(t *testing.T) {
 }
 
 func TestHandleEnvironmentsStoreError(t *testing.T) {
-	srv, s, token, _ := polledServer(t, natsMockConfig{})
+	srv, s, _, _ := polledServer(t, natsMockConfig{})
 	s.Close() // make ListClusters fail
-	w := do(t, srv, "GET", "/api/environments", token, "")
+	w := httptest.NewRecorder()
+	srv.handleEnvironments(w, httptest.NewRequest(http.MethodGet, "/api/environments", nil))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
 }
 
 func TestHandleGetPositionsStoreError(t *testing.T) {
-	srv, s, token, id := polledServer(t, natsMockConfig{})
+	srv, s, _, id := polledServer(t, natsMockConfig{})
 	s.Close()
-	w := do(t, srv, "GET", "/api/environments/"+id+"/topology/positions", token, "")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/environments/"+id+"/topology/positions", nil)
+	r.SetPathValue("env", id)
+	srv.handleGetPositions(w, r)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
 }
 
 func TestHandleSavePositionsStoreError(t *testing.T) {
-	srv, s, token, id := polledServer(t, natsMockConfig{})
+	srv, s, _, id := polledServer(t, natsMockConfig{})
 	s.Close()
 	body := `{"positions":[{"node_id":"n1","x":1,"y":2}]}`
-	w := do(t, srv, "PUT", "/api/environments/"+id+"/topology/positions", token, body)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPut, "/api/environments/"+id+"/topology/positions", strings.NewReader(body))
+	r.SetPathValue("env", id)
+	srv.handleSavePositions(w, r)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
@@ -153,9 +161,9 @@ func TestCacheSubsRowsEviction(t *testing.T) {
 	for i := 0; i < subsCacheMaxEntries+5; i++ {
 		srv.cacheSubsRows(rowKey(i), []subRow{{Subject: "s"}}, false)
 	}
-	subsDetailCacheMu.Lock()
-	n := len(subsDetailCacheData)
-	subsDetailCacheMu.Unlock()
+	srv.subsCacheMu.Lock()
+	n := len(srv.subsCacheData)
+	srv.subsCacheMu.Unlock()
 	if n > subsCacheMaxEntries+1 {
 		t.Errorf("cache size = %d, want bounded near %d (eviction not running)", n, subsCacheMaxEntries)
 	}

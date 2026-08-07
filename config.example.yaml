@@ -11,14 +11,28 @@ data_dir: "./data"
 # them. Default 24h.
 # metrics_retention: 24h
 
+# Authorizes Prometheus to scrape /metrics. Minimum 16 characters. /metrics is
+# never anonymous: it discloses environment names, collector endpoints, and
+# configured auth provider names. Without a token it falls back to requiring a
+# dashboard session, which a scraper cannot provide. Generate: openssl rand -hex 24
+# metrics_token: ""
+# metrics_token_file: "/run/secrets/metrics_token"
+
 # Honor the X-Forwarded-For header when identifying the client IP for login rate
 # limiting. Leave false (the default) unless the dashboard is behind a trusted
 # reverse proxy that sets the header — otherwise a client can spoof it to evade
 # the rate limiter.
 # trust_proxy_headers: false
 
-# A default admin user (admin/admin) is created automatically on first startup.
-# You will be required to change the password on first login.
+# A fresh database requires an explicit one-time password for the local
+# break-glass administrator. Prefer a root-readable secret file; alternatively
+# set MACHMQTT_DASHBOARD_BOOTSTRAP_PASSWORD. The account must rotate this secret
+# at first login. Startup fails rather than installing a known default password.
+# authentication:
+#   local:
+#     enabled: true
+#     break_glass_login: true
+#     bootstrap_password_file: "/run/secrets/dashboard_bootstrap_password"
 
 # Clusters don't have to be configured in YAML — they can be added and managed
 # entirely at runtime via the admin UI (log in as admin and navigate to Cluster

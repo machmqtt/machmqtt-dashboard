@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 
 export type TimeRange = '1h' | '6h' | '24h'
@@ -28,41 +28,53 @@ export function useMetrics(
   const [data, setData] = useState<Record<string, any>[]>([])
   const [loading, setLoading] = useState(true)
   const [range, setRange] = useState<TimeRange>('1h')
+	const paramsKey = useMemo(
+		() => JSON.stringify(Object.entries(params || {}).sort(([a], [b]) => a.localeCompare(b))),
+		[params],
+	)
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     if (!env) return
     setLoading(true)
     const now = Math.floor(Date.now() / 1000)
     const from = now - RANGE_SECONDS[range]
 
     const search = new URLSearchParams({ from: from.toString(), to: now.toString() })
-    if (params) {
-      for (const [k, v] of Object.entries(params)) {
+		const stableParams = JSON.parse(paramsKey) as [string, string][]
+		if (stableParams.length > 0) {
+		for (const [k, v] of stableParams) {
         if (v) search.set(k, v)
       }
     }
 
     try {
-      const res = await fetchWithTimeout(`/api/environments/${env}/${endpoint}?${search}`)
+			const res = await fetchWithTimeout(`/api/environments/${env}/${endpoint}?${search}`, { signal })
       if (res.ok) {
         const json = await res.json()
         setData(json.points || [])
       }
-    } catch {
-      // ignore fetch errors
+		} catch {
+			// The next jittered poll retries transient failures.
     }
-    setLoading(false)
-  }, [env, endpoint, range, params])
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount is intentional
-    fetchData()
-  }, [fetchData])
+		if (!signal?.aborted) setLoading(false)
+	}, [env, endpoint, range, paramsKey])
 
   useEffect(() => {
     if (!env) return
-    const id = setInterval(fetchData, REFRESH_INTERVAL)
-    return () => clearInterval(id)
+		const controller = new AbortController()
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const poll = async () => {
+			await fetchData(controller.signal)
+			if (!controller.signal.aborted) {
+				const jitter = Math.floor(Math.random() * 5000)
+				timer = setTimeout(poll, REFRESH_INTERVAL + jitter)
+			}
+		}
+		void poll()
+		return () => {
+			controller.abort()
+			if (timer) clearTimeout(timer)
+		}
   }, [env, fetchData])
 
   return { data, loading, range, setRange }

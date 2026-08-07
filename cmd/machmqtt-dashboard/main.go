@@ -4,12 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/api"
@@ -22,149 +23,193 @@ import (
 )
 
 var version = "dev"
+var exitProcess = os.Exit
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "path to config file")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	exampleConfig := flag.Bool("example-config", false, "print an example config.yaml to stdout and exit")
-	flag.Parse()
+	if err := run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr, nil); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "machmqtt-dashboard:", err)
+		exitProcess(1)
+	}
+}
 
+// run owns the process lifecycle. Explicit inputs make startup, shutdown, and
+// break-glass initialization integration-testable without installing signals.
+func run(args []string, getenv func(string) string, stdout, stderr io.Writer, shutdown <-chan os.Signal) error {
+	flags := flag.NewFlagSet("machmqtt-dashboard", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	configPath := flags.String("config", "config.yaml", "path to config file")
+	showVersion := flags.Bool("version", false, "print version and exit")
+	exampleConfig := flags.Bool("example-config", false, "print an example config.yaml and exit")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 	if *showVersion {
-		fmt.Println("machmqtt-dashboard", version)
-		os.Exit(0)
+		_, err := fmt.Fprintln(stdout, "machmqtt-dashboard", version)
+		return err
 	}
-
 	if *exampleConfig {
-		fmt.Print(config.ExampleYAML())
-		os.Exit(0)
+		_, err := fmt.Fprint(stdout, config.ExampleYAML())
+		return err
 	}
 
-	lb := logbuf.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}), logbuf.DefaultSize)
+	lb := logbuf.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}), logbuf.DefaultSize)
 	log := slog.New(lb)
-	// Make the buffered handler the process default so packages that log via the
-	// slog package functions (store, auth, api helpers) also land in the in-UI
-	// Server Logs buffer instead of bypassing it.
 	slog.SetDefault(log)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Error("load config", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
 	}
-
 	db, err := store.Open(cfg.DataDir)
 	if err != nil {
-		log.Error("open store", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("open store: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Warn("close store", "err", err)
+		}
+	}()
 
-	// Create default admin/admin user on first startup if no users exist.
-	defaultUser, err := db.EnsureDefaultAdmin()
+	bootstrapPassword := cfg.Authentication.Local.BootstrapPassword
+	if bootstrapPassword == "" {
+		bootstrapPassword = getenv("MACHMQTT_DASHBOARD_BOOTSTRAP_PASSWORD")
+	}
+	// Retain the historical variable for existing deployments while the binary
+	// and module complete their machmqtt-dashboard rename.
+	if bootstrapPassword == "" {
+		bootstrapPassword = getenv("NATS_DASHBOARD_BOOTSTRAP_PASSWORD")
+	}
+	defaultUser, err := db.EnsureBreakGlassAdmin(bootstrapPassword)
 	if err != nil {
-		log.Error("ensure default admin", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("ensure local break-glass administrator: %w", err)
 	}
 	if defaultUser != nil {
-		log.Info("created default admin user", "username", defaultUser.Username)
+		log.Info("created bootstrap local administrator", "username", defaultUser.Username, "password_change_required", true)
 	}
 
-	// Seed any clusters declared in the config file that don't already exist
-	// (idempotent, matched by name). This lets a fresh `docker compose up` poll
-	// the configured servers with no manual cluster-creation step; existing
-	// clusters (managed via the admin UI) are never overwritten.
 	if seeded, err := db.SeedClusters(cfg.Environments); err != nil {
-		log.Error("seed clusters from config", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("seed clusters from config: %w", err)
 	} else if seeded > 0 {
 		log.Info("seeded clusters from config", "count", seeded)
 	}
 
-	a := auth.New(db, cfg.SessionSecret, cfg.SecureCookies, cfg.TrustProxyHeaders, log)
-	if !cfg.SecureCookies {
-		log.Warn("secure_cookies is disabled: session cookies will be sent over plain HTTP — set secure_cookies: true when the dashboard is served over HTTPS/TLS")
+	providers, err := auth.BuildProviderSet(cfg.Authentication, db)
+	if err != nil {
+		return fmt.Errorf("configure authentication providers: %w", err)
 	}
-	hub := ws.NewHub(log)
-
-	metricsWriter := store.NewMetricsWriter(db, log, cfg.MetricsRetention)
+	a := auth.NewWithProviderSet(db, cfg.SessionSecret, cfg.SecureCookies, providers)
+	defer a.Close()
+	a.SetLogger(log)
+	if err := a.SetTrustedProxyCIDRs(cfg.Authentication.TrustedProxyCIDRs); err != nil {
+		return fmt.Errorf("configure trusted proxies: %w", err)
+	}
+	if !cfg.SecureCookies {
+		log.Warn("secure_cookies is disabled; session cookies may traverse plain HTTP")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	var bg sync.WaitGroup
-	bg.Add(1)
+	metricsWriter := store.NewMetricsWriter(db, log, cfg.MetricsRetention)
+	var background sync.WaitGroup
+	background.Add(1)
 	go func() {
-		defer bg.Done()
+		defer background.Done()
 		metricsWriter.Run(ctx)
 	}()
 
+	hub := ws.NewHub(log)
 	var manager *collector.Manager
 	manager, err = collector.NewManager(cfg, func(clusterID string) {
 		overview := manager.Overview(clusterID)
 		hub.Broadcast(clusterID, "overview", overview)
 		hub.Broadcast(clusterID, "topology", manager.Topology(clusterID))
 		hub.Broadcast(clusterID, "health", manager.Health(clusterID))
-
-		// Submit a metrics sample for time-series storage.
 		if sample := manager.BuildMetricSample(clusterID, time.Now(), overview); sample != nil {
 			metricsWriter.Submit(*sample)
 		}
 	}, log, db)
 	if err != nil {
-		log.Error("create collector manager", "err", err)
-		os.Exit(1)
+		cancel()
+		return fmt.Errorf("create collector manager: %w", err)
 	}
 	manager.Start(ctx)
-
-	hub.SetOnSubscribe(func(c *ws.Client, env string) {
-		hub.SendTo(c, env, "overview", manager.Overview(env))
-		hub.SendTo(c, env, "topology", manager.Topology(env))
-		hub.SendTo(c, env, "health", manager.Health(env))
+	hub.SetOnSubscribe(func(client *ws.Client, clusterID string) {
+		hub.SendTo(client, clusterID, "overview", manager.Overview(clusterID))
+		hub.SendTo(client, clusterID, "topology", manager.Topology(clusterID))
+		hub.SendTo(client, clusterID, "health", manager.Health(clusterID))
 	})
 
 	srv := api.NewServer(a, manager, hub, log, version, cfg, metricsWriter, db, lb)
-
 	httpServer := &http.Server{
 		Addr:           cfg.Listen,
 		Handler:        srv.Handler(),
-		MaxHeaderBytes: 1 << 20, // 1 MB
+		MaxHeaderBytes: 1 << 20,
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   60 * time.Second,
 		IdleTimeout:    120 * time.Second,
 	}
+	listener, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("listen on %s: %w", cfg.Listen, err)
+	}
 
-	// Graceful shutdown.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
+	var ownedSignals chan os.Signal
+	if shutdown == nil {
+		ownedSignals = make(chan os.Signal, 1)
+		signal.Notify(ownedSignals, processSignals()...)
+		defer signal.Stop(ownedSignals)
+		shutdown = ownedSignals
+	}
+	serveErr := make(chan error, 1)
 	go func() {
-		log.Info("starting server", "addr", cfg.Listen)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("server error", "err", err)
-			os.Exit(1)
-		}
+		log.Info("starting server", "addr", listener.Addr().String())
+		serveErr <- httpServer.Serve(listener)
 	}()
 
-	<-sigCh
-	log.Info("shutting down")
-	cancel()
+	serveStopped := false
+	select {
+	case <-shutdown:
+		log.Info("shutting down")
+	case err := <-serveErr:
+		serveStopped = true
+		if err != nil && err != http.ErrServerClosed {
+			cancel()
+			return fmt.Errorf("serve HTTP: %w", err)
+		}
+	}
+	srv.SetReady(false)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	httpServer.Shutdown(shutdownCtx)
-
-	// Join the collector and metrics-writer goroutines (bounded) so no write is
-	// in flight when the deferred db.Close() runs. Prevents the "database is
-	// closed" race and a dropped final metrics sample on shutdown.
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Error("HTTP shutdown", "err", err)
+		if closeErr := httpServer.Close(); closeErr != nil {
+			log.Error("force HTTP close", "err", closeErr)
+		}
+	}
+	if !serveStopped {
+		select {
+		case err := <-serveErr:
+			if err != nil && err != http.ErrServerClosed {
+				log.Warn("HTTP server stopped unexpectedly", "err", err)
+			}
+		case <-shutdownCtx.Done():
+			log.Warn("HTTP server goroutine did not stop", "err", shutdownCtx.Err())
+		}
+	}
+	cancel()
 	drained := make(chan struct{})
 	go func() {
 		manager.Wait()
-		bg.Wait()
+		background.Wait()
 		close(drained)
 	}()
 	select {
 	case <-drained:
-	case <-time.After(5 * time.Second):
-		log.Warn("shutdown: timed out waiting for background goroutines to drain")
+	case <-shutdownCtx.Done():
+		log.Warn("background shutdown incomplete", "err", shutdownCtx.Err())
 	}
+	collector.CloseMQTTIdleConnections()
+	return nil
 }

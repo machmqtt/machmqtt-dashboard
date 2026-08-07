@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 )
 
 // handleHealthz is an unauthenticated liveness/readiness probe for k8s or a load
@@ -18,6 +19,49 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	if !s.ready.Load() || s.store == nil || s.store.DB().PingContext(r.Context()) != nil || s.manager == nil {
+		writeError(w, http.StatusServiceUnavailable, "not ready")
+		return
+	}
+	for _, stats := range s.manager.OperationalStats() {
+		if stats.Polls == 0 {
+			writeError(w, http.StatusServiceUnavailable, "not ready")
+			return
+		}
+	}
+	writeJSON(w, map[string]string{"status": "ready"})
+}
+
+func (s *Server) handleDependencyStatus(w http.ResponseWriter, r *http.Request) {
+	databaseStatus := "ok"
+	if s.store == nil || s.store.DB().PingContext(r.Context()) != nil {
+		databaseStatus = "unavailable"
+	}
+	collectors := make(map[string]any)
+	if s.manager != nil {
+		staleAfter := 3 * s.cfg.PollInterval
+		for environment, stats := range s.manager.OperationalStats() {
+			state := "ok"
+			if stats.LastSuccessUnix == 0 {
+				state = "unavailable"
+			} else if staleAfter > 0 && time.Duration(stats.SnapshotAgeNanos) > staleAfter {
+				state = "stale"
+			}
+			collectors[environment] = map[string]any{
+				"status": state, "last_success_unix": stats.LastSuccessUnix,
+				"snapshot_age_seconds": time.Duration(stats.SnapshotAgeNanos).Seconds(),
+				"partial_polls":        stats.PartialPolls,
+			}
+		}
+	}
+	writeJSON(w, map[string]any{
+		"database": databaseStatus, "collectors": collectors,
+		"identity_providers": s.auth.ProviderInfo(),
+		"readiness_ignores_external_identity_provider_availability": true,
+	})
 }
 
 // handleAdminHealth reports the dashboard's own operational health: per-cluster

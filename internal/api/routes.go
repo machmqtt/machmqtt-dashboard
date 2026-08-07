@@ -11,6 +11,15 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 
 	// Public routes.
 	mux.HandleFunc("POST /api/login", a.HandleLogin)
+	mux.HandleFunc("GET /api/auth/providers", a.HandleProviders)
+	mux.HandleFunc("POST /api/auth/local/login", a.HandleLocalLogin)
+	mux.HandleFunc("GET /api/auth/oidc/{provider}/login", a.HandleOIDCLogin)
+	mux.HandleFunc("GET /api/auth/oidc/{provider}/callback", a.HandleOIDCCallback)
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, map[string]string{"status": "ok"}) })
+	mux.HandleFunc("GET /readyz", s.handleReadiness)
+	// /metrics exposes environment names and runtime internals, so it is never
+	// anonymous: a configured scrape token, or an authenticated dashboard session.
+	mux.Handle("GET /metrics", s.guardMetrics(a, http.HandlerFunc(s.handleMetrics)))
 	// Unauthenticated liveness/readiness probe (k8s / load balancer).
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
@@ -78,6 +87,7 @@ func (s *Server) registerRoutes(a *auth.Auth) {
 	admin.HandleFunc("GET /api/admin/logs", s.handleAdminLogs)
 	// Dashboard self-health (per-cluster collection state).
 	admin.HandleFunc("GET /api/admin/health", s.handleAdminHealth)
+	admin.HandleFunc("GET /api/admin/status", s.handleDependencyStatus)
 	protected.Handle("/api/admin/", auth.AdminMiddleware(admin))
 
 	mux.Handle("/api/", a.Middleware(protected))

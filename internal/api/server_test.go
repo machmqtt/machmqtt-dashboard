@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -31,9 +32,9 @@ func setupTestServerWithStore(t *testing.T) (*Server, *store.Store, *auth.Auth, 
 	t.Cleanup(func() { s.Close() })
 
 	u, _ := s.CreateUser("admin", "pass", store.RoleAdmin)
-	a := auth.New(s, "test-secret", false, false, nil)
+	a := auth.New(s, "test-secret", false)
 	token, _ := a.IssueToken(u)
-	log := slog.New(slog.NewTextHandler(nil, nil))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	cfg := &config.Config{
 		PollInterval: 5e9,
@@ -92,6 +93,53 @@ func TestLoginBadCredentials(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestLocalBreakGlassLoginEndpoint(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+	req := httptest.NewRequest("POST", "/api/auth/local/login", strings.NewReader(`{"username":"admin","password":"pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("local login status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthenticationProviderMetadataIsPublic(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/auth/providers", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("provider metadata status = %d, want 200", w.Code)
+	}
+	var response struct {
+		Providers      []auth.ProviderInfo `json:"providers"`
+		LocalLoginPath string              `json:"local_login_path"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.LocalLoginPath != "/login/local" {
+		t.Errorf("local login path = %q", response.LocalLoginPath)
+	}
+}
+
+func TestExternalLoginRateLimitDoesNotBlockBreakGlassLogin(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+	for i := 0; i < 11; i++ {
+		req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"missing","password":"wrong"}`))
+		req.RemoteAddr = "192.0.2.10:1234"
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+	}
+	req := httptest.NewRequest("POST", "/api/auth/local/login", strings.NewReader(`{"username":"admin","password":"pass"}`))
+	req.RemoteAddr = "192.0.2.10:1234"
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("local login status = %d after external limit, body: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -283,20 +331,20 @@ func TestMQTTAdminActionUnknownActionRejected(t *testing.T) {
 }
 
 func TestDefaultAdminMustChangePassword(t *testing.T) {
-	// Use EnsureDefaultAdmin (the real startup path) instead of CreateUser.
+	// Use explicit break-glass provisioning (the real startup path) instead of CreateUser.
 	s, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
 
-	_, err = s.EnsureDefaultAdmin()
+	_, err = s.EnsureBreakGlassAdmin("bootstrap-password")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	a := auth.New(s, "test-secret", false, false, nil)
-	log := slog.New(slog.NewTextHandler(nil, nil))
+	a := auth.New(s, "test-secret", false)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{
 		PollInterval: 5e9,
 	}
@@ -304,8 +352,8 @@ func TestDefaultAdminMustChangePassword(t *testing.T) {
 	mgr, _ := collector.NewManager(cfg, nil, log, s)
 	srv := NewServer(a, mgr, hub, log, "test", cfg, nil, s, nil)
 
-	// Login as default admin.
-	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"admin"}`))
+	// Login as the bootstrap admin.
+	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"bootstrap-password"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -342,5 +390,47 @@ func TestDefaultAdminMustChangePassword(t *testing.T) {
 	json.NewDecoder(w2.Body).Decode(&meResp)
 	if meResp["must_change_password"] != true {
 		t.Errorf("me must_change_password = %v, want true", meResp["must_change_password"])
+	}
+
+	// Backend middleware must block every unrelated protected route.
+	blockedReq := httptest.NewRequest("GET", "/api/admin/users", nil)
+	for _, c := range cookies {
+		blockedReq.AddCookie(c)
+	}
+	blocked := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(blocked, blockedReq)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("protected route status=%d want=403 body=%s", blocked.Code, blocked.Body.String())
+	}
+
+	// Rotating the password issues a current session and invalidates the bootstrap token.
+	changeReq := httptest.NewRequest("PUT", "/api/users/1/password", strings.NewReader(`{"old_password":"bootstrap-password","new_password":"rotated-password"}`))
+	for _, c := range cookies {
+		changeReq.AddCookie(c)
+	}
+	changed := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(changed, changeReq)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("password change status=%d body=%s", changed.Code, changed.Body.String())
+	}
+
+	staleReq := httptest.NewRequest("GET", "/api/me", nil)
+	for _, c := range cookies {
+		staleReq.AddCookie(c)
+	}
+	stale := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(stale, staleReq)
+	if stale.Code != http.StatusUnauthorized {
+		t.Fatalf("stale session status=%d want=401", stale.Code)
+	}
+
+	currentReq := httptest.NewRequest("GET", "/api/admin/users", nil)
+	for _, c := range changed.Result().Cookies() {
+		currentReq.AddCookie(c)
+	}
+	current := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(current, currentReq)
+	if current.Code != http.StatusOK {
+		t.Fatalf("rotated session status=%d want=200 body=%s", current.Code, current.Body.String())
 	}
 }

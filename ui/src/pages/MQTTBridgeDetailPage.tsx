@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import { useStore } from '../store/store'
 import { TableSkeleton } from '../components/Skeleton'
 import { ArrowLeft } from 'lucide-react'
@@ -128,7 +128,7 @@ export function MQTTBridgeDetailPage({ role }: { role?: string }) {
   }, [bridge])
 
   useEffect(() => {
-    fetchAll() // eslint-disable-line react-hooks/set-state-in-effect -- fetch-on-mount is intentional
+    fetchAll()
   }, [fetchAll])
   useEffect(() => {
     if (!activeEnv || !bridge) return

@@ -16,6 +16,7 @@ import (
 )
 
 const fetchTimeout = 3 * time.Second
+const maxMonitoringResponseBytes = 16 << 20
 
 type Fetcher struct {
 	client *http.Client
@@ -71,14 +72,21 @@ func (f *Fetcher) fetchWithTimeout(ctx context.Context, timeout time.Duration, b
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("fetch %s: status %d: %s", path, resp.StatusCode, body)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMonitoringResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(body) > maxMonitoringResponseBytes {
+		return fmt.Errorf("fetch %s: response exceeds %d bytes", path, maxMonitoringResponseBytes)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
@@ -115,18 +123,16 @@ func (f *Fetcher) FetchConnz(ctx context.Context, baseURL string, limit, offset 
 }
 
 func (f *Fetcher) FetchConnzWithSubs(ctx context.Context, baseURL string, limit int) (*Connz, error) {
+	return f.FetchConnzWithSubsPage(ctx, baseURL, limit, 0, "")
+}
+
+func (f *Fetcher) FetchConnzWithSubsPage(ctx context.Context, baseURL string, limit, offset int, filterSubject string) (*Connz, error) {
 	params := url.Values{"subs": {"true"}}
 	if limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	var c Connz
-	return &c, f.fetch(ctx, baseURL, "/connz", params, &c)
-}
-
-func (f *Fetcher) FetchConnzWithSubsFiltered(ctx context.Context, baseURL string, limit int, filterSubject string) (*Connz, error) {
-	params := url.Values{"subs": {"true"}}
-	if limit > 0 {
-		params.Set("limit", fmt.Sprintf("%d", limit))
+	if offset > 0 {
+		params.Set("offset", fmt.Sprintf("%d", offset))
 	}
 	if filterSubject != "" {
 		params.Set("filter_subject", filterSubject)
@@ -135,18 +141,29 @@ func (f *Fetcher) FetchConnzWithSubsFiltered(ctx context.Context, baseURL string
 	return &c, f.fetch(ctx, baseURL, "/connz", params, &c)
 }
 
+func (f *Fetcher) FetchConnzWithSubsFiltered(ctx context.Context, baseURL string, limit int, filterSubject string) (*Connz, error) {
+	return f.FetchConnzWithSubsPage(ctx, baseURL, limit, 0, filterSubject)
+}
+
 func (f *Fetcher) FetchConnzSubsDetail(ctx context.Context, baseURL string, limit int) (*Connz, error) {
-	return f.fetchConnzSubs(ctx, baseURL, "detail", limit, "")
+	return f.FetchConnzSubsDetailPage(ctx, baseURL, limit, 0, "")
 }
 
 func (f *Fetcher) FetchConnzSubsDetailFiltered(ctx context.Context, baseURL string, limit int, filterSubject string) (*Connz, error) {
-	return f.fetchConnzSubs(ctx, baseURL, "detail", limit, filterSubject)
+	return f.FetchConnzSubsDetailPage(ctx, baseURL, limit, 0, filterSubject)
 }
 
-func (f *Fetcher) fetchConnzSubs(ctx context.Context, baseURL, subsMode string, limit int, filterSubject string) (*Connz, error) {
+func (f *Fetcher) FetchConnzSubsDetailPage(ctx context.Context, baseURL string, limit, offset int, filterSubject string) (*Connz, error) {
+	return f.fetchConnzSubs(ctx, baseURL, "detail", limit, offset, filterSubject)
+}
+
+func (f *Fetcher) fetchConnzSubs(ctx context.Context, baseURL, subsMode string, limit, offset int, filterSubject string) (*Connz, error) {
 	params := url.Values{"subs": {subsMode}}
 	if limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if offset > 0 {
+		params.Set("offset", fmt.Sprintf("%d", offset))
 	}
 	if filterSubject != "" {
 		params.Set("filter_subject", filterSubject)

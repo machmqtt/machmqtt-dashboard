@@ -4,15 +4,20 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 )
 
 type Hub struct {
-	mu          sync.RWMutex
-	clients     map[*Client]bool
-	log         *slog.Logger
-	onSubscribe func(c *Client, env string)
+	mu            sync.RWMutex
+	clients       map[*Client]bool
+	log           *slog.Logger
+	onSubscribe   func(c *Client, env string)
+	dropped       atomic.Uint64
+	subscribed    atomic.Uint64
+	disconnects   atomic.Uint64
+	writeFailures atomic.Uint64
 }
 
 func NewHub(log *slog.Logger) *Hub {
@@ -88,13 +93,7 @@ func (h *Hub) ClientCount() int {
 // slow clients across all currently-connected clients (surfaced in admin health
 // so a persistently-stale viewer is visible to operators, not just in a log line).
 func (h *Hub) DroppedTotal() uint64 {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	var total uint64
-	for c := range h.clients {
-		total += c.dropped.Load()
-	}
-	return total
+	return h.dropped.Load()
 }
 
 // StaleClientCount returns how many currently-connected clients have dropped at
@@ -121,11 +120,18 @@ func (h *Hub) Register(c *Client) {
 
 func (h *Hub) Unregister(c *Client) {
 	h.mu.Lock()
+	_, existed := h.clients[c]
 	delete(h.clients, c)
 	n := len(h.clients)
 	h.mu.Unlock()
+	if existed {
+		h.disconnects.Add(1)
+	}
 	h.log.Info("ws client disconnected", "clients", n)
 }
+
+func (h *Hub) recordSubscription() { h.subscribed.Add(1) }
+func (h *Hub) recordWriteFailure() { h.writeFailures.Add(1) }
 
 // Broadcast serializes the message once, pre-frames it as a WebSocket
 // PreparedMessage, and fans the single shared frame out to every client
@@ -145,4 +151,23 @@ func (h *Hub) Broadcast(env string, msgType string, data any) {
 			deliver(c, pm)
 		}
 	}
+}
+
+type Stats struct {
+	Connected      int
+	Dropped        uint64
+	Subscriptions  uint64
+	Disconnects    uint64
+	WriteFailures  uint64
+	SendQueueDepth int
+}
+
+func (h *Hub) Stats() Stats {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	depth := 0
+	for client := range h.clients {
+		depth += len(client.send)
+	}
+	return Stats{Connected: len(h.clients), Dropped: h.dropped.Load(), Subscriptions: h.subscribed.Load(), Disconnects: h.disconnects.Load(), WriteFailures: h.writeFailures.Load(), SendQueueDepth: depth}
 }

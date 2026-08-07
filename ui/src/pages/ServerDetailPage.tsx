@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
 import { useStore } from '../store/store'
 import { CardSkeleton } from '../components/Skeleton'

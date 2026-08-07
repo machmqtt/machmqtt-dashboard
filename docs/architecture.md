@@ -183,7 +183,10 @@ trend charts.
 
 ### Auth (`internal/auth/`)
 
-- Passwords hashed with bcrypt
+- Mandatory local break-glass authentication with bcrypt password hashes
+- Ordered LDAP/Active Directory providers; first identity match wins
+- OIDC authorization-code flow with PKCE, state, nonce, and browser-bound callbacks
+- External accounts linked by provider and immutable subject, not username/email
 - JWT tokens signed with HMAC-SHA256 using the configured `session_secret`
 - Tokens stored in `httpOnly`, `SameSite=Strict` cookies (24h TTL)
 - Per-IP login rate limiting, plus a per-account lockout after repeated consecutive

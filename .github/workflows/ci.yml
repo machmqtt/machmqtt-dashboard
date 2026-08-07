@@ -1,20 +1,23 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
-  lint-and-check:
+  quality-and-security:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.3"
+          go-version: "1.26.5"
 
       - uses: actions/setup-node@v4
         with:
@@ -22,9 +25,12 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
+      - name: Pin npm
+        run: npm install --global npm@10.9.8
+
       - name: Go format check
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted=$(gofmt -l cmd internal test/enterprise-auth/app)
           if [ -n "$unformatted" ]; then
             echo "Files not formatted:"
             echo "$unformatted"
@@ -32,13 +38,21 @@ jobs:
           fi
 
       - name: Go vet
-        run: go vet ./...
+        run: go vet ./cmd/... ./internal/... ./test/enterprise-auth/app
 
-      - name: Go test
-        run: go test -count=1 -timeout 120s ./...
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4 run
+
+      - name: Go coverage gate
+        run: make test-go-coverage
+
+      - name: Go race suite
+        run: go test -race -count=1 -timeout 180s ./cmd/... ./internal/...
 
       - name: Go vulnerability check
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+        run: |
+          set -o pipefail
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./cmd/... ./internal/... ./test/enterprise-auth/app | tee govulncheck.txt
 
       - name: Install frontend dependencies
         run: cd ui && npm ci
@@ -46,11 +60,119 @@ jobs:
       - name: NPM audit
         run: cd ui && npm audit --audit-level=moderate
 
-      - name: TypeScript check
-        run: cd ui && npx tsc --noEmit
-
       - name: ESLint
         run: cd ui && npm run lint
 
+      - name: Frontend coverage gate
+        run: cd ui && npm run test:coverage
+
       - name: Build frontend
-        run: cd ui && npx vite build
+        run: cd ui && npm run build
+
+      - name: Initial bundle budget
+        run: cd ui && npm run check:bundle
+
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-security-evidence
+          path: |
+            coverage.out
+            ui/coverage/coverage-summary.json
+            govulncheck.txt
+          if-no-files-found: warn
+
+  enterprise-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Pin npm
+        run: npm install --global npm@10.9.8
+      - name: Install frontend and browser
+        run: |
+          cd ui
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: OpenLDAP and Dex integration matrix
+        run: make test-enterprise-auth
+
+  mutation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Pin npm
+        run: npm install --global npm@10.9.8
+      - name: Mutation quality gates
+        env:
+          GREMLINS_DIFF: origin/${{ github.base_ref }}
+        run: make test-mutation
+      - name: Retain mutation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-reports
+          path: |
+            mutation-reports/gremlins.json
+            ui/reports/mutation/mutation.json
+          if-no-files-found: warn
+
+  release-verification:
+    runs-on: ubuntu-latest
+    needs: [quality-and-security, enterprise-auth]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Pin npm
+        run: npm install --global npm@10.9.8
+      - run: cd ui && npm ci && npm run build
+      - name: Cross-compile release targets
+        run: make build-all
+      - name: Build release candidate once
+        run: mkdir -p bin && go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA}" -o bin/machmqtt-dashboard ./cmd/machmqtt-dashboard
+      - name: Smoke-test release candidate
+        run: bin/machmqtt-dashboard -version
+      - name: Representative benchmarks
+        run: scripts/benchmark-release.sh | tee benchmark.txt
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          file: bin/machmqtt-dashboard
+          format: spdx-json
+          output-file: machmqtt-dashboard.spdx.json
+          upload-artifact: false
+      - name: Retain release candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: |
+            bin/machmqtt-dashboard
+            machmqtt-dashboard.spdx.json
+            benchmark.txt

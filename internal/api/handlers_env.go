@@ -8,12 +8,104 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/noodlebit/machmqtt-dashboard/internal/collector"
 	"github.com/noodlebit/machmqtt-dashboard/internal/store"
+	"golang.org/x/sync/errgroup"
 )
+
+const (
+	connzPageSize       = 1024
+	connzMaxPerServer   = 50000
+	connzMaxClusterRows = 100000
+	connzFanoutLimit    = 4
+	connzRequestTimeout = 20 * time.Second
+)
+
+type connzPageFetcher func(context.Context, string, int, int) (*collector.Connz, error)
+
+type connzServerResult struct {
+	conns     []collector.ConnInfo
+	total     int
+	serverID  string
+	failed    bool
+	truncated bool
+}
+
+// fetchConnzPages concurrently fetches complete, bounded per-server result sets.
+// Results retain configuration order here and are sorted by callers before paging.
+func fetchConnzPages(ctx context.Context, servers []string, fetch connzPageFetcher) []connzServerResult {
+	results := make([]connzServerResult, len(servers))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(connzFanoutLimit)
+	for i, serverURL := range servers {
+		i, serverURL := i, serverURL
+		g.Go(func() error {
+			result := &results[i]
+			for offset := 0; offset < connzMaxPerServer; {
+				page, err := fetch(gctx, serverURL, connzPageSize, offset)
+				if err != nil {
+					result.failed = true
+					return nil
+				}
+				if result.serverID == "" {
+					result.serverID = page.ServerID
+					result.total = page.Total
+				}
+				for j := range page.Conns {
+					page.Conns[j].ServerID = page.ServerID
+				}
+				result.conns = append(result.conns, page.Conns...)
+				next := offset + len(page.Conns)
+				if len(page.Conns) == 0 || next <= offset || (page.Total > 0 && next >= page.Total) || len(page.Conns) < connzPageSize {
+					break
+				}
+				offset = next
+			}
+			if result.total == 0 {
+				result.total = len(result.conns)
+			}
+			if result.total > len(result.conns) || len(result.conns) >= connzMaxPerServer {
+				result.truncated = true
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return results
+}
+
+func flattenConnz(results []connzServerResult) (conns []collector.ConnInfo, reportedTotal, failedServers int, partial bool) {
+	for _, result := range results {
+		reportedTotal += result.total
+		if result.failed {
+			failedServers++
+			partial = true
+		}
+		if result.truncated {
+			partial = true
+		}
+		conns = append(conns, result.conns...)
+	}
+	sort.SliceStable(conns, func(i, j int) bool {
+		if conns[i].ServerID != conns[j].ServerID {
+			return conns[i].ServerID < conns[j].ServerID
+		}
+		if conns[i].Cid != conns[j].Cid {
+			return conns[i].Cid < conns[j].Cid
+		}
+		if conns[i].IP != conns[j].IP {
+			return conns[i].IP < conns[j].IP
+		}
+		return conns[i].Port < conns[j].Port
+	})
+	if len(conns) > connzMaxClusterRows {
+		conns = conns[:connzMaxClusterRows]
+		partial = true
+	}
+	return conns, reportedTotal, failedServers, partial
+}
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"version": s.version})
@@ -54,7 +146,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	overview := s.manager.Overview(env)
 	if overview == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 	writeJSON(w, overview)
@@ -64,7 +156,7 @@ func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	topo := s.manager.Topology(env)
 	if topo == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 	writeJSON(w, topo)
@@ -74,7 +166,7 @@ func (s *Server) handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
 	positions, err := s.store.GetTopologyPositions(env)
 	if err != nil {
-		http.Error(w, `{"error":"failed to load positions"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"failed to load positions"}`, http.StatusInternalServerError)
 		return
 	}
 	if positions == nil {
@@ -95,16 +187,16 @@ func (s *Server) handleSavePositions(w http.ResponseWriter, r *http.Request) {
 		Camera    *store.CameraState   `json:"camera,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	if err := s.store.SaveTopologyPositions(env, body.Positions); err != nil {
-		http.Error(w, `{"error":"failed to save positions"}`, http.StatusInternalServerError)
+		writeJSONError(w, `{"error":"failed to save positions"}`, http.StatusInternalServerError)
 		return
 	}
 	if body.Camera != nil {
 		if err := s.store.SaveTopologyCamera(env, *body.Camera); err != nil {
-			http.Error(w, `{"error":"failed to save camera"}`, http.StatusInternalServerError)
+			writeJSONError(w, `{"error":"failed to save camera"}`, http.StatusInternalServerError)
 			return
 		}
 	}
@@ -125,76 +217,83 @@ func (s *Server) handleConnz(w http.ResponseWriter, r *http.Request) {
 	limit := clampInt(q.Get("limit"), 50, 10000)
 	offset := clampInt(q.Get("offset"), 0, 100000)
 	acc := q.Get("acc")
+	state := q.Get("state")
 	filterSubject := q.Get("filter_subject")
 
-	snap := s.manager.Snapshot(env)
-	if snap == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+	fetcher := s.manager.Fetcher(env)
+	servers := s.manager.EnvServers(env)
+	if fetcher == nil || len(servers) == 0 {
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// If filtering by subject, build a CID set from the subs cache (15s TTL).
-	var subCIDs map[uint64]bool
-	subsAvailable := true
+	ctx, cancel := context.WithTimeout(r.Context(), connzRequestTimeout)
+	defer cancel()
+	results := fetchConnzPages(ctx, servers, func(ctx context.Context, serverURL string, pageLimit, pageOffset int) (*collector.Connz, error) {
+		// Subject filtering is applied below from the subscription-detail source.
+		// Fetching the full connection page here preserves the server-wide total and
+		// lets us report when either source is incomplete. Account and state remain
+		// upstream filters because NATS implements them directly.
+		return fetcher.FetchConnz(ctx, serverURL, pageLimit, pageOffset, "", acc, state, "")
+	})
+	allConns, reportedTotal, failedServers, partial := flattenConnz(results)
+
+	// Some monitoring-compatible endpoints ignore the account query parameter.
+	// Enforce it locally as well so the API contract is stable across providers.
+	if acc != "" {
+		filtered := allConns[:0]
+		for _, conn := range allConns {
+			if conn.Account == acc {
+				filtered = append(filtered, conn)
+			}
+		}
+		allConns = filtered
+	}
+
+	subsAvailable := false
 	subsTruncated := false
 	if filterSubject != "" {
-		rows, tr := s.getSubsRows(r.Context(), env)
-		subsTruncated = tr
-		// No rows means either the subscription source is unavailable or the
-		// cluster genuinely has no subscriptions. Either way the subject filter
-		// matches nothing — surface subsAvailable=false so the client can tell
-		// this apart from "there are simply no connections".
+		rows, truncated := s.getSubsRows(ctx, env)
 		subsAvailable = len(rows) > 0
-		subCIDs = make(map[uint64]bool, len(rows))
+		subsTruncated = truncated
+		type connectionKey struct {
+			serverID string
+			cid      uint64
+		}
+		matchingConnections := make(map[connectionKey]struct{}, len(rows))
 		for _, row := range rows {
 			if strings.Contains(row.Subject, filterSubject) {
-				subCIDs[row.ConnCid] = true
+				matchingConnections[connectionKey{serverID: row.ServerID, cid: row.ConnCid}] = struct{}{}
 			}
 		}
+		filtered := allConns[:0]
+		for _, conn := range allConns {
+			if _, ok := matchingConnections[connectionKey{serverID: conn.ServerID, cid: conn.Cid}]; ok {
+				filtered = append(filtered, conn)
+			}
+		}
+		allConns = filtered
 	}
 
-	var allConns []collector.ConnInfo
-	// Connz.Total is the server's own count of its connections, while Conns holds
-	// only the page the poll fetched (Collector.fetchServer caps it). Fewer rows
-	// than Total means this view is a prefix of the cluster's connections, so
-	// report both numbers instead of passing the fetched count off as the total.
-	serverTotal := 0
-	// A truncated subject-filter source can also hide connections from the result.
-	truncated := subsTruncated
-	for _, connz := range snap.Connz {
-		serverTotal += connz.Total
-		if len(connz.Conns) < connz.Total {
-			truncated = true
-		}
-		for _, c := range connz.Conns {
-			if acc != "" && c.Account != acc {
-				continue
-			}
-			if subCIDs != nil && !subCIDs[c.Cid] {
-				continue
-			}
-			allConns = append(allConns, c)
-		}
-	}
-
-	// total bounds the pageable rows (the fetched, filtered set); server_total is
-	// what the cluster reports it has.
-	total := len(allConns)
-	if offset > total {
-		offset = total
+	loadedTotal := len(allConns)
+	if offset > loadedTotal {
+		offset = loadedTotal
 	}
 	end := offset + limit
-	if end > total {
-		end = total
+	if end > loadedTotal {
+		end = loadedTotal
 	}
 
 	resp := map[string]any{
-		"connections":  allConns[offset:end],
-		"total":        total,
-		"server_total": serverTotal,
-		"truncated":    truncated,
-		"limit":        limit,
-		"offset":       offset,
+		"connections":    allConns[offset:end],
+		"total":          loadedTotal,
+		"server_total":   reportedTotal,
+		"loaded_total":   loadedTotal,
+		"limit":          limit,
+		"offset":         offset,
+		"partial":        partial || subsTruncated,
+		"truncated":      partial || subsTruncated,
+		"failed_servers": failedServers,
 	}
 	if filterSubject != "" {
 		resp["subs_available"] = subsAvailable
@@ -207,7 +306,7 @@ func (s *Server) handleConnzDetail(w http.ResponseWriter, r *http.Request) {
 	cidStr := r.PathValue("cid")
 	cid, err := strconv.ParseUint(cidStr, 10, 64)
 	if err != nil {
-		http.Error(w, `{"error":"invalid cid"}`, http.StatusBadRequest)
+		writeJSONError(w, `{"error":"invalid cid"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -303,28 +402,65 @@ type subRow struct {
 }
 
 // subsDetailCache caches the expensive /connz?subs=detail fetch across all servers.
-var subsDetailCacheMu sync.Mutex
-var subsDetailCacheData = make(map[string]*struct {
+type subsCacheEntry struct {
 	rows      []subRow
 	truncated bool
 	fetchedAt time.Time
-})
+}
 
 const subsCacheTTL = 15 * time.Second
 const subsCacheMaxEntries = 50
+
+// subsFetchTimeout bounds the detached single-flight fetch. It is longer than a
+// typical request so a slow cluster still fills the cache, but finite so a
+// wedged endpoint cannot hold the flight open indefinitely.
+const subsFetchTimeout = 30 * time.Second
 
 // getSubsRows returns the subscription rows and whether they are incomplete —
 // true when a server reported more connections than the fetch returned, so some
 // connections' subscriptions are missing from the table.
 func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
-	subsDetailCacheMu.Lock()
-	cached := subsDetailCacheData[env]
+	s.subsCacheMu.Lock()
+	cached := s.subsCacheData[env]
 	if cached != nil && time.Since(cached.fetchedAt) < subsCacheTTL {
-		rows, truncated := cached.rows, cached.truncated
-		subsDetailCacheMu.Unlock()
+		s.subsCacheHits.Add(1)
+		rows := append([]subRow(nil), cached.rows...)
+		truncated := cached.truncated
+		s.subsCacheMu.Unlock()
 		return rows, truncated
 	}
-	subsDetailCacheMu.Unlock()
+	s.subsCacheMu.Unlock()
+	s.subsCacheMisses.Add(1)
+	// The shared fetch outlives whichever caller happened to win the flight, so
+	// it runs on a detached context with its own deadline. Using the winner's
+	// request context would let one client disconnecting cancel the fetch for
+	// every caller waiting behind it — and poison the cache with the empty
+	// result for a full TTL.
+	value, _, _ := s.subsGroup.Do(env, func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), subsFetchTimeout)
+		defer cancel()
+		rows, truncated := s.loadSubsRows(fetchCtx, env)
+		return &subsCacheEntry{rows: rows, truncated: truncated}, nil
+	})
+	if value == nil {
+		return nil, false
+	}
+	result := value.(*subsCacheEntry)
+	return append([]subRow(nil), result.rows...), result.truncated
+}
+
+func (s *Server) loadSubsRows(ctx context.Context, env string) ([]subRow, bool) {
+	// A request may have populated the cache while this caller waited for the
+	// single-flight lock.
+	s.subsCacheMu.Lock()
+	cached := s.subsCacheData[env]
+	if cached != nil && time.Since(cached.fetchedAt) < subsCacheTTL {
+		s.subsCacheHits.Add(1)
+		rows := append([]subRow(nil), cached.rows...)
+		s.subsCacheMu.Unlock()
+		return rows, cached.truncated
+	}
+	s.subsCacheMu.Unlock()
 
 	// Fast path: use snapshot Connz when sys_collection is active and the slow
 	// poll has populated per-connection subscription detail via PING.CONNZ.
@@ -354,43 +490,30 @@ func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
 
 	const maxRows = 50000
 
-	// Fetch every server's connz concurrently — a sequential loop serializes each
-	// server's round-trip latency, which is slow on large clusters and blocks the
-	// request goroutine for the sum of all per-server fetches on a cache miss.
-	results := make([]*collector.Connz, len(servers))
-	var wg sync.WaitGroup
-	for i, url := range servers {
-		wg.Add(1)
-		go func(i int, url string) {
-			defer wg.Done()
-			connz, err := fetcher.FetchConnzSubsDetail(ctx, url, 1024)
-			if err != nil {
-				connz, err = fetcher.FetchConnzWithSubs(ctx, url, 1024)
-				if err != nil {
-					return
-				}
-			}
-			results[i] = connz
-		}(i, url)
-	}
-	wg.Wait()
+	ctx, cancel := context.WithTimeout(ctx, connzRequestTimeout)
+	defer cancel()
+	results := fetchConnzPages(ctx, servers, func(ctx context.Context, serverURL string, pageLimit, pageOffset int) (*collector.Connz, error) {
+		page, err := fetcher.FetchConnzSubsDetailPage(ctx, serverURL, pageLimit, pageOffset, "")
+		if err != nil {
+			// Older NATS versions may not support subs=detail.
+			return fetcher.FetchConnzWithSubsPage(ctx, serverURL, pageLimit, pageOffset, "")
+		}
+		return page, nil
+	})
 
 	var all []subRow
 	truncated := false
-	for _, connz := range results {
-		if connz == nil {
+	for _, result := range results {
+		if result.failed {
+			truncated = true
 			continue
 		}
-		// The per-server fetch above asks for at most 1024 connections; anything
-		// beyond that (or beyond maxRows) is silently absent from the table.
-		if len(connz.Conns) < connz.Total {
-			truncated = true
-		}
+		truncated = truncated || result.truncated
 		if len(all) >= maxRows {
 			break
 		}
-		srvName := serverName(connz.ServerID)
-		for _, c := range connz.Conns {
+		srvName := serverName(result.serverID)
+		for _, c := range result.conns {
 			if len(all) >= maxRows {
 				break
 			}
@@ -405,7 +528,7 @@ func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
 						Subject: sd.Subject, Queue: sd.Queue, Sid: sd.Sid,
 						Msgs: sd.Msgs, ConnCid: c.Cid, ConnName: c.Name,
 						ConnIP: c.IP, Account: a,
-						ServerID: connz.ServerID, ServerName: srvName,
+						ServerID: result.serverID, ServerName: srvName,
 					})
 					if len(all) >= maxRows {
 						break
@@ -417,7 +540,7 @@ func (s *Server) getSubsRows(ctx context.Context, env string) ([]subRow, bool) {
 						Subject: sub, Sid: strconv.Itoa(i + 1),
 						ConnCid: c.Cid, ConnName: c.Name,
 						ConnIP: c.IP, Account: acct,
-						ServerID: connz.ServerID, ServerName: srvName,
+						ServerID: result.serverID, ServerName: srvName,
 					})
 					if len(all) >= maxRows {
 						break
@@ -500,26 +623,25 @@ func subsRowsFromConnz(snap *collector.Snapshot) ([]subRow, bool) {
 }
 
 func (s *Server) cacheSubsRows(env string, rows []subRow, truncated bool) {
-	subsDetailCacheMu.Lock()
-	subsDetailCacheData[env] = &struct {
-		rows      []subRow
-		truncated bool
-		fetchedAt time.Time
-	}{rows: rows, truncated: truncated, fetchedAt: time.Now()}
-	if len(subsDetailCacheData) > subsCacheMaxEntries {
+	s.subsCacheMu.Lock()
+	s.subsCacheData[env] = &subsCacheEntry{
+		rows: append([]subRow(nil), rows...), truncated: truncated, fetchedAt: time.Now(),
+	}
+	if len(s.subsCacheData) > subsCacheMaxEntries {
 		var oldestKey string
 		var oldestTime time.Time
-		for k, v := range subsDetailCacheData {
+		for k, v := range s.subsCacheData {
 			if oldestKey == "" || v.fetchedAt.Before(oldestTime) {
 				oldestKey = k
 				oldestTime = v.fetchedAt
 			}
 		}
 		if oldestKey != "" {
-			delete(subsDetailCacheData, oldestKey)
+			delete(s.subsCacheData, oldestKey)
+			s.subsCacheEvictions.Add(1)
 		}
 	}
-	subsDetailCacheMu.Unlock()
+	s.subsCacheMu.Unlock()
 }
 
 func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
@@ -534,7 +656,7 @@ func (s *Server) handleSubsDetail(w http.ResponseWriter, r *http.Request) {
 
 	all, truncated := s.getSubsRows(r.Context(), env)
 	if all == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -670,7 +792,7 @@ func (s *Server) envSnapshot(w http.ResponseWriter, r *http.Request) *collector.
 	env := r.PathValue("env")
 	snap := s.manager.Snapshot(env)
 	if snap == nil {
-		http.Error(w, `{"error":"environment not found"}`, http.StatusNotFound)
+		writeJSONError(w, `{"error":"environment not found"}`, http.StatusNotFound)
 		return nil
 	}
 	return snap
@@ -722,6 +844,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
 		slog.Warn("writeError encode failed", "err", err)
 	}
+}
+
+func writeJSONError(w http.ResponseWriter, payload string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(payload + "\n"))
 }
 
 var nonSystemPrefixes = []string{"$MQTT5"}

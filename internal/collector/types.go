@@ -75,6 +75,7 @@ type Connz struct {
 }
 
 type ConnInfo struct {
+	ServerID       string      `json:"server_id,omitempty"`
 	Cid            uint64      `json:"cid"`
 	Kind           string      `json:"kind,omitempty"`
 	IP             string      `json:"ip"`

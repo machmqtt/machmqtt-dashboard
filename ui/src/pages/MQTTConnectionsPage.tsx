@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import {
   createColumnHelper,
   flexRender,
@@ -135,6 +135,7 @@ export function MQTTConnectionsPage() {
     col.accessor('username', { header: 'User', cell: (i) => i.getValue() || '-' }),
   ], [])
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table API is intentional
   const table = useReactTable({
     data: data?.connections || [],
     columns,

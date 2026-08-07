@@ -67,6 +67,13 @@ type Collector struct {
 	mqttMu          sync.RWMutex
 	mqttBridges     []MQTTBridgeInstance
 	mqttDiscovering atomic.Bool
+	polls           atomic.Uint64
+	partialPolls    atomic.Uint64
+	discoverySkips  atomic.Uint64
+	lastPollNS      atomic.Int64
+	lastSuccessUnix atomic.Int64
+	failureMu       sync.Mutex
+	endpointFailure map[string]uint64
 
 	// subscriber is non-nil when NATS push-based collection is configured.
 	// When set it supersedes the connz-scan HTTP discovery path.
@@ -90,11 +97,12 @@ type Collector struct {
 
 func newCollector(env config.Environment, fetcher *Fetcher, interval time.Duration, log *slog.Logger, db *store.Store) *Collector {
 	return &Collector{
-		env:      env,
-		fetcher:  fetcher,
-		interval: interval,
-		log:      log.With("cluster", env.Name),
-		store:    db,
+		env:             env,
+		fetcher:         fetcher,
+		interval:        interval,
+		log:             log.With("cluster", env.Name),
+		store:           db,
+		endpointFailure: make(map[string]uint64),
 		snapshot: &Snapshot{
 			Varz:     make(map[string]*Varz),
 			Routez:   make(map[string]*Routez),
@@ -184,10 +192,17 @@ func (c *Collector) maybeDiscoverBridges(ctx context.Context, clusterID string) 
 				c.discoverMQTTBridges(ctx, clusterID)
 			})
 		}()
+	} else if c.shouldConnzScan() {
+		c.discoverySkips.Add(1)
 	}
 }
 
 func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
+	started := time.Now()
+	defer func() {
+		c.polls.Add(1)
+		c.lastPollNS.Store(time.Since(started).Nanoseconds())
+	}()
 	if c.sys != nil {
 		// While in fallback, skip the $SYS poll (a 2s PING fan-in that times out
 		// when there is no $SYS access) unless the STATSZ cache shows the server
@@ -246,7 +261,18 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 		snap.Accountz = make(map[string]*Accountz)
 	}
 
-	g, gCtx := errgroup.WithContext(ctx)
+	pollDeadline := c.interval
+	if pollDeadline > 30*time.Second {
+		pollDeadline = 30 * time.Second
+	}
+	if pollDeadline < fetchTimeout {
+		pollDeadline = fetchTimeout
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, pollDeadline)
+	defer cancel()
+
+	g, gCtx := errgroup.WithContext(pollCtx)
+	g.SetLimit(8)
 	var mu sync.Mutex
 
 	// Track which server ID came from which config URL.
@@ -266,7 +292,13 @@ func (c *Collector) poll(ctx context.Context, clusterID string, slow bool) {
 		})
 	}
 
-	g.Wait()
+	_ = g.Wait() // workers record endpoint failures in the snapshot and always return nil
+	if len(snap.Varz) > 0 {
+		c.lastSuccessUnix.Store(time.Now().Unix())
+	}
+	if len(snap.Varz) < len(env.Servers) {
+		c.partialPolls.Add(1)
+	}
 
 	snap.ServerURLs = serverURLMap
 
@@ -321,12 +353,14 @@ func (c *Collector) pollSYS(ctx context.Context, _ string, slow bool) bool {
 	snap.Rates = computeRates(c.prev, snap)
 	c.snapshot = snap
 	c.snapMu.Unlock()
+	c.lastSuccessUnix.Store(time.Now().Unix())
 	return true
 }
 
 func (c *Collector) fetchServer(ctx context.Context, cfgURL string, snap *Snapshot, mu *sync.Mutex, slow bool, serverURLMap map[string]string) {
 	varz, err := c.fetcher.FetchVarz(ctx, cfgURL)
 	if err != nil {
+		c.recordEndpointFailure("varz")
 		c.log.Warn("fetch varz", "url", cfgURL, "err", err)
 		return
 	}
@@ -406,8 +440,15 @@ func (c *Collector) fetchServer(ctx context.Context, cfgURL string, snap *Snapsh
 // logFetchErr logs a non-nil secondary-endpoint fetch error at Warn.
 func (c *Collector) logFetchErr(endpoint, url string, err error) {
 	if err != nil {
+		c.recordEndpointFailure(endpoint)
 		c.log.Warn("fetch "+endpoint, "url", url, "err", err)
 	}
+}
+
+func (c *Collector) recordEndpointFailure(endpoint string) {
+	c.failureMu.Lock()
+	c.endpointFailure[endpoint]++
+	c.failureMu.Unlock()
 }
 
 func (c *Collector) discoverMQTTBridges(ctx context.Context, clusterID string) {
@@ -447,10 +488,14 @@ func (c *Collector) discoverMQTTBridges(ctx context.Context, clusterID string) {
 	// Persist discovered bridges keyed by cluster ID (stable identity).
 	if c.store != nil {
 		for _, b := range bridges {
-			c.store.UpsertMQTTBridge(clusterID, b.IP, b.ServerID, b.AdminURL)
+			if err := c.store.UpsertMQTTBridge(clusterID, b.IP, b.ServerID, b.AdminURL); err != nil {
+				c.log.Warn("persist discovered mqtt bridge", "ip", b.IP, "server_id", b.ServerID, "err", err)
+			}
 		}
 		// Clean up bridges not seen in 24 hours.
-		c.store.DeleteStaleMQTTBridges(clusterID, 24*time.Hour)
+		if err := c.store.DeleteStaleMQTTBridges(clusterID, 24*time.Hour); err != nil {
+			c.log.Warn("prune stale mqtt bridges", "cluster", clusterID, "err", err)
+		}
 	}
 
 	c.mqttMu.Lock()
@@ -574,6 +619,35 @@ func (c *Collector) MQTTBridges() []MQTTBridgeInstance {
 	// result in place, which would otherwise race the poll goroutine that
 	// reassigns c.mqttBridges.
 	return slices.Clone(c.mqttBridges)
+}
+
+type OperationalStats struct {
+	Polls            uint64
+	PartialPolls     uint64
+	DiscoverySkips   uint64
+	Discovering      bool
+	LastPollNanos    int64
+	LastSuccessUnix  int64
+	SnapshotAgeNanos int64
+	EndpointFailures map[string]uint64
+}
+
+func (c *Collector) operationalStats() OperationalStats {
+	stats := OperationalStats{
+		Polls: c.polls.Load(), PartialPolls: c.partialPolls.Load(),
+		DiscoverySkips: c.discoverySkips.Load(), Discovering: c.mqttDiscovering.Load(),
+		LastPollNanos: c.lastPollNS.Load(), LastSuccessUnix: c.lastSuccessUnix.Load(),
+		EndpointFailures: make(map[string]uint64),
+	}
+	if snapshot := c.Snapshot(); snapshot != nil && !snapshot.Timestamp.IsZero() {
+		stats.SnapshotAgeNanos = time.Since(snapshot.Timestamp).Nanoseconds()
+	}
+	c.failureMu.Lock()
+	for endpoint, count := range c.endpointFailure {
+		stats.EndpointFailures[endpoint] = count
+	}
+	c.failureMu.Unlock()
+	return stats
 }
 
 // Manager owns collectors for all clusters, supporting live add/remove/update
@@ -886,6 +960,23 @@ func (m *Manager) MQTTBridges(clusterID string) []MQTTBridgeInstance {
 		return nil
 	}
 	return c.MQTTBridges()
+}
+
+// OperationalStats returns a defensive snapshot of collector instrumentation,
+// keyed by stable cluster ID.
+func (m *Manager) OperationalStats() map[string]OperationalStats {
+	m.mu.RLock()
+	collectors := make(map[string]*Collector, len(m.collectors))
+	for id, collector := range m.collectors {
+		collectors[id] = collector
+	}
+	m.mu.RUnlock()
+
+	result := make(map[string]OperationalStats, len(collectors))
+	for id, collector := range collectors {
+		result[id] = collector.operationalStats()
+	}
+	return result
 }
 
 // SeedMQTTBridgesForTest replaces a cluster collector's cached MQTT bridge list.

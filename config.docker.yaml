@@ -6,6 +6,11 @@ poll_interval: 5s
 session_secret: "change-me"
 data_dir: "/data"
 
+authentication:
+  local:
+    enabled: true
+    break_glass_login: true
+
 environments:
   - name: local
     servers:

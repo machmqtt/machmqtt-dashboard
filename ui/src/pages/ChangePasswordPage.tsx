@@ -57,9 +57,11 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
         </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
+            <label htmlFor="current-password" className="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
             <input
+              id="current-password"
               type="password"
+              autoComplete="current-password"
               value={oldPassword}
               onChange={(e) => setOldPassword(e.target.value)}
               className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
@@ -67,18 +69,22 @@ export function ChangePasswordPage({ userId, onChanged }: Props) {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+            <label htmlFor="new-password" className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
             <input
+              id="new-password"
               type="password"
+              autoComplete="new-password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
+            <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
             <input
+              id="confirm-password"
               type="password"
+              autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               className="w-full border rounded px-3 py-2 outline-none focus:ring-2 focus:ring-brand-blue"

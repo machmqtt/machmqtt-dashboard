@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { X } from 'lucide-react'
 import type { TopologyNode } from '../store/store'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { formatRate as fmtRate } from '../utils/format'
 
 interface Props {

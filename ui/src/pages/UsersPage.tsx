@@ -8,6 +8,7 @@ interface ManagedUser {
   id: number
   username: string
   role: string
+  auth_provider: string
   created_at: string
   last_login: string | null
   failed_attempts: number
@@ -108,6 +109,8 @@ export function UsersPage() {
     return new Date(d).toLocaleString()
   }
 
+  const localAdminCount = users?.filter((user) => user.auth_provider === 'local' && user.role === 'admin').length || 0
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -152,7 +155,7 @@ export function UsersPage() {
       )}
 
       {loading ? (
-        <TableSkeleton rows={3} cols={7} />
+        <TableSkeleton rows={3} cols={8} />
       ) : (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           <table className="w-full text-sm">
@@ -160,6 +163,7 @@ export function UsersPage() {
               <tr>
                 <th className="px-4 py-3">ID</th>
                 <th className="px-4 py-3">Username</th>
+                <th className="px-4 py-3">Provider</th>
                 <th className="px-4 py-3">Role</th>
                 <th className="px-4 py-3">Last Login</th>
                 <th className="px-4 py-3">Failed Attempts</th>
@@ -169,11 +173,13 @@ export function UsersPage() {
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {users?.map((u) => {
-                const isDefaultAdmin = u.id === 1 && u.username === 'admin'
+                const isLocal = u.auth_provider === 'local'
+                const isLastLocalAdmin = isLocal && u.role === 'admin' && localAdminCount <= 1
                 return (
                   <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                     <td className="px-4 py-3 font-mono">{u.id}</td>
                     <td className="px-4 py-3 font-medium">{u.username}</td>
+                    <td className="px-4 py-3 text-gray-500">{u.auth_provider}</td>
                     <td className="px-4 py-3">
                       <span className={`text-xs rounded px-2 py-0.5 ${
                         u.role === 'admin'
@@ -194,11 +200,13 @@ export function UsersPage() {
                     <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
-                        <button onClick={() => { setChangePwUser(u); setOldPw(''); setNewPw('') }}
-                          className="text-gray-400 hover:text-brand-blue" title="Change password">
-                          <Key className="w-4 h-4" />
-                        </button>
-                        {!isDefaultAdmin && (
+                        {isLocal && (
+                          <button onClick={() => { setChangePwUser(u); setOldPw(''); setNewPw('') }}
+                            className="text-gray-400 hover:text-brand-blue" title="Change password">
+                            <Key className="w-4 h-4" />
+                          </button>
+                        )}
+                        {!isLastLocalAdmin && (
                           <button onClick={() => handleDelete(u)}
                             className="text-gray-400 hover:text-red-500" title="Delete user">
                             <Trash2 className="w-4 h-4" />

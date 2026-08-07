@@ -266,7 +266,9 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 
 	// Start the collector. If this fails, roll back the store row.
 	if err := s.manager.AddCluster(*cl); err != nil {
-		s.store.DeleteCluster(cl.ID)
+		if rollbackErr := s.store.DeleteCluster(cl.ID); rollbackErr != nil {
+			s.log.Error("rollback failed cluster creation", "id", cl.ID, "err", rollbackErr)
+		}
 		http.Error(w, `{"error":"failed to start cluster collector"}`, http.StatusInternalServerError)
 		return
 	}

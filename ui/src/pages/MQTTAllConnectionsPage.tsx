@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { fetchWithTimeout } from '../utils/fetchWithTimeout'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import {
   createColumnHelper,
   flexRender,

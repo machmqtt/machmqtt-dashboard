@@ -1,0 +1,44 @@
+issuer: http://127.0.0.1:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: dashboard-client
+    name: MachMQTT Dashboard Integration Test
+    secret: dashboard-secret
+    redirectURIs:
+      - http://127.0.0.1:18080/api/auth/oidc/dex/callback
+      - https://127.0.0.1:18443/api/auth/oidc/dex/callback
+
+connectors:
+  - type: ldap
+    id: ldap
+    name: OpenLDAP
+    config:
+      host: openldap:10389
+      insecureNoSSL: true
+      bindDN: cn=admin,dc=planetexpress,dc=com
+      bindPW: GoodNewsEveryone
+      usernamePrompt: Username
+      userSearch:
+        baseDN: ou=people,dc=planetexpress,dc=com
+        filter: "(objectClass=inetOrgPerson)"
+        username: uid
+        idAttr: entryUUID
+        emailAttr: mail
+        nameAttr: cn
+        preferredUsernameAttr: uid
+      groupSearch:
+        baseDN: ou=people,dc=planetexpress,dc=com
+        filter: "(objectClass=group)"
+        userMatchers:
+          - userAttr: DN
+            groupAttr: member
+        nameAttr: cn
