@@ -123,10 +123,31 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - name: Pin npm
         run: npm install --global npm@10.9.8
-      - name: Mutation quality gates
+      # The gates refuse to report success on an empty mutation set, so decide
+      # applicability here rather than letting a dependency-only PR fail them.
+      - name: Detect mutable changes
+        id: scope
+        env:
+          BASE: origin/${{ github.base_ref }}
+        run: |
+          if git diff --quiet "$BASE" -- '*.go' ':(exclude)*_test.go'; then
+            echo "go=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "go=true" >>"$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$BASE" -- 'ui/src'; then
+            echo "ui=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "ui=true" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Go mutation gate
+        if: steps.scope.outputs.go == 'true'
         env:
           GREMLINS_DIFF: origin/${{ github.base_ref }}
-        run: make test-mutation
+        run: make test-mutation-go
+      - name: Frontend mutation gate
+        if: steps.scope.outputs.ui == 'true'
+        run: make test-mutation-ui
       - name: Retain mutation reports
         if: always()
         uses: actions/upload-artifact@v4
