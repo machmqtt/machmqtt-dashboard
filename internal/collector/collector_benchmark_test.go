@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkParseMQTTMetrics(b *testing.B) {
-	body := strings.Repeat("machmqtt_connections_active 100\nmachmqtt_connections_total 200\nmachmqtt_messages_received_total{qos=\"0\"} 300\n", 100)
+	body := strings.Repeat("machmqtt_connections_active 100\nmachmqtt_connections_total 200\nmachmqtt_client_messages_received_total{qos=\"0\"} 300\n", 100)
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {
 		metrics := parsePrometheusMetrics(body)

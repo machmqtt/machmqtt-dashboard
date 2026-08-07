@@ -3,12 +3,25 @@ NPM ?= npm
 NPX ?= npx
 GO_COVERAGE_MIN ?= 95
 GO_COVERAGE_FILE ?= $(CURDIR)/coverage.out
-GREMLINS_DIFF ?= HEAD
+# Left empty on purpose: a HEAD baseline makes a clean checkout produce an empty
+# diff, so gremlins would mutate nothing and report success. Empty lets
+# scripts/test-mutation-go.sh resolve the merge base with the integration branch.
+GREMLINS_DIFF ?=
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 
-.PHONY: build build-ui build-all dev-backend dev-frontend test test-go-coverage test-ui test-mutation test-mutation-go test-mutation-ui test-enterprise-auth benchmark-release docker-build clean
+.PHONY: build build-ui build-all dev-backend dev-frontend test test-go-coverage test-ui test-mutation test-mutation-go test-mutation-ui test-enterprise-auth benchmark-release docker-build clean verify verify-quick hooks
+
+verify:
+	./scripts/verify.sh
+
+verify-quick:
+	./scripts/verify.sh --quick
+
+hooks:
+	git config core.hooksPath .githooks
+	@echo "pre-push hook enabled; it runs scripts/verify.sh before every push"
 
 build-ui:
 	cd ui && $(NPM) ci && $(NPM) run build

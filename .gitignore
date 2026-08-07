@@ -26,6 +26,8 @@ ui/playwright-report/
 
 # Test / coverage
 coverage.out
+govulncheck.txt
+benchmark.txt
 ui/coverage/
 ui/playwright-report/
 ui/test-results/

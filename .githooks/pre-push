@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Runs the full CI equivalent before a push so origin never goes red.
+# Bypass in an emergency with: git push --no-verify
+
+set -euo pipefail
+
+zero="0000000000000000000000000000000000000000"
+has_updates=false
+baseline=""
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  # An all-zero local sha is a branch deletion; there is nothing to verify.
+  if [[ "$local_sha" == "$zero" ]]; then
+    continue
+  fi
+  has_updates=true
+
+  # The commits this push actually adds are the ones the remote does not have
+  # yet, which is exactly the right mutation-testing baseline. A brand new branch
+  # reports an all-zero remote sha, so fall back to the integration branch.
+  if [[ "$remote_sha" == "$zero" ]]; then
+    candidate=$(git merge-base "$local_sha" origin/dev 2>/dev/null || true)
+  else
+    candidate="$remote_sha"
+  fi
+  if [[ -n "$candidate" ]]; then
+    baseline="$candidate"
+  fi
+done
+
+if ! $has_updates; then
+  echo "pre-push: nothing to verify (ref deletion only)"
+  exit 0
+fi
+
+if [[ -n "$baseline" ]]; then
+  export GREMLINS_DIFF="$baseline"
+fi
+
+exec "$(git rev-parse --show-toplevel)/scripts/verify.sh"

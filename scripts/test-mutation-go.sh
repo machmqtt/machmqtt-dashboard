@@ -38,14 +38,18 @@ rsync -a --delete "$repo_root/internal/" "$work_dir/internal/"
 git -C "$work_dir" add -N .
 
 # An empty diff means gremlins would mutate nothing and exit 0. That is a
-# vacuous pass, not a passing mutation score — refuse it.
-if git -C "$work_dir" diff --quiet HEAD; then
-  echo "error: no Go changes against baseline $baseline_ref; nothing to mutate." >&2
+# vacuous pass, not a passing mutation score — refuse it. Scope the check the way
+# gremlins actually works: it mutates non-test Go source only, so embedded
+# assets, testdata, example config and *_test.go files all satisfy a bare
+# `git diff` while leaving it with nothing to mutate.
+if git -C "$work_dir" diff --quiet HEAD -- '*.go' ':(exclude)*_test.go'; then
+  echo "error: no Go source changes against baseline $baseline_ref; nothing to mutate." >&2
   echo "       Refusing to report success for a mutation run that tested nothing." >&2
   exit 1
 fi
 
 mkdir -p "$report_dir"
+mutation_log="$work_dir/gremlins.out"
 (
   cd "$work_dir"
   "$go_command" run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
@@ -56,4 +60,14 @@ mkdir -p "$report_dir"
     --threshold-mcover 95 \
     --workers 8 \
     --test-cpu 2
-)
+) 2>&1 | tee "$mutation_log"
+
+# Belt and braces for the check above: gremlins skips mutants it cannot attribute
+# to the diff and still exits 0, reporting "Test efficacy: 0.00%" for a run that
+# proved nothing. Require that it actually exercised at least one mutant.
+exercised=$(awk -F'[:,]' '/^Killed: /{ total = $2 + $4 + $6 } END { print total + 0 }' "$mutation_log")
+if [[ "$exercised" -eq 0 ]]; then
+  echo "error: gremlins exercised no mutants against baseline $baseline_ref." >&2
+  echo "       A 0% score is not a pass — refusing to report success." >&2
+  exit 1
+fi
