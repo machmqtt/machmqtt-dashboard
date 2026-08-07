@@ -174,7 +174,16 @@ type MQTTMetrics struct {
 	// so non-zero means a registered hook handler is broken. HookVetoes counts
 	// operations a hook deliberately denied — policy, not failure.
 	HookPanics int64 `json:"hook_panics"`
-	HookVetoes int64 `json:"hook_vetoes"`
+	// SharedConsumerRecreated counts $share/ group durables the broker's periodic
+	// probe found deleted and rebuilt. Each increment means at least one group
+	// member had silently stopped taking its share, and that anything un-acked on
+	// the deleted consumer is gone. ConsumerDeletedUnderConsume is the delivery
+	// side of the same race (ConsumerDeleteRaces reports the bridge side): durable
+	// consumers re-attach and resume, but a shared member does not, and un-acked
+	// QoS 1/2 messages are unrecoverable either way.
+	SharedConsumerRecreated     int64 `json:"shared_consumer_recreated"`
+	ConsumerDeletedUnderConsume int64 `json:"consumer_deleted_under_consume"`
+	HookVetoes                  int64 `json:"hook_vetoes"`
 	// SysTreePublished is zero when observability.sys_tree is disabled.
 	// SysPublishBlocked counts client PUBLISH/will packets to a $SYS topic
 	// refused by the spoof-block, so non-zero means a client is attempting to
@@ -300,9 +309,14 @@ type MQTTMetrics struct {
 	OpPoolRejected       int64 `json:"op_pool_rejected"`
 
 	// --- Session / consumer persistence ---
-	ConsumerSeqMapEntries           int64 `json:"consumer_seq_map_entries"`
-	ConsumerDeletesDropped          int64 `json:"consumer_deletes_dropped"`
-	ConsumerDeleteRaces             int64 `json:"consumer_delete_races"`
+	ConsumerSeqMapEntries  int64 `json:"consumer_seq_map_entries"`
+	ConsumerDeletesDropped int64 `json:"consumer_deletes_dropped"`
+	ConsumerDeleteRaces    int64 `json:"consumer_delete_races"`
+	// LegacyNamedConsumers is a gauge, not a counter: durable consumers still
+	// carrying the pre-1.2.0 derived name. It should fall to zero as persistent
+	// sessions reconnect after an upgrade, so a floor that never clears means
+	// those sessions are not coming back or their consumers were orphaned.
+	LegacyNamedConsumers            int64 `json:"legacy_named_consumers"`
 	SessionDeletesDropped           int64 `json:"session_deletes_dropped"`
 	SessionPersistFailedWriteFailed int64 `json:"session_persist_failed_write_failed"`
 	SessionPersistFailedQueueFull   int64 `json:"session_persist_failed_queue_full"`

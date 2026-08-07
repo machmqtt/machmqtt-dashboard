@@ -203,6 +203,12 @@ machmqtt_panics_recovered_total 1498
 # HELP machmqtt_hook_panics_total Lifecycle-hook handler panics recovered by the hook registry. The panicking handler counts as allow (fail-open) and the chain continues; a non-zero value means a registered hook handler is broken.
 # TYPE machmqtt_hook_panics_total counter
 machmqtt_hook_panics_total 1505
+# HELP machmqtt_shared_consumer_recreated_total Shared-subscription ($share/) group consumers found deleted by the periodic existence probe and re-created. A deleted PUSH consumer emits nothing to its deliver subject, so this probe is the only way a member learns its group durable vanished; until it fires, that member has silently stopped taking its share while the rest of the group carries on. Each increment therefore means at least one member was starving, and that messages un-acked on the deleted consumer are gone. Detection latency is bounded by the probe interval (60s plus per-instance jitter), so a brief non-zero rate with no other symptom is a repaired outage, not an ongoing one.
+# TYPE machmqtt_shared_consumer_recreated_total counter
+machmqtt_shared_consumer_recreated_total 1491
+# HELP machmqtt_consumer_deleted_under_consume_total Durable or shared JetStream consumers deleted server-side while this instance was actively consuming them. This is the delivery-side signature of the consumer-delete race that machmqtt_consumer_delete_races_total reports from the bridge side. Per-client durable consumers are automatically re-created and re-attached (live delivery resumes); messages that were un-acked on the deleted consumer are NOT recoverable, because deleting it drops the interest retaining them. A shared-subscription member does not re-attach and stops taking its share until it resubscribes or reconnects. Any non-zero value means at least one subscriber lost queued QoS 1/2 messages.
+# TYPE machmqtt_consumer_deleted_under_consume_total counter
+machmqtt_consumer_deleted_under_consume_total 1498
 # HELP machmqtt_hook_vetoes_total Operations denied by a registered lifecycle hook (authenticate, subscribe, or publish handler returned a reason code >= 0x80). Distinguishes hook-policy rejections from ACL/rate-limit rejections.
 # TYPE machmqtt_hook_vetoes_total counter
 machmqtt_hook_vetoes_total 1512
@@ -519,6 +525,9 @@ machmqtt_consumer_deletes_dropped_total 1967
 # HELP machmqtt_consumer_delete_races_total Consumer delete requests that won the check-then-act race window and destroyed a consumer belonging to a new owner; non-zero values indicate a NATS cluster under high reconnect load.
 # TYPE machmqtt_consumer_delete_races_total counter
 machmqtt_consumer_delete_races_total 1974
+# HELP machmqtt_legacy_named_consumers Durable JetStream consumers still carrying the pre-1.2.0 derived name (mqtt_<clientID>) rather than a generation-scoped one. Refreshed by the consumer seq-map sweep. During an upgrade this should trend to ZERO as persistent sessions reconnect and adopt-then-retire their old consumers; a floor that never clears means those sessions are not reconnecting, or their consumers have been orphaned. Classification is a name heuristic for observability only — no broker behaviour branches on it.
+# TYPE machmqtt_legacy_named_consumers gauge
+machmqtt_legacy_named_consumers 1987
 # HELP machmqtt_retained_verify_failures_total Stored retained-message entries that failed envelope verification (HMAC mismatch, topic-binding mismatch, or decode error) and were silently dropped (treated as absent). Sustained non-zero indicates KV tampering, a cluster HMAC-key mismatch, or store corruption.
 # TYPE machmqtt_retained_verify_failures_total counter
 machmqtt_retained_verify_failures_total 1687

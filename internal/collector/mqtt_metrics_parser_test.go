@@ -231,6 +231,9 @@ machmqtt_op_pool_rejected_total 42
 machmqtt_consumer_seq_map_entries 43
 machmqtt_consumer_deletes_dropped_total 44
 machmqtt_consumer_delete_races_total 45
+machmqtt_legacy_named_consumers 145
+machmqtt_shared_consumer_recreated_total 146
+machmqtt_consumer_deleted_under_consume_total 147
 machmqtt_session_deletes_dropped_total 46
 machmqtt_session_persist_failed_total{reason="write_failed"} 47
 machmqtt_session_persist_failed_total{reason="queue_full"} 48
@@ -559,6 +562,9 @@ func TestParsePrometheusMetrics_NewObservability(t *testing.T) {
 		"ConsumerSeqMapEntries":           {m.ConsumerSeqMapEntries, 43},
 		"ConsumerDeletesDropped":          {m.ConsumerDeletesDropped, 44},
 		"ConsumerDeleteRaces":             {m.ConsumerDeleteRaces, 45},
+		"LegacyNamedConsumers":            {m.LegacyNamedConsumers, 145},
+		"SharedConsumerRecreated":         {m.SharedConsumerRecreated, 146},
+		"ConsumerDeletedUnderConsume":     {m.ConsumerDeletedUnderConsume, 147},
 		"SessionDeletesDropped":           {m.SessionDeletesDropped, 46},
 		"SessionPersistFailedWriteFailed": {m.SessionPersistFailedWriteFailed, 47},
 		"SessionPersistFailedQueueFull":   {m.SessionPersistFailedQueueFull, 48},

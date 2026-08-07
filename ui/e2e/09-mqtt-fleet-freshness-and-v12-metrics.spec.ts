@@ -66,6 +66,9 @@ const V12_METRICS = {
   subscribe_flush_failures: 6,
   session_persist_panics: 4,
   cluster_lease_revision_regressions: 1,
+  consumer_deleted_under_consume: 13,
+  shared_consumer_recreated: 14,
+  legacy_named_consumers: 15,
   cluster_heartbeat_publish_failures: 8,
   suback_rejected_by_reason: { '0x87': 4 },
   consumer_pending_messages: -1,
@@ -158,6 +161,11 @@ test.describe('v1.2 metric groups on the detail page', () => {
     await row('Subscribe Flush Failures', '6')
     await row('Persist Failed: Panic', '4')
     await row('Lease Revision Regressions', '1')
+
+    // Consumer-lifecycle counters the broker added after the initial v1.2 cut.
+    await row('Deleted Under Consume', '13')
+    await row('Shared Consumers Rebuilt', '14')
+    await row('Legacy-Named Consumers', '15')
 
     // SUBACK reason-code map renders as its own section.
     await expect(page.getByText('SUBACK Rejections by Reason Code')).toBeVisible()

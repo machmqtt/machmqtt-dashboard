@@ -56,6 +56,8 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		{"SysTreePublished", m.SysTreePublished, 1519},
 		{"SysPublishBlocked", m.SysPublishBlocked, 1526},
 		{"PublishRefusedTopic", m.PublishRefusedTopic, 1527},
+		{"SharedConsumerRecreated", m.SharedConsumerRecreated, 1491},
+		{"ConsumerDeletedUnderConsume", m.ConsumerDeletedUnderConsume, 1498},
 		{"WSProtocolViolations", m.WSProtocolViolations, 2142},
 		{"QoS2SyncPersistFailed", m.QoS2SyncPersistFailed, 1582},
 		{"WillVerifyFailures", m.WillVerifyFailures, 1694},
@@ -576,6 +578,9 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 			"sys_tree_published": 95,
 			"sys_publish_blocked": 96,
 			"publish_refused_topic": 97,
+			"legacy_named_consumers": 101,
+			"shared_consumer_recreated": 102,
+			"consumer_deleted_under_consume": 103,
 			"inbound_bytes": 97,
 			"session_persist_panics": 98,
 			"cluster_lease_revision_regressions": 99,
@@ -622,6 +627,9 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 		{"SysTreePublished", m.SysTreePublished, 95},
 		{"SysPublishBlocked", m.SysPublishBlocked, 96},
 		{"PublishRefusedTopic", m.PublishRefusedTopic, 97},
+		{"LegacyNamedConsumers", m.LegacyNamedConsumers, 101},
+		{"SharedConsumerRecreated", m.SharedConsumerRecreated, 102},
+		{"ConsumerDeletedUnderConsume", m.ConsumerDeletedUnderConsume, 103},
 		{"InboundBytes", m.InboundBytes, 97},
 		{"SessionPersistPanics", m.SessionPersistPanics, 98},
 		{"ClusterLeaseRevisionRegressions", m.ClusterLeaseRevisionRegressions, 99},
@@ -631,6 +639,15 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 	for _, tc := range scalars {
 		if tc.got != tc.want {
 			t.Errorf("%s = %d, want %d", tc.field, tc.got, tc.want)
+		}
+	}
+
+	// Auto-discovery is a holding pen, not a destination: once a key has a typed
+	// field, UnmarshalJSON must stop routing it to Uncurated. These three landed
+	// as uncurated when the broker added them and have since been curated.
+	for _, key := range []string{"legacy_named_consumers", "shared_consumer_recreated", "consumer_deleted_under_consume"} {
+		if value, ok := m.Uncurated[key]; ok {
+			t.Errorf("%s is curated but was still captured as uncurated (%v)", key, value)
 		}
 	}
 

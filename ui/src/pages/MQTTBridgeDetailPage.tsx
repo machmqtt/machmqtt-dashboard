@@ -673,11 +673,29 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Consumer Seq-Map Entries" value={fmtNum(data.consumer_seq_map_entries)} />
           <DI label="Consumer Deletes Dropped" value={fmtNum(data.consumer_deletes_dropped)} />
           <DI label="Consumer Delete Races" value={fmtNum(data.consumer_delete_races)} />
+          <DI
+            label="Deleted Under Consume"
+            value={fmtNum(data.consumer_deleted_under_consume)}
+            hint="Consumers deleted server-side while this bridge was consuming them. Durable consumers re-attach; a shared-subscription member does not. Un-acked QoS 1/2 messages are lost either way."
+          />
+          <DI
+            label="Shared Consumers Rebuilt"
+            value={fmtNum(data.shared_consumer_recreated)}
+            hint="$share/ group durables the broker found deleted and re-created. Each increment means a group member had silently stopped taking its share."
+          />
+          <DI
+            label="Legacy-Named Consumers"
+            value={fmtNum(data.legacy_named_consumers)}
+            hint="Durable consumers still on the pre-1.2.0 name. Should fall to zero as persistent sessions reconnect after an upgrade; a floor that never clears means those sessions are not coming back."
+          />
           <DI label="Session Deletes Dropped" value={fmtNum(data.session_deletes_dropped)} />
           <DI label="Persist Failed: Write" value={fmtNum(data.session_persist_failed_write_failed)} />
           <DI label="Persist Failed: Queue Full" value={fmtNum(data.session_persist_failed_queue_full)} />
           <DI label="Persist Failed: Panic" value={fmtNum(data.session_persist_panics)} />
         </Grid>
+        <p className="text-xs text-gray-400 mt-2">
+          <em>Deleted Under Consume</em> is the delivery-side view of the same race <em>Consumer Delete Races</em> reports from the bridge side; a non-zero value on either means at least one subscriber lost queued QoS 1/2 messages.
+        </p>
       </Section>
       <Section title="Cluster">
         <Grid>

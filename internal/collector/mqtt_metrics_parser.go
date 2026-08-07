@@ -360,6 +360,10 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.PanicsRecovered = parseInt(value)
 		case name == "machmqtt_hook_panics_total":
 			m.HookPanics = parseInt(value)
+		case name == "machmqtt_shared_consumer_recreated_total":
+			m.SharedConsumerRecreated = parseInt(value)
+		case name == "machmqtt_consumer_deleted_under_consume_total":
+			m.ConsumerDeletedUnderConsume = parseInt(value)
 		case name == "machmqtt_hook_vetoes_total":
 			m.HookVetoes = parseInt(value)
 		case name == "machmqtt_sys_tree_published_total":
@@ -621,6 +625,11 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.BridgeUp = true
 		case name == "machmqtt_consumer_delete_races_total":
 			m.ConsumerDeleteRaces = parseInt(value)
+			m.BridgeUp = true
+		// A gauge, so no _total suffix and the value may fall as sessions migrate
+		// off the pre-1.2.0 consumer names.
+		case name == "machmqtt_legacy_named_consumers":
+			m.LegacyNamedConsumers = parseInt(value)
 			m.BridgeUp = true
 		case name == "machmqtt_session_deletes_dropped_total":
 			m.SessionDeletesDropped = parseInt(value)
