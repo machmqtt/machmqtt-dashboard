@@ -68,8 +68,12 @@ data_dir: "./data"
 #       # never capture the shared secret.
 #       trusted_hosts: []
 #     # Optional TLS for the HTTP monitoring endpoints in `servers` above.
+#     # ca_file is a path on the dashboard host and can only be set here, never
+#     # through the admin API; ca_pem carries the same certificate inline and is
+#     # the API/UI route. ca_pem wins if both are set.
 #     tls:
 #       ca_file: ""
+#       ca_pem: ""
 #       insecure: false
 #     # Optional: NATS client connection, enabling two push-collection modes.
 #     # Omit nats_conn entirely for HTTP-only polling (the always-available
@@ -89,6 +93,7 @@ data_dir: "./data"
 #       sys_collection: false
 #       tls:
 #         ca_file: ""
+#         ca_pem: ""
 #         insecure: false
 #
 # Each cluster supports two optional push-collection modes, both driven by nats_conn:

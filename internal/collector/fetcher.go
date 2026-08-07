@@ -3,7 +3,6 @@ package collector
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,13 +29,11 @@ func NewFetcher(tlsCfg *config.TLSConfig) (*Fetcher, error) {
 			fmt.Fprintln(os.Stderr, "WARNING: TLS certificate verification is disabled (insecure: true). This is vulnerable to man-in-the-middle attacks.")
 		}
 		tc := &tls.Config{InsecureSkipVerify: tlsCfg.Insecure, MinVersion: tls.VersionTLS12}
-		if tlsCfg.CAFile != "" {
-			caCert, err := os.ReadFile(tlsCfg.CAFile)
-			if err != nil {
-				return nil, fmt.Errorf("read CA file: %w", err)
-			}
-			pool := x509.NewCertPool()
-			pool.AppendCertsFromPEM(caCert)
+		pool, err := tlsCfg.CertPool()
+		if err != nil {
+			return nil, err
+		}
+		if pool != nil {
 			tc.RootCAs = pool
 		}
 		transport.TLSClientConfig = tc

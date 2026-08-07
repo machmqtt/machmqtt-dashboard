@@ -1045,7 +1045,7 @@ func tlsSame(a, b *config.TLSConfig) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.CAFile == b.CAFile && a.Insecure == b.Insecure
+	return a.CAFile == b.CAFile && a.CAPem == b.CAPem && a.Insecure == b.Insecure
 }
 
 // natsConnSame reports whether two NATSConnConfig values are equivalent for

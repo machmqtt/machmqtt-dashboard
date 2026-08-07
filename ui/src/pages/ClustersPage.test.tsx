@@ -3,13 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useStore } from '../store/store'
 import { ClustersPage } from './ClustersPage'
 
+const PEM = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
+const PEM_PLACEHOLDER = '-----BEGIN CERTIFICATE-----'
+
 const richCluster = {
   id: 'cluster-1',
   name: 'Production',
   servers: [{ url: 'https://nats-1:8222' }],
   mqtt_bridges: [{ name: 'manual', url: 'https://bridge:8080', has_bearer_token: true }],
   mqtt_discovery: { enabled: true, admin_ports: [8080, 8081] },
-  tls: { ca_file: '/etc/ca.pem', insecure: false },
+  tls: { ca_file: '/etc/ca.pem', ca_pem: PEM, insecure: false },
   has_admin_token: true,
   nats_conn: {
     urls: ['nats://nats-1:4222'], username: 'collector', has_password: true,
@@ -62,7 +65,7 @@ describe('ClustersPage', () => {
 
     const switches = screen.getAllByRole('switch')
     fireEvent.click(switches[0])
-    fireEvent.change(screen.getByPlaceholderText('/etc/ssl/certs/ca.pem'), { target: { value: '/etc/ca.pem' } })
+    fireEvent.change(screen.getByPlaceholderText(PEM_PLACEHOLDER), { target: { value: PEM } })
     fireEvent.click(screen.getByLabelText(/Skip TLS verification/))
     fireEvent.change(screen.getByPlaceholderText('8080'), { target: { value: '8080, bad, 8081' } })
     fireEvent.click(switches[2])
@@ -99,13 +102,17 @@ describe('ClustersPage', () => {
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1))
     expect(reads).toBeGreaterThanOrEqual(2)
     const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
-    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
+    const posted = JSON.parse(String(post?.[1]?.body))
+    expect(posted).toMatchObject({
       name: 'New Cluster',
       servers: [{ url: 'https://nats:8222' }],
-      tls: { ca_file: '/etc/ca.pem', insecure: true },
+      tls: { ca_pem: PEM, insecure: true },
       mqtt_discovery: { enabled: true, admin_ports: [8080, 8081] },
       nats_conn: { urls: ['nats://nats:4222'], token: 'token-value', subject_prefix: '$CUSTOM', sys_collection: true },
     })
+    // ca_file names a path on the dashboard host, so the UI must never send it:
+    // the server rejects a client-chosen path (CodeQL go/path-injection).
+    expect(posted.tls).not.toHaveProperty('ca_file')
     expect(useStore.getState().toasts.at(-1)).toMatchObject({ type: 'success' })
   })
 
@@ -148,7 +155,9 @@ describe('ClustersPage', () => {
     for (const title of ['TLS', 'MachMQTT Discovery', 'NATS Push Collection']) {
       fireEvent.click(within(modal).getByText(title).closest('[role="button"]')!)
     }
-    expect(within(modal).getByPlaceholderText('/etc/ssl/certs/ca.pem')).toHaveValue('/etc/ca.pem')
+    expect(within(modal).getByPlaceholderText(PEM_PLACEHOLDER)).toHaveValue(PEM)
+    // The config-declared CA path is shown for context but is not editable here.
+    expect(within(modal).getByText('/etc/ca.pem')).toBeInTheDocument()
     expect(within(modal).getAllByPlaceholderText('•••• set — leave blank to keep')).toHaveLength(3)
     fireEvent.change(within(modal).getByPlaceholderText('production'), { target: { value: 'Production 2' } })
     fireEvent.click(within(modal).getByRole('button', { name: 'Save Changes' }))

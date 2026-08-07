@@ -2,10 +2,17 @@ package collector
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -357,18 +364,100 @@ func TestNewManagerFetcherError(t *testing.T) {
 
 // --- NewFetcher with valid CA file ---
 
+// testCAPem returns a self-signed CA certificate in PEM form.
+func testCAPem(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "collector-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// rootCAs digs the configured root pool out of the fetcher's transport so the
+// assertions below check the CA was actually installed, not merely that
+// NewFetcher returned without error.
+func rootCAs(t *testing.T, f *Fetcher) *x509.CertPool {
+	t.Helper()
+	transport, ok := f.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", f.client.Transport)
+	}
+	if transport.TLSClientConfig == nil {
+		t.Fatal("TLSClientConfig is nil, want a configured root pool")
+	}
+	return transport.TLSClientConfig.RootCAs
+}
+
 func TestNewFetcherValidCAFile(t *testing.T) {
-	// AppendCertsFromPEM silently ignores bad PEM, so any file content works.
-	// What matters is that ReadFile + AppendCertsFromPEM + tc.RootCAs = pool runs.
-	caFile := t.TempDir() + "/ca.pem"
-	os.WriteFile(caFile, []byte("not-real-pem"), 0600)
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, testCAPem(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	f, err := NewFetcher(&config.TLSConfig{CAFile: caFile})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f == nil {
-		t.Fatal("expected non-nil Fetcher")
+	pool := rootCAs(t, f)
+	if pool == nil {
+		t.Fatal("RootCAs is nil, want the configured CA")
+	}
+	if len(pool.Subjects()) != 1 { //nolint:staticcheck // Subjects is fine for a pool we built
+		t.Errorf("pool has %d subjects, want 1", len(pool.Subjects())) //nolint:staticcheck
+	}
+}
+
+// TestNewFetcherInlineCAPem covers the API-facing alternative to ca_file: the
+// PEM arrives inline, so no filesystem path is involved.
+func TestNewFetcherInlineCAPem(t *testing.T) {
+	f, err := NewFetcher(&config.TLSConfig{CAPem: string(testCAPem(t))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool := rootCAs(t, f); pool == nil {
+		t.Fatal("RootCAs is nil, want the inline CA")
+	}
+}
+
+// TestNewFetcherRejectsUnusablePEM pins the fix for a CA bundle that parses to
+// nothing. The pool used to be installed empty, so every TLS connection failed
+// later with an opaque verification error instead of here.
+func TestNewFetcherRejectsUnusablePEM(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, []byte("not-real-pem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewFetcher(&config.TLSConfig{CAFile: caFile}); err == nil {
+		t.Error("expected an error for a file containing no usable PEM certificates")
+	}
+	if _, err := NewFetcher(&config.TLSConfig{CAPem: "not-real-pem"}); err == nil {
+		t.Error("expected an error for inline PEM containing no certificates")
+	}
+}
+
+// TestNewFetcherRejectsNonRegularCAFile pins the denial-of-service half of the
+// path-injection fix: an endless device file such as /dev/zero must be refused
+// on sight rather than read until the process runs out of memory.
+func TestNewFetcherRejectsNonRegularCAFile(t *testing.T) {
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("/dev/zero unavailable")
+	}
+	if _, err := NewFetcher(&config.TLSConfig{CAFile: "/dev/zero"}); err == nil {
+		t.Error("expected an error for a non-regular CA file")
 	}
 }
 
