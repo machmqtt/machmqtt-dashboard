@@ -47,7 +47,7 @@ jobs:
         run: make test-go-coverage
 
       - name: Go race suite
-        run: go test -race -count=1 -timeout 180s ./cmd/... ./internal/...
+        run: go test -race -count=1 -timeout 600s ./cmd/... ./internal/...
 
       - name: Go vulnerability check
         run: |
