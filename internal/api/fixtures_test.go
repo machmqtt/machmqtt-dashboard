@@ -192,6 +192,13 @@ func polledServer(t *testing.T, natsCfg natsMockConfig, opts ...func(*polledOpts
 		t.Fatal("collector did not complete its initial poll")
 	}
 
+	// The poll launches connz bridge discovery in a background goroutine that
+	// outlives it and finishes by replacing the collector's cached bridge list.
+	// Returning while it is still in flight lets it land on top of whatever a
+	// test seeds next, so the bridge reads back as missing on a slow or loaded
+	// machine. Wait for it to settle before handing the server over.
+	waitForDiscoveryIdle(t, mgr, cl.ID)
+
 	var metrics *store.MetricsWriter
 	if o.withMetrics {
 		metrics = store.NewMetricsWriter(s, log, 24*time.Hour)
@@ -203,6 +210,24 @@ func polledServer(t *testing.T, natsCfg natsMockConfig, opts ...func(*polledOpts
 
 func withMetrics() func(*polledOpts) {
 	return func(o *polledOpts) { o.withMetrics = true }
+}
+
+// waitForDiscoveryIdle blocks until no MQTT bridge discovery is running for the
+// cluster. Discovery is started in the background by a poll and replaces the
+// collector's whole bridge list when it completes, so anything that seeds or
+// asserts on bridges has to let it finish first.
+func waitForDiscoveryIdle(t *testing.T, mgr *collector.Manager, clusterID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if !mgr.OperationalStats()[clusterID].Discovering {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("mqtt bridge discovery did not settle")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 func withLogBuf(lb *logbuf.Handler) func(*polledOpts) {

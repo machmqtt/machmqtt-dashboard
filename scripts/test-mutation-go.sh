@@ -63,11 +63,15 @@ mutation_log="$work_dir/gremlins.out"
 ) 2>&1 | tee "$mutation_log"
 
 # Belt and braces for the check above: gremlins skips mutants it cannot attribute
-# to the diff and still exits 0, reporting "Test efficacy: 0.00%" for a run that
-# proved nothing. Require that it actually exercised at least one mutant.
-exercised=$(awk -F'[:,]' '/^Killed: /{ total = $2 + $4 + $6 } END { print total + 0 }' "$mutation_log")
-if [[ "$exercised" -eq 0 ]]; then
-  echo "error: gremlins exercised no mutants against baseline $baseline_ref." >&2
-  echo "       A 0% score is not a pass — refusing to report success." >&2
+# to the diff, and reports the rest as NOT COVERED when no test reaches them. In
+# both cases it prints "Test efficacy: 0.00%" and still exits 0, ignoring its own
+# --threshold-mcover. Require that at least one mutant was actually run, so an
+# unreachable or unattributed change cannot pass as a mutation score.
+counts=$(awk -F'[:,]' '/^Killed: /{ killed = $2; lived = $4; uncovered = $6 } END { print killed + lived, uncovered + 0 }' "$mutation_log")
+tested=${counts% *}
+uncovered=${counts#* }
+if [[ "$tested" -eq 0 ]]; then
+  echo "error: gremlins ran no mutants against baseline $baseline_ref" >&2
+  echo "       ($uncovered were reported NOT COVERED). A 0% score is not a pass." >&2
   exit 1
 fi
