@@ -232,6 +232,17 @@ machmqtt_consumer_seq_map_entries 43
 machmqtt_consumer_deletes_dropped_total 44
 machmqtt_consumer_delete_races_total 45
 machmqtt_legacy_named_consumers 145
+machmqtt_jetstream_api_errors 148
+machmqtt_jetstream_api_total 149
+machmqtt_jetstream_health_probe_failures_total 150
+machmqtt_stream_ensure_retries_total 151
+machmqtt_stream_ensure_stalls_total 152
+machmqtt_subscribe_consumer_failures_total 153
+machmqtt_subscribe_consumer_retries_total 154
+machmqtt_nats_connected 1
+machmqtt_jetstream_degraded 1
+machmqtt_consumers_awaiting_reattach 155
+machmqtt_reattach_sweep_duration_ms 156
 machmqtt_shared_consumer_recreated_total 146
 machmqtt_consumer_deleted_under_consume_total 147
 machmqtt_session_deletes_dropped_total 46
@@ -563,6 +574,17 @@ func TestParsePrometheusMetrics_NewObservability(t *testing.T) {
 		"ConsumerDeletesDropped":          {m.ConsumerDeletesDropped, 44},
 		"ConsumerDeleteRaces":             {m.ConsumerDeleteRaces, 45},
 		"LegacyNamedConsumers":            {m.LegacyNamedConsumers, 145},
+		"JetStreamAPIErrors":              {m.JetStreamAPIErrors, 148},
+		"JetStreamAPITotal":               {m.JetStreamAPITotal, 149},
+		"JetStreamHealthProbeFailures":    {m.JetStreamHealthProbeFailures, 150},
+		"StreamEnsureRetries":             {m.StreamEnsureRetries, 151},
+		"StreamEnsureStalls":              {m.StreamEnsureStalls, 152},
+		"SubscribeConsumerFailures":       {m.SubscribeConsumerFailures, 153},
+		"SubscribeConsumerRetries":        {m.SubscribeConsumerRetries, 154},
+		"NATSConnected":                   {m.NATSConnected, 1},
+		"JetStreamDegraded":               {m.JetStreamDegraded, 1},
+		"ConsumersAwaitingReattach":       {m.ConsumersAwaitingReattach, 155},
+		"ReattachSweepDurationMs":         {m.ReattachSweepDurationMs, 156},
 		"SharedConsumerRecreated":         {m.SharedConsumerRecreated, 146},
 		"ConsumerDeletedUnderConsume":     {m.ConsumerDeletedUnderConsume, 147},
 		"SessionDeletesDropped":           {m.SessionDeletesDropped, 46},
@@ -649,5 +671,30 @@ func TestParsePrometheusMetrics_InstanceAbsent(t *testing.T) {
 	m := parsePrometheusMetrics(body)
 	if m.InstanceID != "" {
 		t.Errorf("InstanceID = %q, want empty string", m.InstanceID)
+	}
+}
+
+// The healthy state of the two 0/1 state gauges is ZERO, which the all-fields
+// fixture cannot express: walkForZeroFields requires every field to be
+// non-zero. A parsed 0 and an untouched field are the same value, so this pins
+// the distinction the only way it can be pinned — by starting from a struct
+// where both are already 1 and checking the broker's 0 overwrites them.
+func TestParsePrometheusStateGaugesParseZero(t *testing.T) {
+	healthy := parsePrometheusMetrics("machmqtt_nats_connected 0\nmachmqtt_jetstream_degraded 0\n")
+	if healthy.NATSConnected != 0 {
+		t.Errorf("NATSConnected = %d, want 0", healthy.NATSConnected)
+	}
+	if healthy.JetStreamDegraded != 0 {
+		t.Errorf("JetStreamDegraded = %d, want 0", healthy.JetStreamDegraded)
+	}
+	// And the same body with 1s must land as 1, so the zero above is a parsed
+	// value rather than the parser skipping both families outright.
+	degraded := parsePrometheusMetrics("machmqtt_nats_connected 1\nmachmqtt_jetstream_degraded 1\n")
+	if degraded.NATSConnected != 1 || degraded.JetStreamDegraded != 1 {
+		t.Errorf("NATSConnected/JetStreamDegraded = %d/%d, want 1/1", degraded.NATSConnected, degraded.JetStreamDegraded)
+	}
+	// Neither family is gated on the bridge being up, so neither may claim it.
+	if healthy.BridgeUp || degraded.BridgeUp {
+		t.Error("state gauges must not imply BridgeUp: the broker emits them ungated")
 	}
 }

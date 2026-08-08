@@ -174,6 +174,12 @@ machmqtt_retain_persist_failed_total{op="delete"} 2135
 # HELP machmqtt_subscriptions_total SUBSCRIBE packets successfully processed.
 # TYPE machmqtt_subscriptions_total counter
 machmqtt_subscriptions_total 1449
+# HELP machmqtt_subscribe_consumer_failures_total SUBSCRIBE topic filters refused because the JetStream consumer could not be created or updated — a broker-side failure, NOT a rejected filter. These also appear in machmqtt_suback_rejected_by_reason_total as 0x80 together with deny-list, ACL and limit rejections, which are working as intended; this counter isolates the ones caused by the cluster being unable to service the subscribe, such as a stream-leader election in flight.
+# TYPE machmqtt_subscribe_consumer_failures_total counter
+machmqtt_subscribe_consumer_failures_total 1436
+# HELP machmqtt_subscribe_consumer_retries_total SUBSCRIBEs whose JetStream consumer create failed once and SUCCEEDED on retry — each is a subscribe that would previously have been refused with SUBACK 0x80 during a stream-leader election. Leading indicator for machmqtt_subscribe_consumer_failures_total: it counts subscribes that ultimately worked, so a wobbling cluster shows up here before any client is told its subscription failed.
+# TYPE machmqtt_subscribe_consumer_retries_total counter
+machmqtt_subscribe_consumer_retries_total 1443
 # HELP machmqtt_unsubscriptions_total UNSUBSCRIBE packets successfully processed.
 # TYPE machmqtt_unsubscriptions_total counter
 machmqtt_unsubscriptions_total 1456
@@ -528,6 +534,21 @@ machmqtt_consumer_delete_races_total 1974
 # HELP machmqtt_legacy_named_consumers Durable JetStream consumers still carrying the pre-1.2.0 derived name (mqtt_<clientID>) rather than a generation-scoped one. Refreshed by the consumer seq-map sweep. During an upgrade this should trend to ZERO as persistent sessions reconnect and adopt-then-retire their old consumers; a floor that never clears means those sessions are not reconnecting, or their consumers have been orphaned. Classification is a name heuristic for observability only — no broker behaviour branches on it.
 # TYPE machmqtt_legacy_named_consumers gauge
 machmqtt_legacy_named_consumers 1987
+# HELP machmqtt_jetstream_api_errors JetStream ACCOUNT cumulative API error count as the NATS server reports it. Account-wide, NOT this instance only — every client on the same account contributes, including other brokers. Refreshed every 30s by the bridge health probe. A NON-ZERO VALUE IS NORMAL: a 404 stream-not-found counts as an API error, and the broker issues exactly that on every startup to check whether a stream exists before creating it — so do not alert on >0. Alert on the RATE rising against a steady machmqtt_jetstream_api_total, which means the JetStream API is REJECTING requests (replica placement, quota) rather than being slow, the one signature that has no other signal — the NATS socket stays up and machmqtt_nats_disconnects_total stays flat throughout.
+# TYPE machmqtt_jetstream_api_errors gauge
+machmqtt_jetstream_api_errors 1994
+# HELP machmqtt_jetstream_api_total JetStream ACCOUNT cumulative API request count, the denominator for machmqtt_jetstream_api_errors. Account-wide, not per-instance.
+# TYPE machmqtt_jetstream_api_total gauge
+machmqtt_jetstream_api_total 2001
+# HELP machmqtt_jetstream_health_probe_failures_total Periodic JetStream health probes that got no answer at all, as distinct from an answer reporting errors. Sustained non-zero with a connected NATS link means the JetStream layer specifically is unavailable; after 3 consecutive failures /readyz reports jetstream-degraded.
+# TYPE machmqtt_jetstream_health_probe_failures_total counter
+machmqtt_jetstream_health_probe_failures_total 2008
+# HELP machmqtt_stream_ensure_retries_total Stream ensures that failed on one attempt and succeeded on a later one, each a JetStream API reply that went missing while the server actually did the work. Before v1.2.0 this condition was a FATAL startup failure (the broker exited even though the stream existed), so a non-zero value means this deployment IS hitting it and restarts are at risk. A rising rate means the cluster is dropping JetStream API replies — investigate route stability and meta-leader health.
+# TYPE machmqtt_stream_ensure_retries_total counter
+machmqtt_stream_ensure_retries_total 2015
+# HELP machmqtt_stream_ensure_stalls_total Stream creates that were still outstanding when the stall watchdog fired (5s). LEADING indicator for machmqtt_stream_ensure_retries_total: this increments even when the create then SUCCEEDS, so a cluster beginning to drop JetStream API replies shows up here before any restart actually fails. Each stall also logs whether an independent request on the same connection answered, which separates a lost reply from a connection-level JetStream failure.
+# TYPE machmqtt_stream_ensure_stalls_total counter
+machmqtt_stream_ensure_stalls_total 2022
 # HELP machmqtt_retained_verify_failures_total Stored retained-message entries that failed envelope verification (HMAC mismatch, topic-binding mismatch, or decode error) and were silently dropped (treated as absent). Sustained non-zero indicates KV tampering, a cluster HMAC-key mismatch, or store corruption.
 # TYPE machmqtt_retained_verify_failures_total counter
 machmqtt_retained_verify_failures_total 1687
@@ -605,6 +626,18 @@ machmqtt_session_fencing_rejected_total 1911
 # HELP machmqtt_drained 1 when the instance is operator-drained (POST /admin/drain), else 0.
 # TYPE machmqtt_drained gauge
 machmqtt_drained 2107
+# HELP machmqtt_nats_connected 1 when the NATS socket is currently connected, else 0. Read with machmqtt_jetstream_degraded: connected=0 is a link outage (the broker rejects new CONNECTs with 0x88 and retries forever); connected=1 with degraded=1 is a JetStream-layer failure while the socket stays up, which machmqtt_nats_disconnects_total will NOT show.
+# TYPE machmqtt_nats_connected gauge
+machmqtt_nats_connected 1
+# HELP machmqtt_jetstream_degraded 1 when JetStream is unhealthy while the NATS socket is still up, else 0. Flips after consecutive infrastructure failures on real traffic (not a single blip). While 1, /readyz reports jetstream-degraded (503) and Clean Start=0 CONNECTs are refused 0x88, so sessions, retained messages and QoS 1/2 are unavailable on this instance.
+# TYPE machmqtt_jetstream_degraded gauge
+machmqtt_jetstream_degraded 1
+# HELP machmqtt_consumers_awaiting_reattach Clients whose durable QoS 1/2 consumers are dead pending re-attach after a bridge rebuild that completed while JetStream was still down. Non-zero means this instance CANNOT deliver QoS 1/2 to that many sessions right now; it clears when a re-attach sweep completes. Sustained non-zero with machmqtt_jetstream_degraded back at 0 means recovery did not trigger a sweep — restart the instance.
+# TYPE machmqtt_consumers_awaiting_reattach gauge
+machmqtt_consumers_awaiting_reattach 2029
+# HELP machmqtt_reattach_sweep_duration_ms Milliseconds taken by the most recent post-rebuild consumer re-attach sweep. The sweep performs one JetStream re-attach per connected client at bounded concurrency, so it scales with connection count; a large value means clients were stalled that long after the rebuild before QoS 1/2 delivery resumed.
+# TYPE machmqtt_reattach_sweep_duration_ms gauge
+machmqtt_reattach_sweep_duration_ms 2036
 # HELP machmqtt_cluster_hmac_failures_total HMAC envelope verification failures by source instance; incremented on bad HMAC, replayed nonce, expired/future timestamp, or malformed envelope.
 # TYPE machmqtt_cluster_hmac_failures_total counter
 machmqtt_cluster_hmac_failures_total{source_instance_id="peer-a"} 61

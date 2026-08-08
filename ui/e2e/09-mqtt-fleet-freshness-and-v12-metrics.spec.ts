@@ -67,6 +67,17 @@ const V12_METRICS = {
   session_persist_panics: 4,
   cluster_lease_revision_regressions: 1,
   consumer_deleted_under_consume: 13,
+  subscribe_consumer_failures: 16,
+  subscribe_consumer_retries: 17,
+  jetstream_api_errors: 18,
+  jetstream_api_total: 19,
+  jetstream_health_probe_failures: 20,
+  stream_ensure_retries: 21,
+  stream_ensure_stalls: 22,
+  nats_connected: 1,
+  jetstream_degraded: 1,
+  consumers_awaiting_reattach: 23,
+  reattach_sweep_duration_ms: 24,
   shared_consumer_recreated: 14,
   legacy_named_consumers: 15,
   cluster_heartbeat_publish_failures: 8,
@@ -166,6 +177,17 @@ test.describe('v1.2 metric groups on the detail page', () => {
     await row('Deleted Under Consume', '13')
     await row('Shared Consumers Rebuilt', '14')
     await row('Legacy-Named Consumers', '15')
+
+    // Consumer-create and JetStream-account health.
+    await row('Consumer-Create Failures', '16')
+    await row('Account API Errors', '18')
+    await row('Stream Ensure Stalls', '22')
+
+    // The 0/1 state gauges must read as words, never as "1".
+    await row('NATS Socket', 'Connected')
+    await row('JetStream', 'Degraded')
+    await row('Consumers Awaiting Re-Attach', '23')
+    await row('Last Re-Attach Sweep', '24 ms')
 
     // SUBACK reason-code map renders as its own section.
     await expect(page.getByText('SUBACK Rejections by Reason Code')).toBeVisible()

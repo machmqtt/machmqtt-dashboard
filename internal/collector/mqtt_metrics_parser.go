@@ -360,6 +360,21 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.PanicsRecovered = parseInt(value)
 		case name == "machmqtt_hook_panics_total":
 			m.HookPanics = parseInt(value)
+		// Ungated families: the broker emits these regardless of bridge state, so
+		// unlike the block above they must not imply BridgeUp.
+		case name == "machmqtt_subscribe_consumer_failures_total":
+			m.SubscribeConsumerFailures = parseInt(value)
+		case name == "machmqtt_subscribe_consumer_retries_total":
+			m.SubscribeConsumerRetries = parseInt(value)
+		case name == "machmqtt_consumers_awaiting_reattach":
+			m.ConsumersAwaitingReattach = parseInt(value)
+		case name == "machmqtt_reattach_sweep_duration_ms":
+			m.ReattachSweepDurationMs = parseInt(value)
+		// 0/1 state gauges: a parsed 0 is a reported value, not an absent one.
+		case name == "machmqtt_nats_connected":
+			m.NATSConnected = parseInt(value)
+		case name == "machmqtt_jetstream_degraded":
+			m.JetStreamDegraded = parseInt(value)
 		case name == "machmqtt_shared_consumer_recreated_total":
 			m.SharedConsumerRecreated = parseInt(value)
 		case name == "machmqtt_consumer_deleted_under_consume_total":
@@ -630,6 +645,21 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		// off the pre-1.2.0 consumer names.
 		case name == "machmqtt_legacy_named_consumers":
 			m.LegacyNamedConsumers = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_jetstream_api_errors":
+			m.JetStreamAPIErrors = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_jetstream_api_total":
+			m.JetStreamAPITotal = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_jetstream_health_probe_failures_total":
+			m.JetStreamHealthProbeFailures = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_stream_ensure_retries_total":
+			m.StreamEnsureRetries = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_stream_ensure_stalls_total":
+			m.StreamEnsureStalls = parseInt(value)
 			m.BridgeUp = true
 		case name == "machmqtt_session_deletes_dropped_total":
 			m.SessionDeletesDropped = parseInt(value)

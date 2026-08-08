@@ -306,6 +306,22 @@ function fmtMs(sumSeconds: number, count: number): string {
   return (ms * 1000).toFixed(0) + ' µs'
 }
 
+// fmtSweepMs renders reattach_sweep_duration_ms. The broker keeps it an integer
+// count of milliseconds so the OTLP path can carry it as an int64 scalar.
+function fmtSweepMs(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  if (v === 0) return 'no sweep yet'
+  if (v >= 1000) return (v / 1000).toFixed(2) + ' s'
+  return v + ' ms'
+}
+
+// fmtState renders a broker 0/1 state gauge. Zero is a reported value here, not
+// an absent one, so it gets a word rather than a number.
+function fmtState(v: number | null | undefined, whenOne: string, whenZero: string): string {
+  if (v === null || v === undefined) return '—'
+  return v === 1 ? whenOne : whenZero
+}
+
 // fmtPending renders consumer_pending_messages.
 // -1 means JetStream is unavailable and the metric was absent.
 function fmtPending(v: number): string {
@@ -537,6 +553,16 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Subscribes" value={fmtNum(data.subscribes)} />
           <DI label="Unsubscribes" value={fmtNum(data.unsubscribes)} />
           <DI label="Subscribe Flush Failures" value={fmtNum(data.subscribe_flush_failures)} />
+          <DI
+            label="Consumer-Create Failures"
+            value={fmtNum(data.subscribe_consumer_failures)}
+            hint="SUBACK 0x80s caused by a JetStream consumer create/update failing, separated from the policy rejections that return the same reason code."
+          />
+          <DI
+            label="Consumer-Create Retries"
+            value={fmtNum(data.subscribe_consumer_retries)}
+            hint="Consumer creates that failed once and then succeeded — subscribes rescued from a 0x80 rather than lost."
+          />
           <DI label="Keepalive Timeouts" value={fmtNum(data.keepalive_timeouts)} />
           <DI label="PINGREQ Rate-Limited" value={fmtNum(data.pingreq_rate_limited)} />
         </Grid>
@@ -634,6 +660,34 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Push Force-Disconnected" value={fmtNum(data.bridge_consumer_push_force_disconnected)} />
         </Grid>
       </Section>
+      <Section title="Link & Re-Attach State">
+        <Grid>
+          <DI
+            label="NATS Socket"
+            value={fmtState(data.nats_connected, 'Connected', 'Disconnected')}
+            valueClass={data.nats_connected === 0 ? 'text-red-600 dark:text-red-400' : ''}
+            hint="The broker's own view of its NATS socket, sampled with the rest of the metrics."
+          />
+          <DI
+            label="JetStream"
+            value={fmtState(data.jetstream_degraded, 'Degraded', 'Healthy')}
+            valueClass={data.jetstream_degraded === 1 ? 'text-red-600 dark:text-red-400' : ''}
+            hint="Degraded means JetStream is unhealthy while the NATS socket is still up — the failure mode with no other live signal, because the disconnect counters stay flat throughout it."
+          />
+          <DI
+            label="Consumers Awaiting Re-Attach"
+            value={fmtNum(data.consumers_awaiting_reattach)}
+            valueClass={(data.consumers_awaiting_reattach ?? 0) > 0 ? 'text-red-600 dark:text-red-400' : ''}
+            hint="Clients whose durable QoS 1/2 consumers are dead pending re-attach after a degraded rebuild. Non-zero means the bridge cannot deliver QoS 1/2 to that many sessions right now."
+          />
+          <DI
+            label="Last Re-Attach Sweep"
+            value={fmtSweepMs(data.reattach_sweep_duration_ms)}
+            hint="How long the most recent post-rebuild consumer re-attach sweep took. Rebuilds are rare, so only the last one is reported."
+          />
+        </Grid>
+        <p className="text-xs text-gray-400 mt-2">These are broker-sampled metrics. The bridge's authoritative readiness — ready, draining or JetStream-degraded — is the badge at the top of this page, which comes from <span className="font-mono">/readyz</span> or the push envelope rather than from this snapshot.</p>
+      </Section>
       <Section title="Throttling & ACL">
         <Grid>
           <DI label="Aggregate Limit (msg/s)" value={fmtNum(data.aggregate_publish_limit_msgs_per_sec)} />
@@ -720,8 +774,35 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Session Write-Behind Depth" value={fmtNum(data.session_write_behind_depth)} />
           <DI label="Consumer Pending Messages" value={fmtPending(data.consumer_pending_messages ?? -1)} />
           <DI label="Stalled Consumers" value={fmtNum(data.stalled_consumers)} />
+          <DI
+            label="Account API Requests"
+            value={fmtNum(data.jetstream_api_total)}
+            hint="JetStream API requests for the whole NATS account, as the server reports them — not this bridge's own request count."
+          />
+          <DI
+            label="Account API Errors"
+            value={fmtNum(data.jetstream_api_errors)}
+            valueClass={(data.jetstream_api_errors ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : ''}
+            hint="JetStream API errors for the whole NATS account. Read as a ratio against Account API Requests: errors climbing against a flat total means the API is rejecting work."
+          />
+          <DI
+            label="Health Probe Failures"
+            value={fmtNum(data.jetstream_health_probe_failures)}
+            hint="Periodic JetStream health probes that got no answer at all, as distinct from an answer reporting a problem."
+          />
+          <DI
+            label="Stream Ensure Retries"
+            value={fmtNum(data.stream_ensure_retries)}
+            hint="Stream ensures that failed on one attempt and succeeded on a later one — each is a JetStream API reply that went missing while the server did the work."
+          />
+          <DI
+            label="Stream Ensure Stalls"
+            value={fmtNum(data.stream_ensure_stalls)}
+            valueClass={(data.stream_ensure_stalls ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : ''}
+            hint="Stream creates still outstanding when the stall watchdog fired. Leading indicator: it increments even when the create then succeeds, so a cluster starting to drop replies shows here before a restart fails."
+          />
         </Grid>
-        <p className="text-xs text-gray-400 mt-2">Consumer Pending shows the QoS 1/2 backlog in the MQTT5_msgs stream. Updated every 15 s; shows <em>n/a</em> when JetStream is unavailable.</p>
+        <p className="text-xs text-gray-400 mt-2">Consumer Pending shows the QoS 1/2 backlog in the MQTT5_msgs stream. Updated every 15 s; shows <em>n/a</em> when JetStream is unavailable. The two <em>Account</em> counters are account-wide totals shared by every broker on the account, refreshed by the bridge health probe every 30 s.</p>
       </Section>
       <Section title="Latency (averages)">
         <Grid>

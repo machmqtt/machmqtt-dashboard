@@ -14,8 +14,13 @@ type MQTTBridgeStatus struct {
 	Draining bool   `json:"draining"`
 	// JetStreamDegraded is the bridge's "jetstream-degraded" readyz state: MQTT
 	// service is up but JetStream is currently unavailable, so QoS 1/2
-	// persistence is affected. Only the HTTP poll path can observe it — push
-	// snapshots carry no readyz status.
+	// persistence is affected. Both ingestion paths observe it — the poll path
+	// from /readyz, the push path from the envelope's ready_state.
+	//
+	// This is the bridge's displayed state and is the field to read for it. The
+	// broker also reports a jetstream_degraded METRIC on its snapshot, mirrored
+	// as MQTTMetrics.JetStreamDegraded (int64, not bool); that one is a metric
+	// sampled with the rest, not the readiness the UI badges.
 	JetStreamDegraded bool          `json:"jetstream_degraded"`
 	Connections       int           `json:"connections"`
 	NATSConnected     bool          `json:"nats_connected"`
@@ -316,7 +321,15 @@ type MQTTMetrics struct {
 	// carrying the pre-1.2.0 derived name. It should fall to zero as persistent
 	// sessions reconnect after an upgrade, so a floor that never clears means
 	// those sessions are not coming back or their consumers were orphaned.
-	LegacyNamedConsumers            int64 `json:"legacy_named_consumers"`
+	LegacyNamedConsumers int64 `json:"legacy_named_consumers"`
+	// JetStreamAPIErrors and JetStreamAPITotal are the JetStream ACCOUNT's
+	// cumulative counters as the NATS server reports them — account-wide, shared
+	// by every broker on the account, and refreshed by the bridge health probe
+	// every 30s rather than sampled per request. They are a ratio, not a rate:
+	// errors climbing against a flat total means the API is rejecting work.
+	JetStreamAPIErrors              int64 `json:"jetstream_api_errors"`
+	JetStreamAPITotal               int64 `json:"jetstream_api_total"`
+	JetStreamHealthProbeFailures    int64 `json:"jetstream_health_probe_failures"`
 	SessionDeletesDropped           int64 `json:"session_deletes_dropped"`
 	SessionPersistFailedWriteFailed int64 `json:"session_persist_failed_write_failed"`
 	SessionPersistFailedQueueFull   int64 `json:"session_persist_failed_queue_full"`
@@ -360,6 +373,13 @@ type MQTTMetrics struct {
 	DisconnectsSentByReason map[string]int64 `json:"disconnects_sent_by_reason,omitempty"`
 
 	// --- JetStream / consumer gauges ---
+	// SubscribeConsumerFailures isolates the SUBACK 0x80s caused by a JetStream
+	// consumer create/update failing from the policy rejections that share the
+	// same reason code. SubscribeConsumerRetries counts the creates that failed
+	// once and then succeeded — subscribes rescued rather than lost.
+	SubscribeConsumerFailures int64 `json:"subscribe_consumer_failures"`
+	SubscribeConsumerRetries  int64 `json:"subscribe_consumer_retries"`
+
 	SessionWriteBehindDepth int64 `json:"session_write_behind_depth"`
 	// ConsumerPendingMessages is -1 when JetStream is unavailable (metric absent).
 	ConsumerPendingMessages int64 `json:"consumer_pending_messages"`
@@ -431,9 +451,37 @@ type MQTTMetrics struct {
 	// they are inferred from the presence of the families each one gates, since
 	// the broker exposes no metric line for the gate itself.
 	AuthWebhookActive bool `json:"auth_webhook_active,omitempty"`
-	ClusterEnabled    bool `json:"cluster_enabled,omitempty"`
-	BridgeUp          bool `json:"bridge_up,omitempty"`
-	SessionsUp        bool `json:"sessions_up,omitempty"`
+	// --- Bridge and JetStream state ---
+	// StreamEnsureRetries counts stream ensures that failed once and succeeded on
+	// a retry — each one a JetStream API reply that went missing while the server
+	// did the work. StreamEnsureStalls is the leading indicator: it increments
+	// when the stall watchdog fires even if the create then succeeds, so a
+	// cluster starting to drop replies shows here before a restart actually fails.
+	StreamEnsureRetries int64 `json:"stream_ensure_retries"`
+	StreamEnsureStalls  int64 `json:"stream_ensure_stalls"`
+	// NATSConnected and JetStreamDegraded are 0/1 state gauges, so zero is a
+	// reported value and not an absent one. JetStreamDegraded is 1 when JetStream
+	// is unhealthy WHILE the NATS socket is still up — the failure mode with no
+	// other live signal, since the disconnect counters stay flat throughout it.
+	//
+	// These are metrics, distinct from the same-named readiness fields on
+	// MQTTBridgeStatus: those come from /readyz on the poll path and the
+	// envelope's ready_state on the push path, and remain the source for the
+	// bridge's displayed state. See MQTTBridgeStatus.JetStreamDegraded.
+	NATSConnected     int64 `json:"nats_connected"`
+	JetStreamDegraded int64 `json:"jetstream_degraded"`
+	// ConsumersAwaitingReattach is how many clients have dead durable QoS 1/2
+	// consumers pending re-attach after a degraded rebuild: non-zero means this
+	// instance cannot deliver QoS 1/2 to that many sessions right now.
+	// ReattachSweepDurationMs is integer MILLISECONDS (the broker keeps it an
+	// int64 so the OTLP path can carry it), and reports the most recent sweep
+	// only — rebuilds are rare, so the last one is the useful signal.
+	ConsumersAwaitingReattach int64 `json:"consumers_awaiting_reattach"`
+	ReattachSweepDurationMs   int64 `json:"reattach_sweep_duration_ms"`
+
+	ClusterEnabled bool `json:"cluster_enabled,omitempty"`
+	BridgeUp       bool `json:"bridge_up,omitempty"`
+	SessionsUp     bool `json:"sessions_up,omitempty"`
 
 	// --- Dashboard-local capture (NOT part of the broker snapshot mirror) ---
 	// Uncurated holds broker metrics this build has no curated field for:

@@ -57,6 +57,17 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		{"SysPublishBlocked", m.SysPublishBlocked, 1526},
 		{"PublishRefusedTopic", m.PublishRefusedTopic, 1527},
 		{"SharedConsumerRecreated", m.SharedConsumerRecreated, 1491},
+		{"SubscribeConsumerFailures", m.SubscribeConsumerFailures, 1436},
+		{"SubscribeConsumerRetries", m.SubscribeConsumerRetries, 1443},
+		{"JetStreamAPIErrors", m.JetStreamAPIErrors, 1994},
+		{"JetStreamAPITotal", m.JetStreamAPITotal, 2001},
+		{"JetStreamHealthProbeFailures", m.JetStreamHealthProbeFailures, 2008},
+		{"StreamEnsureRetries", m.StreamEnsureRetries, 2015},
+		{"StreamEnsureStalls", m.StreamEnsureStalls, 2022},
+		{"NATSConnected", m.NATSConnected, 1},
+		{"JetStreamDegraded", m.JetStreamDegraded, 1},
+		{"ConsumersAwaitingReattach", m.ConsumersAwaitingReattach, 2029},
+		{"ReattachSweepDurationMs", m.ReattachSweepDurationMs, 2036},
 		{"ConsumerDeletedUnderConsume", m.ConsumerDeletedUnderConsume, 1498},
 		{"WSProtocolViolations", m.WSProtocolViolations, 2142},
 		{"QoS2SyncPersistFailed", m.QoS2SyncPersistFailed, 1582},
@@ -579,6 +590,17 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 			"sys_publish_blocked": 96,
 			"publish_refused_topic": 97,
 			"legacy_named_consumers": 101,
+			"subscribe_consumer_failures": 104,
+			"subscribe_consumer_retries": 105,
+			"jetstream_api_errors": 106,
+			"jetstream_api_total": 107,
+			"jetstream_health_probe_failures": 108,
+			"stream_ensure_retries": 109,
+			"stream_ensure_stalls": 110,
+			"nats_connected": 1,
+			"jetstream_degraded": 1,
+			"consumers_awaiting_reattach": 111,
+			"reattach_sweep_duration_ms": 112,
 			"shared_consumer_recreated": 102,
 			"consumer_deleted_under_consume": 103,
 			"inbound_bytes": 97,
@@ -628,6 +650,17 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 		{"SysPublishBlocked", m.SysPublishBlocked, 96},
 		{"PublishRefusedTopic", m.PublishRefusedTopic, 97},
 		{"LegacyNamedConsumers", m.LegacyNamedConsumers, 101},
+		{"SubscribeConsumerFailures", m.SubscribeConsumerFailures, 104},
+		{"SubscribeConsumerRetries", m.SubscribeConsumerRetries, 105},
+		{"JetStreamAPIErrors", m.JetStreamAPIErrors, 106},
+		{"JetStreamAPITotal", m.JetStreamAPITotal, 107},
+		{"JetStreamHealthProbeFailures", m.JetStreamHealthProbeFailures, 108},
+		{"StreamEnsureRetries", m.StreamEnsureRetries, 109},
+		{"StreamEnsureStalls", m.StreamEnsureStalls, 110},
+		{"NATSConnected", m.NATSConnected, 1},
+		{"JetStreamDegraded", m.JetStreamDegraded, 1},
+		{"ConsumersAwaitingReattach", m.ConsumersAwaitingReattach, 111},
+		{"ReattachSweepDurationMs", m.ReattachSweepDurationMs, 112},
 		{"SharedConsumerRecreated", m.SharedConsumerRecreated, 102},
 		{"ConsumerDeletedUnderConsume", m.ConsumerDeletedUnderConsume, 103},
 		{"InboundBytes", m.InboundBytes, 97},
@@ -645,7 +678,13 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 	// Auto-discovery is a holding pen, not a destination: once a key has a typed
 	// field, UnmarshalJSON must stop routing it to Uncurated. These three landed
 	// as uncurated when the broker added them and have since been curated.
-	for _, key := range []string{"legacy_named_consumers", "shared_consumer_recreated", "consumer_deleted_under_consume"} {
+	for _, key := range []string{
+		"legacy_named_consumers", "shared_consumer_recreated", "consumer_deleted_under_consume",
+		"subscribe_consumer_failures", "subscribe_consumer_retries", "jetstream_api_errors",
+		"jetstream_api_total", "jetstream_health_probe_failures", "stream_ensure_retries",
+		"stream_ensure_stalls", "nats_connected", "jetstream_degraded",
+		"consumers_awaiting_reattach", "reattach_sweep_duration_ms",
+	} {
 		if value, ok := m.Uncurated[key]; ok {
 			t.Errorf("%s is curated but was still captured as uncurated (%v)", key, value)
 		}
