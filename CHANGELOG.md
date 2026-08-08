@@ -17,6 +17,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are now config-file-only: the stored value always wins and a request that tries
   to change one is rejected. Pin a custom CA over the API with the new inline
   `tls.ca_pem` instead. CA bundles must now be regular files of at most 1 MiB.
+  A CA path is resolved to its PEM bytes once, in a trusted context — when the
+  config file is loaded, and when a cluster row is read out of the store — so no
+  request-derived config can reach the filesystem at all. Building a TLS pool
+  from a path that was never resolved is now an error rather than a silent
+  fall back to the system roots, which would have dropped a pinned CA.
 - **A CA bundle that contains no usable certificates is now an error.** The
   monitoring-endpoint fetcher discarded `AppendCertsFromPEM`'s result, so a
   malformed `ca_file` installed an empty trust pool and every TLS connection

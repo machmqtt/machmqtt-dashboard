@@ -407,7 +407,14 @@ func TestNewFetcherValidCAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, err := NewFetcher(&config.TLSConfig{CAFile: caFile})
+	// The fetcher works from bytes, so the path is resolved first — exactly as
+	// the config loader and the store do before a collector is ever built.
+	cfg := &config.TLSConfig{CAFile: caFile}
+	if err := cfg.ResolveCAFile(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := NewFetcher(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,28 +443,17 @@ func TestNewFetcherInlineCAPem(t *testing.T) {
 // nothing. The pool used to be installed empty, so every TLS connection failed
 // later with an opaque verification error instead of here.
 func TestNewFetcherRejectsUnusablePEM(t *testing.T) {
-	caFile := filepath.Join(t.TempDir(), "ca.pem")
-	if err := os.WriteFile(caFile, []byte("not-real-pem"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := NewFetcher(&config.TLSConfig{CAFile: caFile}); err == nil {
-		t.Error("expected an error for a file containing no usable PEM certificates")
-	}
 	if _, err := NewFetcher(&config.TLSConfig{CAPem: "not-real-pem"}); err == nil {
 		t.Error("expected an error for inline PEM containing no certificates")
 	}
 }
 
-// TestNewFetcherRejectsNonRegularCAFile pins the denial-of-service half of the
-// path-injection fix: an endless device file such as /dev/zero must be refused
-// on sight rather than read until the process runs out of memory.
-func TestNewFetcherRejectsNonRegularCAFile(t *testing.T) {
-	if _, err := os.Stat("/dev/zero"); err != nil {
-		t.Skip("/dev/zero unavailable")
-	}
-	if _, err := NewFetcher(&config.TLSConfig{CAFile: "/dev/zero"}); err == nil {
-		t.Error("expected an error for a non-regular CA file")
+// TestNewFetcherRejectsUnresolvedCAFile pins the other half of the
+// path-injection fix: the fetcher never opens a path, so an unresolved ca_file
+// must fail loudly rather than silently falling back to the system roots.
+func TestNewFetcherRejectsUnresolvedCAFile(t *testing.T) {
+	if _, err := NewFetcher(&config.TLSConfig{CAFile: "/etc/ssl/certs/ca.pem"}); err == nil {
+		t.Error("expected an error for a CA file that was never loaded")
 	}
 }
 
