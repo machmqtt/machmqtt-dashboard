@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security
+- **Every GitHub Actions dependency is pinned to an immutable commit SHA.** The
+  CI and release workflows referenced floating tags such as `@v7` and `@v0`, so a
+  moved or compromised tag would have run unreviewed code in the build — in the
+  release workflow's case holding `contents: write`. Dependabot still proposes
+  upgrades and rewrites the version comment alongside each SHA.
 - **Filesystem paths are no longer settable through the cluster admin API**
   (CodeQL `go/path-injection`). `tls.ca_file`, `nats_conn.tls.ca_file` and
   `nats_conn.creds_file` name files on the dashboard host, and the resulting
