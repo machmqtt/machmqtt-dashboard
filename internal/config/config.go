@@ -308,34 +308,45 @@ func readCertFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// CertPool builds the root pool for a custom CA, preferring the inline PEM over
-// the config-file path. It returns (nil, nil) when no custom CA is configured,
-// meaning "use the system roots".
+// ResolveCAFile loads a config-file CA path into CAPem, so that everything
+// downstream works from bytes.
+//
+// This is the only place a CA path becomes a file read, and it is called only
+// from trusted contexts — config load, and hydrating a row out of the store.
+// Keeping it out of CertPool matters: a TLSConfig built from an API request
+// carries client-supplied bytes in CAPem, so if CertPool also opened CAFile then
+// a request-derived value would reach the filesystem (CodeQL go/path-injection).
+// Resolving here means it never can.
+func (t *TLSConfig) ResolveCAFile() error {
+	if t == nil || t.CAFile == "" || t.CAPem != "" {
+		return nil
+	}
+	pemBytes, err := readCertFile(t.CAFile)
+	if err != nil {
+		return fmt.Errorf("read CA file: %w", err)
+	}
+	t.CAPem = string(pemBytes)
+	return nil
+}
+
+// CertPool builds the root pool for a custom CA from the inline PEM. It returns
+// (nil, nil) when no custom CA is configured, meaning "use the system roots".
+// A path that has not been through ResolveCAFile is an error rather than a
+// silent fall back to the system roots, which would quietly drop the operator's
+// pinned CA.
 func (t *TLSConfig) CertPool() (*x509.CertPool, error) {
 	if t == nil {
 		return nil, nil
 	}
-
-	var (
-		pemBytes []byte
-		source   string
-	)
-	switch {
-	case t.CAPem != "":
-		pemBytes, source = []byte(t.CAPem), "ca_pem"
-	case t.CAFile != "":
-		var err error
-		if pemBytes, err = readCertFile(t.CAFile); err != nil {
-			return nil, fmt.Errorf("read CA file: %w", err)
+	if t.CAPem == "" {
+		if t.CAFile != "" {
+			return nil, fmt.Errorf("CA file %s has not been loaded", t.CAFile)
 		}
-		source = t.CAFile
-	default:
 		return nil, nil
 	}
-
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("%s contains no usable PEM certificates", source)
+	if !pool.AppendCertsFromPEM([]byte(t.CAPem)) {
+		return nil, fmt.Errorf("CA bundle contains no usable PEM certificates")
 	}
 	return pool, nil
 }
@@ -518,13 +529,30 @@ func validateEnvironments(environments []Environment) error {
 				return fmt.Errorf("environment %q: MQTT discovery port %d is invalid", env.Name, port)
 			}
 		}
-		if env.TLS != nil {
-			if _, err := env.TLS.CertPool(); err != nil {
-				return fmt.Errorf("environment %q TLS CA: %w", env.Name, err)
+		// Resolve CA paths to bytes here, while we are still in the trusted
+		// config-load path, then confirm they parse.
+		for label, tlsCfg := range map[string]*TLSConfig{
+			"TLS CA":       env.TLS,
+			"NATS conn CA": natsConnTLS(env.NATSConn),
+		} {
+			if err := tlsCfg.ResolveCAFile(); err != nil {
+				return fmt.Errorf("environment %q %s: %w", env.Name, label, err)
+			}
+			if _, err := tlsCfg.CertPool(); err != nil {
+				return fmt.Errorf("environment %q %s: %w", env.Name, label, err)
 			}
 		}
 	}
 	return nil
+}
+
+// natsConnTLS returns the NATS connection's TLS block, or nil when push
+// collection is not configured. The nil-safe TLSConfig methods handle the rest.
+func natsConnTLS(n *NATSConnConfig) *TLSConfig {
+	if n == nil {
+		return nil
+	}
+	return n.TLS
 }
 
 func validateOIDCProvider(name string, cfg *OIDCAuthConfig) error {

@@ -437,10 +437,19 @@ func TestTLSConfigCertPool(t *testing.T) {
 		}
 	}
 
+	// A path must be resolved to bytes first; CertPool itself never opens files.
+	resolved := &TLSConfig{CAFile: caFile}
+	if err := resolved.ResolveCAFile(); err != nil {
+		t.Fatalf("ResolveCAFile: %v", err)
+	}
+	if resolved.CAPem == "" {
+		t.Error("ResolveCAFile did not populate CAPem")
+	}
+
 	for name, cfg := range map[string]*TLSConfig{
-		"from file":   {CAFile: caFile},
-		"from inline": {CAPem: string(certificate)},
-		// The inline PEM wins, so a stale config-file path can be overridden.
+		"resolved from file": resolved,
+		"from inline":        {CAPem: string(certificate)},
+		// The inline PEM wins, so ResolveCAFile leaves an explicit one alone.
 		"inline wins over file": {CAFile: filepath.Join(t.TempDir(), "missing.pem"), CAPem: string(certificate)},
 	} {
 		pool, err := cfg.CertPool()
@@ -453,13 +462,24 @@ func TestTLSConfigCertPool(t *testing.T) {
 		}
 	}
 
-	for name, cfg := range map[string]*TLSConfig{
-		"missing file":    {CAFile: filepath.Join(t.TempDir(), "missing.pem")},
-		"unusable inline": {CAPem: "not a certificate"},
-	} {
-		if _, err := cfg.CertPool(); err == nil {
-			t.Errorf("%s: expected an error", name)
-		}
+	// An unresolved path must fail loudly rather than silently falling back to
+	// the system roots, which would drop the operator's pinned CA.
+	if _, err := (&TLSConfig{CAFile: caFile}).CertPool(); err == nil {
+		t.Error("expected an error for an unresolved CA file")
+	}
+	if _, err := (&TLSConfig{CAPem: "not a certificate"}).CertPool(); err == nil {
+		t.Error("expected an error for unusable inline PEM")
+	}
+	if err := (&TLSConfig{CAFile: filepath.Join(t.TempDir(), "missing.pem")}).ResolveCAFile(); err == nil {
+		t.Error("expected an error resolving a missing CA file")
+	}
+	// Nil and path-free configs resolve to a no-op.
+	var nilCfg *TLSConfig
+	if err := nilCfg.ResolveCAFile(); err != nil {
+		t.Errorf("nil ResolveCAFile: %v", err)
+	}
+	if err := (&TLSConfig{}).ResolveCAFile(); err != nil {
+		t.Errorf("empty ResolveCAFile: %v", err)
 	}
 }
 

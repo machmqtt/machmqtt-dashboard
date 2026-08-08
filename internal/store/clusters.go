@@ -291,6 +291,19 @@ func scanCluster(row scanner) (Cluster, error) {
 			return c, fmt.Errorf("unmarshal nats_conn: %w", err)
 		}
 	}
+	// Hydrate any CA path stored on the row into its PEM bytes. Doing it here,
+	// on the way out of the database, keeps the file read in a trusted context —
+	// nothing downstream has to open a path that an API request could influence.
+	// A row written before ca_pem existed, or seeded from the config file, still
+	// carries only ca_file, so this is what keeps those clusters working.
+	if err := c.TLS.ResolveCAFile(); err != nil {
+		return c, fmt.Errorf("cluster %q TLS CA: %w", c.Name, err)
+	}
+	if c.NATSConn != nil {
+		if err := c.NATSConn.TLS.ResolveCAFile(); err != nil {
+			return c, fmt.Errorf("cluster %q NATS conn CA: %w", c.Name, err)
+		}
+	}
 	return c, nil
 }
 

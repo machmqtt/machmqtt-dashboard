@@ -219,29 +219,35 @@ func sanitizeHostPaths(req *clusterRequest, prev *store.Cluster) error {
 	return nil
 }
 
-// sanitizedTLS returns a TLS config whose CA path is copied from the stored
-// config rather than the request body, pointing the caller at the inline PEM
-// alternative when they try to change it.
+// sanitizedTLS returns a TLS config whose CA comes from the stored cluster
+// rather than the request body, pointing the caller at the inline PEM
+// alternative when they try to change the path.
 //
 // It deliberately builds a new value instead of clearing the field on the
-// incoming one: rebuilding means no request-supplied string is ever assigned to
-// a field that reaches the filesystem, which keeps the guarantee obvious to a
-// reader and to CodeQL's taint analysis alike.
+// incoming one, and carries the stored CA forward as bytes (the store resolves
+// ca_file into ca_pem on read), so a request-derived config never holds a path
+// that anything downstream would open.
 func sanitizedTLS(incoming, stored *config.TLSConfig, field string) (*config.TLSConfig, error) {
 	if incoming == nil {
 		return nil, nil
 	}
-	storedPath := ""
+	storedPath, storedPem := "", ""
 	if stored != nil {
-		storedPath = stored.CAFile
+		storedPath, storedPem = stored.CAFile, stored.CAPem
 	}
 	if incoming.CAFile != "" && incoming.CAFile != storedPath {
 		return nil, fmt.Errorf("%s cannot be set through the API; supply the certificate inline with %s, or declare the path in the config file",
 			field, strings.Replace(field, "ca_file", "ca_pem", 1))
 	}
+	// A blank ca_pem means "keep what is configured", so the operator's CA
+	// survives an edit that didn't touch it.
+	caPem := incoming.CAPem
+	if caPem == "" {
+		caPem = storedPem
+	}
 	return &config.TLSConfig{
 		CAFile:   storedPath,
-		CAPem:    incoming.CAPem,
+		CAPem:    caPem,
 		Insecure: incoming.Insecure,
 	}, nil
 }

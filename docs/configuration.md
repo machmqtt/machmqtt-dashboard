@@ -124,7 +124,9 @@ Key fields:
 > (often an LDAP/OIDC-mapped identity with no shell on the host) could enumerate the
 > filesystem from the resulting error messages, or exhaust the process by naming a device
 > file such as `/dev/zero`. To pin a custom CA from the UI, paste it into `ca_pem` instead.
-> CA bundles must be regular files of at most 1 MiB.
+> CA bundles must be regular files of at most 1 MiB, and are read once — when the config is
+> loaded, and when a cluster is read out of the store — then carried as PEM bytes thereafter,
+> so changing the file on disk takes effect on restart.
 
 ## Polling Behavior
 
