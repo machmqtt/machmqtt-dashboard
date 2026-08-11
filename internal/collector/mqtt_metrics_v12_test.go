@@ -79,6 +79,26 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		// the sum of all nine reasons (8757 + 1071).
 		{"ConnectionsRejected", m.ConnectionsRejected, 8757},
 		{"AuthFailure", m.AuthFailure, 13013},
+		// machmqtt #160: PUBLISH-rejected and op-queue-dropped counters. Both
+		// broker families emit ONLY labeled series (no umbrella line on the
+		// wire), so PublishRejectedState and OpQueueDropped are sums the
+		// parser computes client-side — same shape as AuthFailure above.
+		{"PublishRejectedStateConnecting", m.PublishRejectedStateConnecting, 9211},
+		{"PublishRejectedStateAuthenticating", m.PublishRejectedStateAuthenticating, 9212},
+		{"PublishRejectedStateDisconnecting", m.PublishRejectedStateDisconnecting, 9213},
+		{"PublishRejectedStateClosed", m.PublishRejectedStateClosed, 9214},
+		{"PublishRejectedStateOther", m.PublishRejectedStateOther, 9215},
+		{"PublishRejectedState", m.PublishRejectedState, 9211 + 9212 + 9213 + 9214 + 9215},
+		{"PublishRejectedQoS0", m.PublishRejectedQoS0, 9221},
+		{"PublishRejectedQoS1", m.PublishRejectedQoS1, 9222},
+		{"PublishRejectedQoS2", m.PublishRejectedQoS2, 9223},
+		{"PublishRejectedQoS3", m.PublishRejectedQoS3, 9224},
+		{"OpQueueDroppedCloseRace", m.OpQueueDroppedCloseRace, 9231},
+		{"OpQueueDroppedPoolFull", m.OpQueueDroppedPoolFull, 9232},
+		{"OpQueueDroppedHandlerError", m.OpQueueDroppedHandlerError, 9233},
+		{"OpQueueDroppedSlotClosed", m.OpQueueDroppedSlotClosed, 9234},
+		{"OpQueueDroppedOther", m.OpQueueDroppedOther, 9235},
+		{"OpQueueDropped", m.OpQueueDropped, 9231 + 9232 + 9233 + 9234 + 9235},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {

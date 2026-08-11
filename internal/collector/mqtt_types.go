@@ -184,10 +184,27 @@ type MQTTMetrics struct {
 	// PublishRefusedTopic counts client PUBLISHes rejected with 0x90 (Topic Name
 	// invalid) because the topic, while well-formed MQTT, contains a character
 	// the broker cannot map onto a NATS subject ('*', '>', space, DEL, control).
-	PublishRefusedTopic  int64 `json:"publish_refused_topic"`
-	TLSHandshakeFailures int64 `json:"tls_handshake_failures"`
-	ProxyProtocolErrors  int64 `json:"proxy_protocol_errors"`
-	WSUpgradeFailures    int64 `json:"ws_upgrade_failures"`
+	PublishRefusedTopic int64 `json:"publish_refused_topic"`
+	// PublishRejectedState/PublishRejectedQoS* count PUBLISH packets rejected
+	// because the connection was not in StateConnected when they arrived
+	// (#160) — the same events, in two independent breakdowns rather than
+	// one state-by-qos cross product. Neither breakdown has its own umbrella
+	// series on the wire; PublishRejectedState is summed client-side from the
+	// four per-state values. "other"/qos "3" are defensive catch-alls that
+	// should read zero from a compliant client.
+	PublishRejectedState               int64 `json:"publish_rejected_state"`
+	PublishRejectedStateConnecting     int64 `json:"publish_rejected_state_connecting"`
+	PublishRejectedStateAuthenticating int64 `json:"publish_rejected_state_authenticating"`
+	PublishRejectedStateDisconnecting  int64 `json:"publish_rejected_state_disconnecting"`
+	PublishRejectedStateClosed         int64 `json:"publish_rejected_state_closed"`
+	PublishRejectedStateOther          int64 `json:"publish_rejected_state_other,omitempty"`
+	PublishRejectedQoS0                int64 `json:"publish_rejected_qos0"`
+	PublishRejectedQoS1                int64 `json:"publish_rejected_qos1"`
+	PublishRejectedQoS2                int64 `json:"publish_rejected_qos2"`
+	PublishRejectedQoS3                int64 `json:"publish_rejected_qos3,omitempty"`
+	TLSHandshakeFailures               int64 `json:"tls_handshake_failures"`
+	ProxyProtocolErrors                int64 `json:"proxy_protocol_errors"`
+	WSUpgradeFailures                  int64 `json:"ws_upgrade_failures"`
 	// WSProtocolViolations counts WebSocket framing-layer violations (RFC 6455);
 	// the offending connection is closed, which is otherwise indistinguishable
 	// from an ordinary disconnect.
@@ -298,6 +315,19 @@ type MQTTMetrics struct {
 	OpSuspendedConns     int64 `json:"op_suspended_conns"`
 	OpPoolQueueDepth     int64 `json:"op_pool_queue_depth"`
 	OpPoolRejected       int64 `json:"op_pool_rejected"`
+	// OpQueueDropped* count queued-but-not-yet-processed ops discarded
+	// wholesale by dropOpQueue, labelled by why (#160). reason=close_race is
+	// the message-loss defect: a batch still queued behind an in-flight op
+	// when the connection flips to Disconnecting/Closed — no per-message
+	// rejection, no ack. The others are narrower shedding already visible
+	// elsewhere (pool_full pairs with OpPoolRejected above). No umbrella
+	// series on the wire; OpQueueDropped is summed client-side.
+	OpQueueDropped             int64 `json:"op_queue_dropped"`
+	OpQueueDroppedPoolFull     int64 `json:"op_queue_dropped_pool_full"`
+	OpQueueDroppedHandlerError int64 `json:"op_queue_dropped_handler_error"`
+	OpQueueDroppedSlotClosed   int64 `json:"op_queue_dropped_slot_closed"`
+	OpQueueDroppedCloseRace    int64 `json:"op_queue_dropped_close_race"`
+	OpQueueDroppedOther        int64 `json:"op_queue_dropped_other,omitempty"`
 
 	// --- Session / consumer persistence ---
 	ConsumerSeqMapEntries           int64 `json:"consumer_seq_map_entries"`

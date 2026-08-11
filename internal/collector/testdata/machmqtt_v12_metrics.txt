@@ -215,6 +215,19 @@ machmqtt_sys_publish_blocked_total 1526
 # HELP machmqtt_publish_refused_topic_total Client PUBLISH messages rejected with reason code 0x90 (Topic Name invalid) because the Topic Name, while well-formed MQTT, contains a character this broker refuses ('*', '>', space, DEL, or a control character). QoS 1/2 are answered with PUBACK/PUBREC and stay connected; QoS 0 is disconnected. A rising value means a client is publishing topic names that cannot be mapped onto a NATS subject.
 # TYPE machmqtt_publish_refused_topic_total counter
 machmqtt_publish_refused_topic_total 1527
+# HELP machmqtt_publish_rejected_state_total Inbound PUBLISH packets rejected because the connection was not in StateConnected when the packet arrived, labelled by the state that caused the rejection. See machmqtt_publish_rejected_qos_total for the same events broken out by QoS instead.
+# TYPE machmqtt_publish_rejected_state_total counter
+machmqtt_publish_rejected_state_total{state="connecting"} 9211
+machmqtt_publish_rejected_state_total{state="authenticating"} 9212
+machmqtt_publish_rejected_state_total{state="disconnecting"} 9213
+machmqtt_publish_rejected_state_total{state="closed"} 9214
+machmqtt_publish_rejected_state_total{state="other"} 9215
+# HELP machmqtt_publish_rejected_qos_total The same PUBLISH-rejected-by-state events as machmqtt_publish_rejected_state_total, broken out by QoS instead of by state.
+# TYPE machmqtt_publish_rejected_qos_total counter
+machmqtt_publish_rejected_qos_total{qos="0"} 9221
+machmqtt_publish_rejected_qos_total{qos="1"} 9222
+machmqtt_publish_rejected_qos_total{qos="2"} 9223
+machmqtt_publish_rejected_qos_total{qos="3"} 9224
 # HELP machmqtt_tls_handshake_failures_total TLS handshake failures (includes certificate errors, protocol mismatches).
 # TYPE machmqtt_tls_handshake_failures_total counter
 machmqtt_tls_handshake_failures_total 1533
@@ -332,6 +345,13 @@ machmqtt_op_pool_rejected_total 1953
 # HELP machmqtt_op_pool_queue_depth Current number of tasks queued in the op pool. Sustained near nats.op_worker_queue_size indicates pool starvation; consider raising nats.op_worker_pool_size. Updated every 15 s.
 # TYPE machmqtt_op_pool_queue_depth gauge
 machmqtt_op_pool_queue_depth 1946
+# HELP machmqtt_op_queue_dropped_total Queued ops discarded wholesale by dropOpQueue, in messages, labelled by why. reason="close_race" is a message-loss event: work already accepted onto the per-connection op queue destroyed by a state transition to Disconnecting/Closed, with no per-message rejection and no ack. The others are narrower and mostly already visible elsewhere -- see machmqtt_op_pool_rejected_total for pool_full.
+# TYPE machmqtt_op_queue_dropped_total counter
+machmqtt_op_queue_dropped_total{reason="close_race"} 9231
+machmqtt_op_queue_dropped_total{reason="pool_full"} 9232
+machmqtt_op_queue_dropped_total{reason="handler_error"} 9233
+machmqtt_op_queue_dropped_total{reason="slot_closed"} 9234
+machmqtt_op_queue_dropped_total{reason="other"} 9235
 # HELP machmqtt_publish_latency_seconds End-to-end PUBLISH latency from packet receipt to bridge store completion, in seconds.
 # TYPE machmqtt_publish_latency_seconds histogram
 machmqtt_publish_latency_seconds_bucket{le="0.0005"} 11

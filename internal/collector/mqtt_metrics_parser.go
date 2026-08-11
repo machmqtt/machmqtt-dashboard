@@ -368,6 +368,34 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.SysPublishBlocked = parseInt(value)
 		case name == "machmqtt_publish_refused_topic_total":
 			m.PublishRefusedTopic = parseInt(value)
+		case name == "machmqtt_publish_rejected_state_total":
+			// machmqtt emits only per-state labeled series; sum them into the
+			// total and also keep each state distinct.
+			v := parseInt(value)
+			m.PublishRejectedState += v
+			switch extractLabel(line, "state") {
+			case "connecting":
+				m.PublishRejectedStateConnecting = v
+			case "authenticating":
+				m.PublishRejectedStateAuthenticating = v
+			case "disconnecting":
+				m.PublishRejectedStateDisconnecting = v
+			case "closed":
+				m.PublishRejectedStateClosed = v
+			case "other":
+				m.PublishRejectedStateOther = v
+			}
+		case name == "machmqtt_publish_rejected_qos_total":
+			switch extractLabel(line, "qos") {
+			case "0":
+				m.PublishRejectedQoS0 = parseInt(value)
+			case "1":
+				m.PublishRejectedQoS1 = parseInt(value)
+			case "2":
+				m.PublishRejectedQoS2 = parseInt(value)
+			case "3":
+				m.PublishRejectedQoS3 = parseInt(value)
+			}
 		case name == "machmqtt_tls_handshake_failures_total":
 			m.TLSHandshakeFailures = parseInt(value)
 		case name == "machmqtt_proxy_protocol_errors_total":
@@ -609,6 +637,23 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.OpPoolQueueDepth = parseInt(value)
 		case name == "machmqtt_op_pool_rejected_total":
 			m.OpPoolRejected = parseInt(value)
+		case name == "machmqtt_op_queue_dropped_total":
+			// machmqtt emits only per-reason labeled series; sum them into the
+			// total and also keep each reason distinct.
+			v := parseInt(value)
+			m.OpQueueDropped += v
+			switch extractLabel(line, "reason") {
+			case "pool_full":
+				m.OpQueueDroppedPoolFull = v
+			case "handler_error":
+				m.OpQueueDroppedHandlerError = v
+			case "slot_closed":
+				m.OpQueueDroppedSlotClosed = v
+			case "close_race":
+				m.OpQueueDroppedCloseRace = v
+			case "other":
+				m.OpQueueDroppedOther = v
+			}
 
 		// --- Session / consumer persistence (the four consumer/session families
 		// below are absent unless the bridge is up, which is what BridgeUp
