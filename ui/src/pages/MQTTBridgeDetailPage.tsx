@@ -776,7 +776,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Stalled Consumers" value={fmtNum(data.stalled_consumers)} />
           <DI
             label="Account API Requests"
-            value={fmtNum(data.jetstream_api_total)}
+            value={fmtNum(data.jetstream_api_requests)}
             hint="JetStream API requests for the whole NATS account, as the server reports them — not this bridge's own request count."
           />
           <DI

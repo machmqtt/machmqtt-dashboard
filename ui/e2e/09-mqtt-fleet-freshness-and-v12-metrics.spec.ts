@@ -70,7 +70,7 @@ const V12_METRICS = {
   subscribe_consumer_failures: 16,
   subscribe_consumer_retries: 17,
   jetstream_api_errors: 18,
-  jetstream_api_total: 19,
+  jetstream_api_requests: 19,
   jetstream_health_probe_failures: 20,
   stream_ensure_retries: 21,
   stream_ensure_stalls: 22,
