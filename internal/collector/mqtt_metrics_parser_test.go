@@ -152,10 +152,16 @@ machmqtt_subscribe_duration_seconds_count 40
 machmqtt_dispatch_wait_seconds_bucket{le="+Inf"} 50
 machmqtt_dispatch_wait_seconds_sum 0.005
 machmqtt_dispatch_wait_seconds_count 50
+# TYPE machmqtt_process_open_fds gauge
+machmqtt_process_open_fds 178
+# TYPE machmqtt_process_max_fds gauge
+machmqtt_process_max_fds 179
 # TYPE machmqtt_go_goroutines gauge
 machmqtt_go_goroutines 88
 # TYPE machmqtt_go_heap_inuse_bytes gauge
 machmqtt_go_heap_inuse_bytes 1048576
+# TYPE machmqtt_go_alloc_bytes_total counter
+machmqtt_go_alloc_bytes_total 180
 # TYPE machmqtt_go_gc_cycles_total counter
 machmqtt_go_gc_cycles_total 55
 # TYPE machmqtt_go_gc_pause_ns_total counter
@@ -188,6 +194,7 @@ machmqtt_outbound_evictions_total 22
 machmqtt_outbound_stall_evictions_total 7
 machmqtt_outbound_stalled_connections 3
 machmqtt_outbound_bytes 4096
+machmqtt_bytes_sent_total 171
 machmqtt_retained_verify_failures_total 23
 # --- capacity & memory gauges ---
 machmqtt_retained_messages 500
@@ -225,18 +232,35 @@ machmqtt_worker_pool_queue_depth 38
 machmqtt_op_queue_depth 39
 machmqtt_op_queue_bytes 8192
 machmqtt_op_suspended_conns 40
+machmqtt_op_shed_qos0_per_conn_bytes_total 172
+machmqtt_op_shed_qos0_total_bytes_total 173
+machmqtt_op_shed_qos0_depth_total 174
+machmqtt_op_dispatch_batches_total 175
+machmqtt_op_dispatch_messages_total 176
+machmqtt_op_suspend_events_total 177
 machmqtt_op_pool_queue_depth 41
 machmqtt_op_pool_rejected_total 42
+machmqtt_op_queue_dropped_total{reason="close_race"} 166
+machmqtt_op_queue_dropped_total{reason="pool_full"} 167
+machmqtt_op_queue_dropped_total{reason="handler_error"} 168
+machmqtt_op_queue_dropped_total{reason="slot_closed"} 169
+machmqtt_op_queue_dropped_total{reason="other"} 170
 # --- session / consumer persistence ---
 machmqtt_consumer_seq_map_entries 43
 machmqtt_consumer_deletes_dropped_total 44
 machmqtt_consumer_delete_races_total 45
 machmqtt_legacy_named_consumers 145
 machmqtt_jetstream_api_errors 148
-machmqtt_jetstream_api_total 149
+machmqtt_jetstream_api_requests 149
 machmqtt_jetstream_health_probe_failures_total 150
 machmqtt_stream_ensure_retries_total 151
 machmqtt_stream_ensure_stalls_total 152
+machmqtt_session_qos2_purge_failures_total{path="sync_connect"} 181
+machmqtt_session_qos2_purge_failures_total{path="async_death"} 182
+machmqtt_session_verify_failures_total 183
+machmqtt_session_unsigned_accepted_total 184
+machmqtt_session_signing_key_present 185
+machmqtt_session_signing_required 186
 machmqtt_subscribe_consumer_failures_total 153
 machmqtt_subscribe_consumer_retries_total 154
 machmqtt_nats_connected 1
@@ -256,6 +280,16 @@ machmqtt_audit_write_failures_total 51
 machmqtt_tls_handshake_duration_seconds_bucket{le="+Inf"} 60
 machmqtt_tls_handshake_duration_seconds_sum 0.06
 machmqtt_tls_handshake_duration_seconds_count 60
+# --- publish rejected by connection state / QoS (#160) ---
+machmqtt_publish_rejected_state_total{state="connecting"} 157
+machmqtt_publish_rejected_state_total{state="authenticating"} 158
+machmqtt_publish_rejected_state_total{state="disconnecting"} 159
+machmqtt_publish_rejected_state_total{state="closed"} 160
+machmqtt_publish_rejected_state_total{state="other"} 161
+machmqtt_publish_rejected_qos_total{qos="0"} 162
+machmqtt_publish_rejected_qos_total{qos="1"} 163
+machmqtt_publish_rejected_qos_total{qos="2"} 164
+machmqtt_publish_rejected_qos_total{qos="3"} 165
 # --- sparse hex-coded families ---
 machmqtt_connack_rejected_by_reason_total{reason="0x88"} 3
 machmqtt_connack_rejected_by_reason_total{reason="0x81"} 1
@@ -570,26 +604,60 @@ func TestParsePrometheusMetrics_NewObservability(t *testing.T) {
 		"OpPoolQueueDepth":     {m.OpPoolQueueDepth, 41},
 		"OpPoolRejected":       {m.OpPoolRejected, 42},
 		// Persistence
-		"ConsumerSeqMapEntries":           {m.ConsumerSeqMapEntries, 43},
-		"ConsumerDeletesDropped":          {m.ConsumerDeletesDropped, 44},
-		"ConsumerDeleteRaces":             {m.ConsumerDeleteRaces, 45},
-		"LegacyNamedConsumers":            {m.LegacyNamedConsumers, 145},
-		"JetStreamAPIErrors":              {m.JetStreamAPIErrors, 148},
-		"JetStreamAPITotal":               {m.JetStreamAPITotal, 149},
-		"JetStreamHealthProbeFailures":    {m.JetStreamHealthProbeFailures, 150},
-		"StreamEnsureRetries":             {m.StreamEnsureRetries, 151},
-		"StreamEnsureStalls":              {m.StreamEnsureStalls, 152},
-		"SubscribeConsumerFailures":       {m.SubscribeConsumerFailures, 153},
-		"SubscribeConsumerRetries":        {m.SubscribeConsumerRetries, 154},
-		"NATSConnected":                   {m.NATSConnected, 1},
-		"JetStreamDegraded":               {m.JetStreamDegraded, 1},
-		"ConsumersAwaitingReattach":       {m.ConsumersAwaitingReattach, 155},
-		"ReattachSweepDurationMs":         {m.ReattachSweepDurationMs, 156},
-		"SharedConsumerRecreated":         {m.SharedConsumerRecreated, 146},
-		"ConsumerDeletedUnderConsume":     {m.ConsumerDeletedUnderConsume, 147},
-		"SessionDeletesDropped":           {m.SessionDeletesDropped, 46},
-		"SessionPersistFailedWriteFailed": {m.SessionPersistFailedWriteFailed, 47},
-		"SessionPersistFailedQueueFull":   {m.SessionPersistFailedQueueFull, 48},
+		"ConsumerSeqMapEntries":        {m.ConsumerSeqMapEntries, 43},
+		"ConsumerDeletesDropped":       {m.ConsumerDeletesDropped, 44},
+		"ConsumerDeleteRaces":          {m.ConsumerDeleteRaces, 45},
+		"LegacyNamedConsumers":         {m.LegacyNamedConsumers, 145},
+		"JetStreamAPIErrors":           {m.JetStreamAPIErrors, 148},
+		"JetStreamAPIRequests":         {m.JetStreamAPIRequests, 149},
+		"JetStreamHealthProbeFailures": {m.JetStreamHealthProbeFailures, 150},
+		"StreamEnsureRetries":          {m.StreamEnsureRetries, 151},
+		"StreamEnsureStalls":           {m.StreamEnsureStalls, 152},
+		"SubscribeConsumerFailures":    {m.SubscribeConsumerFailures, 153},
+		"SubscribeConsumerRetries":     {m.SubscribeConsumerRetries, 154},
+		"NATSConnected":                {m.NATSConnected, 1},
+		"JetStreamDegraded":            {m.JetStreamDegraded, 1},
+		"ConsumersAwaitingReattach":    {m.ConsumersAwaitingReattach, 155},
+		"ReattachSweepDurationMs":      {m.ReattachSweepDurationMs, 156},
+		"SharedConsumerRecreated":      {m.SharedConsumerRecreated, 146},
+		"ConsumerDeletedUnderConsume":  {m.ConsumerDeletedUnderConsume, 147},
+		"SessionQoS2PurgeSyncConnect":  {m.SessionQoS2PurgeFailuresSyncConnect, 181},
+		"SessionQoS2PurgeAsyncDeath":   {m.SessionQoS2PurgeFailuresAsyncDeath, 182},
+		"SessionVerifyFailures":        {m.SessionVerifyFailures, 183},
+		"SessionUnsignedAccepted":      {m.SessionUnsignedAccepted, 184},
+		"SessionSigningKeyPresent":     {m.SessionSigningKeyPresent, 185},
+		"SessionSigningRequired":       {m.SessionSigningRequired, 186},
+		"BytesSent":                    {m.BytesSent, 171},
+		"OpShedQoS0PerConnBytes":       {m.OpShedQoS0PerConnBytes, 172},
+		"OpShedQoS0TotalBytes":         {m.OpShedQoS0TotalBytes, 173},
+		"OpShedQoS0Depth":              {m.OpShedQoS0Depth, 174},
+		"OpDispatchBatches":            {m.OpDispatchBatches, 175},
+		"OpDispatchMessages":           {m.OpDispatchMessages, 176},
+		"OpSuspendEvents":              {m.OpSuspendEvents, 177},
+		"ProcessOpenFDs":               {m.ProcessOpenFDs, 178},
+		"ProcessMaxFDs":                {m.ProcessMaxFDs, 179},
+		"GoAllocBytesTotal":            {m.GoAllocBytesTotal, 180},
+		// The two #160 umbrellas have no series of their own on the wire; the
+		// parser sums the labeled values, so the want is written as that sum.
+		"PublishRejectedStateConnecting":     {m.PublishRejectedStateConnecting, 157},
+		"PublishRejectedStateAuthenticating": {m.PublishRejectedStateAuthenticating, 158},
+		"PublishRejectedStateDisconnecting":  {m.PublishRejectedStateDisconnecting, 159},
+		"PublishRejectedStateClosed":         {m.PublishRejectedStateClosed, 160},
+		"PublishRejectedStateOther":          {m.PublishRejectedStateOther, 161},
+		"PublishRejectedState":               {m.PublishRejectedState, 157 + 158 + 159 + 160 + 161},
+		"PublishRejectedQoS0":                {m.PublishRejectedQoS0, 162},
+		"PublishRejectedQoS1":                {m.PublishRejectedQoS1, 163},
+		"PublishRejectedQoS2":                {m.PublishRejectedQoS2, 164},
+		"PublishRejectedQoS3":                {m.PublishRejectedQoS3, 165},
+		"OpQueueDroppedCloseRace":            {m.OpQueueDroppedCloseRace, 166},
+		"OpQueueDroppedPoolFull":             {m.OpQueueDroppedPoolFull, 167},
+		"OpQueueDroppedHandlerError":         {m.OpQueueDroppedHandlerError, 168},
+		"OpQueueDroppedSlotClosed":           {m.OpQueueDroppedSlotClosed, 169},
+		"OpQueueDroppedOther":                {m.OpQueueDroppedOther, 170},
+		"OpQueueDropped":                     {m.OpQueueDropped, 166 + 167 + 168 + 169 + 170},
+		"SessionDeletesDropped":              {m.SessionDeletesDropped, 46},
+		"SessionPersistFailedWriteFailed":    {m.SessionPersistFailedWriteFailed, 47},
+		"SessionPersistFailedQueueFull":      {m.SessionPersistFailedQueueFull, 48},
 		// Reliability extras
 		"TLSCertReloadFailures":   {m.TLSCertReloadFailures, 49},
 		"OAuth2JWKSFetchFailures": {m.OAuth2JWKSFetchFailures, 50},

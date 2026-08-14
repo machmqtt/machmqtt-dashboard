@@ -387,6 +387,34 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.SysPublishBlocked = parseInt(value)
 		case name == "machmqtt_publish_refused_topic_total":
 			m.PublishRefusedTopic = parseInt(value)
+		case name == "machmqtt_publish_rejected_state_total":
+			// machmqtt emits only per-state labeled series; sum them into the
+			// total and also keep each state distinct.
+			v := parseInt(value)
+			m.PublishRejectedState += v
+			switch extractLabel(line, "state") {
+			case "connecting":
+				m.PublishRejectedStateConnecting = v
+			case "authenticating":
+				m.PublishRejectedStateAuthenticating = v
+			case "disconnecting":
+				m.PublishRejectedStateDisconnecting = v
+			case "closed":
+				m.PublishRejectedStateClosed = v
+			case "other":
+				m.PublishRejectedStateOther = v
+			}
+		case name == "machmqtt_publish_rejected_qos_total":
+			switch extractLabel(line, "qos") {
+			case "0":
+				m.PublishRejectedQoS0 = parseInt(value)
+			case "1":
+				m.PublishRejectedQoS1 = parseInt(value)
+			case "2":
+				m.PublishRejectedQoS2 = parseInt(value)
+			case "3":
+				m.PublishRejectedQoS3 = parseInt(value)
+			}
 		case name == "machmqtt_tls_handshake_failures_total":
 			m.TLSHandshakeFailures = parseInt(value)
 		case name == "machmqtt_proxy_protocol_errors_total":
@@ -458,11 +486,25 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.OutboundBytes = parseInt(value)
 		case name == "machmqtt_bytes_received_total":
 			m.InboundBytes = parseInt(value)
+		case name == "machmqtt_bytes_sent_total":
+			m.BytesSent = parseInt(value)
 		case name == "machmqtt_retained_verify_failures_total":
 			m.RetainVerifyFailures = parseInt(value)
 			m.BridgeUp = true
 		case name == "machmqtt_will_verify_failures_total":
 			m.WillVerifyFailures = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_session_verify_failures_total":
+			m.SessionVerifyFailures = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_session_unsigned_accepted_total":
+			m.SessionUnsignedAccepted = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_session_signing_key_present":
+			m.SessionSigningKeyPresent = parseInt(value)
+			m.BridgeUp = true
+		case name == "machmqtt_session_signing_required":
+			m.SessionSigningRequired = parseInt(value)
 			m.BridgeUp = true
 		case name == "machmqtt_subscribe_flush_failures_total":
 			m.SubscribeFlushFailures = parseInt(value)
@@ -528,6 +570,12 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.Reactor = &reactor
 		case name == "machmqtt_reactor_loop_deaths_total":
 			reactor.LoopDeaths = parseInt(value)
+			m.Reactor = &reactor
+		case name == "machmqtt_reactor_registered_slots":
+			reactor.RegisteredSlots = parseInt(value)
+			m.Reactor = &reactor
+		case name == "machmqtt_reactor_stale_events_total":
+			reactor.StaleEvents = parseInt(value)
 			m.Reactor = &reactor
 
 		case name == "machmqtt_bridge_primary_rebuilds_total":
@@ -624,10 +672,42 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.OpQueueBytes = parseInt(value)
 		case name == "machmqtt_op_suspended_conns":
 			m.OpSuspendedConns = parseInt(value)
+		// The shed counters carry the broker's own suffixes: two of the three
+		// families already end in "bytes"/"depth" and still take the counter
+		// "_total", hence the doubled tail on op_shed_qos0_total_bytes_total.
+		case name == "machmqtt_op_shed_qos0_per_conn_bytes_total":
+			m.OpShedQoS0PerConnBytes = parseInt(value)
+		case name == "machmqtt_op_shed_qos0_total_bytes_total":
+			m.OpShedQoS0TotalBytes = parseInt(value)
+		case name == "machmqtt_op_shed_qos0_depth_total":
+			m.OpShedQoS0Depth = parseInt(value)
+		case name == "machmqtt_op_dispatch_batches_total":
+			m.OpDispatchBatches = parseInt(value)
+		case name == "machmqtt_op_dispatch_messages_total":
+			m.OpDispatchMessages = parseInt(value)
+		case name == "machmqtt_op_suspend_events_total":
+			m.OpSuspendEvents = parseInt(value)
 		case name == "machmqtt_op_pool_queue_depth":
 			m.OpPoolQueueDepth = parseInt(value)
 		case name == "machmqtt_op_pool_rejected_total":
 			m.OpPoolRejected = parseInt(value)
+		case name == "machmqtt_op_queue_dropped_total":
+			// machmqtt emits only per-reason labeled series; sum them into the
+			// total and also keep each reason distinct.
+			v := parseInt(value)
+			m.OpQueueDropped += v
+			switch extractLabel(line, "reason") {
+			case "pool_full":
+				m.OpQueueDroppedPoolFull = v
+			case "handler_error":
+				m.OpQueueDroppedHandlerError = v
+			case "slot_closed":
+				m.OpQueueDroppedSlotClosed = v
+			case "close_race":
+				m.OpQueueDroppedCloseRace = v
+			case "other":
+				m.OpQueueDroppedOther = v
+			}
 
 		// --- Session / consumer persistence (the four consumer/session families
 		// below are absent unless the bridge is up, which is what BridgeUp
@@ -649,8 +729,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		case name == "machmqtt_jetstream_api_errors":
 			m.JetStreamAPIErrors = parseInt(value)
 			m.BridgeUp = true
-		case name == "machmqtt_jetstream_api_total":
-			m.JetStreamAPITotal = parseInt(value)
+		case name == "machmqtt_jetstream_api_requests":
+			m.JetStreamAPIRequests = parseInt(value)
 			m.BridgeUp = true
 		case name == "machmqtt_jetstream_health_probe_failures_total":
 			m.JetStreamHealthProbeFailures = parseInt(value)
@@ -660,6 +740,16 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.BridgeUp = true
 		case name == "machmqtt_stream_ensure_stalls_total":
 			m.StreamEnsureStalls = parseInt(value)
+			m.BridgeUp = true
+		// One family, split by path: sync_connect is the clean-start path whose
+		// increments are CONNECTs refused 0x88; async_death is log-only.
+		case name == "machmqtt_session_qos2_purge_failures_total":
+			switch extractLabel(line, "path") {
+			case "sync_connect":
+				m.SessionQoS2PurgeFailuresSyncConnect = parseInt(value)
+			case "async_death":
+				m.SessionQoS2PurgeFailuresAsyncDeath = parseInt(value)
+			}
 			m.BridgeUp = true
 		case name == "machmqtt_session_deletes_dropped_total":
 			m.SessionDeletesDropped = parseInt(value)
@@ -787,11 +877,21 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				}
 			}
 
+		// --- Process resources ---
+		// Both read -1 when the value could not be sampled, which parseInt
+		// preserves; ProcessMaxFDs reads 0 for unlimited.
+		case name == "machmqtt_process_open_fds":
+			m.ProcessOpenFDs = parseInt(value)
+		case name == "machmqtt_process_max_fds":
+			m.ProcessMaxFDs = parseInt(value)
+
 		// --- Go runtime ---
 		case name == "machmqtt_go_goroutines":
 			m.GoGoroutines = parseInt(value)
 		case name == "machmqtt_go_heap_inuse_bytes":
 			m.GoHeapInuseBytes = parseInt(value)
+		case name == "machmqtt_go_alloc_bytes_total":
+			m.GoAllocBytesTotal = parseInt(value)
 		case name == "machmqtt_go_gc_cycles_total":
 			m.GoGCCycles = parseInt(value)
 		case name == "machmqtt_go_gc_pause_ns_total":

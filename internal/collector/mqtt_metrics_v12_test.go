@@ -60,7 +60,11 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		{"SubscribeConsumerFailures", m.SubscribeConsumerFailures, 1436},
 		{"SubscribeConsumerRetries", m.SubscribeConsumerRetries, 1443},
 		{"JetStreamAPIErrors", m.JetStreamAPIErrors, 1994},
-		{"JetStreamAPITotal", m.JetStreamAPITotal, 2001},
+		// Renamed from machmqtt_jetstream_api_total by the broker: the _total
+		// suffix falsely implied counter semantics for a gauge that holds a
+		// cumulative total. The old name is no longer emitted at all, so the old
+		// field read a permanent zero against any current broker.
+		{"JetStreamAPIRequests", m.JetStreamAPIRequests, 2001},
 		{"JetStreamHealthProbeFailures", m.JetStreamHealthProbeFailures, 2008},
 		{"StreamEnsureRetries", m.StreamEnsureRetries, 2015},
 		{"StreamEnsureStalls", m.StreamEnsureStalls, 2022},
@@ -92,6 +96,46 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		// the sum of all nine reasons (8757 + 1071).
 		{"ConnectionsRejected", m.ConnectionsRejected, 8757},
 		{"AuthFailure", m.AuthFailure, 13013},
+		// machmqtt #160: PUBLISH-rejected and op-queue-dropped counters. Both
+		// broker families emit ONLY labeled series (no umbrella line on the
+		// wire), so PublishRejectedState and OpQueueDropped are sums the
+		// parser computes client-side — same shape as AuthFailure above.
+		{"PublishRejectedStateConnecting", m.PublishRejectedStateConnecting, 9211},
+		{"PublishRejectedStateAuthenticating", m.PublishRejectedStateAuthenticating, 9212},
+		{"PublishRejectedStateDisconnecting", m.PublishRejectedStateDisconnecting, 9213},
+		{"PublishRejectedStateClosed", m.PublishRejectedStateClosed, 9214},
+		{"PublishRejectedStateOther", m.PublishRejectedStateOther, 9215},
+		{"PublishRejectedState", m.PublishRejectedState, 9211 + 9212 + 9213 + 9214 + 9215},
+		{"PublishRejectedQoS0", m.PublishRejectedQoS0, 9221},
+		{"PublishRejectedQoS1", m.PublishRejectedQoS1, 9222},
+		{"PublishRejectedQoS2", m.PublishRejectedQoS2, 9223},
+		{"PublishRejectedQoS3", m.PublishRejectedQoS3, 9224},
+		{"OpQueueDroppedCloseRace", m.OpQueueDroppedCloseRace, 9231},
+		{"OpQueueDroppedPoolFull", m.OpQueueDroppedPoolFull, 9232},
+		{"OpQueueDroppedHandlerError", m.OpQueueDroppedHandlerError, 9233},
+		{"OpQueueDroppedSlotClosed", m.OpQueueDroppedSlotClosed, 9234},
+		{"OpQueueDroppedOther", m.OpQueueDroppedOther, 9235},
+		{"OpQueueDropped", m.OpQueueDropped, 9231 + 9232 + 9233 + 9234 + 9235},
+		// The remainder of the cross-repo parity gap: byte, op-queue shedding,
+		// dispatch-batching, process-descriptor, Go-allocation, QoS 2 purge and
+		// session-signing families. Each carries its own distinct fixture value,
+		// so a case wired to the wrong family or the wrong label cannot pass.
+		{"BytesSent", m.BytesSent, 20029},
+		{"OpShedQoS0PerConnBytes", m.OpShedQoS0PerConnBytes, 20036},
+		{"OpShedQoS0TotalBytes", m.OpShedQoS0TotalBytes, 20043},
+		{"OpShedQoS0Depth", m.OpShedQoS0Depth, 20050},
+		{"OpDispatchBatches", m.OpDispatchBatches, 20057},
+		{"OpDispatchMessages", m.OpDispatchMessages, 20064},
+		{"OpSuspendEvents", m.OpSuspendEvents, 20071},
+		{"ProcessOpenFDs", m.ProcessOpenFDs, 20078},
+		{"ProcessMaxFDs", m.ProcessMaxFDs, 20085},
+		{"GoAllocBytesTotal", m.GoAllocBytesTotal, 20092},
+		{"SessionQoS2PurgeFailuresSyncConnect", m.SessionQoS2PurgeFailuresSyncConnect, 20141},
+		{"SessionQoS2PurgeFailuresAsyncDeath", m.SessionQoS2PurgeFailuresAsyncDeath, 20148},
+		{"SessionVerifyFailures", m.SessionVerifyFailures, 20155},
+		{"SessionUnsignedAccepted", m.SessionUnsignedAccepted, 20162},
+		{"SessionSigningKeyPresent", m.SessionSigningKeyPresent, 20169},
+		{"SessionSigningRequired", m.SessionSigningRequired, 20176},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {
@@ -186,6 +230,8 @@ func TestParseV12FixtureSubObjects(t *testing.T) {
 		{"FeedWriteOverflows", m.Reactor.FeedWriteOverflows, 915},
 		{"FeedReadOverflows", m.Reactor.FeedReadOverflows, 917},
 		{"LoopDeaths", m.Reactor.LoopDeaths, 916},
+		{"RegisteredSlots", m.Reactor.RegisteredSlots, 20183},
+		{"StaleEvents", m.Reactor.StaleEvents, 20190},
 	}
 	for _, tc := range reactorTests {
 		if tc.got != tc.want {
@@ -593,7 +639,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 			"subscribe_consumer_failures": 104,
 			"subscribe_consumer_retries": 105,
 			"jetstream_api_errors": 106,
-			"jetstream_api_total": 107,
+			"jetstream_api_requests": 107,
 			"jetstream_health_probe_failures": 108,
 			"stream_ensure_retries": 109,
 			"stream_ensure_stalls": 110,
@@ -653,7 +699,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 		{"SubscribeConsumerFailures", m.SubscribeConsumerFailures, 104},
 		{"SubscribeConsumerRetries", m.SubscribeConsumerRetries, 105},
 		{"JetStreamAPIErrors", m.JetStreamAPIErrors, 106},
-		{"JetStreamAPITotal", m.JetStreamAPITotal, 107},
+		{"JetStreamAPIRequests", m.JetStreamAPIRequests, 107},
 		{"JetStreamHealthProbeFailures", m.JetStreamHealthProbeFailures, 108},
 		{"StreamEnsureRetries", m.StreamEnsureRetries, 109},
 		{"StreamEnsureStalls", m.StreamEnsureStalls, 110},
@@ -681,7 +727,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 	for _, key := range []string{
 		"legacy_named_consumers", "shared_consumer_recreated", "consumer_deleted_under_consume",
 		"subscribe_consumer_failures", "subscribe_consumer_retries", "jetstream_api_errors",
-		"jetstream_api_total", "jetstream_health_probe_failures", "stream_ensure_retries",
+		"jetstream_api_requests", "jetstream_health_probe_failures", "stream_ensure_retries",
 		"stream_ensure_stalls", "nats_connected", "jetstream_degraded",
 		"consumers_awaiting_reattach", "reattach_sweep_duration_ms",
 	} {

@@ -198,10 +198,27 @@ type MQTTMetrics struct {
 	// PublishRefusedTopic counts client PUBLISHes rejected with 0x90 (Topic Name
 	// invalid) because the topic, while well-formed MQTT, contains a character
 	// the broker cannot map onto a NATS subject ('*', '>', space, DEL, control).
-	PublishRefusedTopic  int64 `json:"publish_refused_topic"`
-	TLSHandshakeFailures int64 `json:"tls_handshake_failures"`
-	ProxyProtocolErrors  int64 `json:"proxy_protocol_errors"`
-	WSUpgradeFailures    int64 `json:"ws_upgrade_failures"`
+	PublishRefusedTopic int64 `json:"publish_refused_topic"`
+	// PublishRejectedState/PublishRejectedQoS* count PUBLISH packets rejected
+	// because the connection was not in StateConnected when they arrived
+	// (#160) — the same events, in two independent breakdowns rather than
+	// one state-by-qos cross product. Neither breakdown has its own umbrella
+	// series on the wire; PublishRejectedState is summed client-side from the
+	// four per-state values. "other"/qos "3" are defensive catch-alls that
+	// should read zero from a compliant client.
+	PublishRejectedState               int64 `json:"publish_rejected_state"`
+	PublishRejectedStateConnecting     int64 `json:"publish_rejected_state_connecting"`
+	PublishRejectedStateAuthenticating int64 `json:"publish_rejected_state_authenticating"`
+	PublishRejectedStateDisconnecting  int64 `json:"publish_rejected_state_disconnecting"`
+	PublishRejectedStateClosed         int64 `json:"publish_rejected_state_closed"`
+	PublishRejectedStateOther          int64 `json:"publish_rejected_state_other,omitempty"`
+	PublishRejectedQoS0                int64 `json:"publish_rejected_qos0"`
+	PublishRejectedQoS1                int64 `json:"publish_rejected_qos1"`
+	PublishRejectedQoS2                int64 `json:"publish_rejected_qos2"`
+	PublishRejectedQoS3                int64 `json:"publish_rejected_qos3,omitempty"`
+	TLSHandshakeFailures               int64 `json:"tls_handshake_failures"`
+	ProxyProtocolErrors                int64 `json:"proxy_protocol_errors"`
+	WSUpgradeFailures                  int64 `json:"ws_upgrade_failures"`
 	// WSProtocolViolations counts WebSocket framing-layer violations (RFC 6455);
 	// the offending connection is closed, which is otherwise indistinguishable
 	// from an ordinary disconnect.
@@ -245,6 +262,24 @@ type MQTTMetrics struct {
 	// envelope did not verify (unsigned legacy record, client-id/key mismatch, or
 	// HMAC mismatch). Those wills are NOT fired.
 	WillVerifyFailures int64 `json:"will_verify_failures"`
+	// SessionVerifyFailures counts session KV entries that failed verification
+	// (client-id/KV-key mismatch, HMAC mismatch, or — once enforcement is on — an
+	// unsigned record) and were therefore treated as ABSENT: that client resumes
+	// with Session Present=0 and its queued QoS 1/2 state is discarded. It stays
+	// zero when no cluster HMAC key is configured, because verification is then
+	// skipped entirely, so a flat zero is NOT evidence records are being verified.
+	SessionVerifyFailures int64 `json:"session_verify_failures"`
+	// SessionUnsignedAccepted counts unsigned session records accepted during the
+	// signing grace window. It is the gate for enabling signing enforcement: turn
+	// that on only once this has reached and HELD zero fleet-wide. A zero here is
+	// ambiguous on its own — it also reads zero with no key configured, and with
+	// enforcement already on — which is what the two gauges below disambiguate.
+	SessionUnsignedAccepted int64 `json:"session_unsigned_accepted"`
+	// SessionSigningKeyPresent (a key is configured) and SessionSigningRequired
+	// (enforcement is on) are 0/1 and exist only to tell those three readings
+	// apart. Neither exposes the key itself.
+	SessionSigningKeyPresent int64 `json:"session_signing_key_present"`
+	SessionSigningRequired   int64 `json:"session_signing_required"`
 	// SubscribeFlushFailures counts subscriptions whose registration with the
 	// NATS server was unconfirmed when SUBACK was sent, so messages published
 	// before the reconnect replay are not delivered and no error reaches the
@@ -259,6 +294,12 @@ type MQTTMetrics struct {
 	// InboundBytes is machmqtt_bytes_received_total: cumulative application
 	// PUBLISH payload bytes received from clients.
 	InboundBytes int64 `json:"inbound_bytes"`
+	// BytesSent is machmqtt_bytes_sent_total, the outbound counterpart of
+	// InboundBytes: cumulative MQTT protocol bytes sent to clients, measured
+	// before TLS encryption and WebSocket framing. It is NOT OutboundBytes above,
+	// which is the current write-queue backlog gauge. The asymmetric tag pair
+	// (inbound_bytes / bytes_sent) is deliberate on the broker side.
+	BytesSent int64 `json:"bytes_sent"`
 
 	// --- Bridge / pool health ---
 	PoolSlotConnected                   int64 `json:"pool_slot_connected"`
@@ -310,8 +351,42 @@ type MQTTMetrics struct {
 	OpQueueDepth         int64 `json:"op_queue_depth"`
 	OpQueueBytes         int64 `json:"op_queue_bytes"`
 	OpSuspendedConns     int64 `json:"op_suspended_conns"`
-	OpPoolQueueDepth     int64 `json:"op_pool_queue_depth"`
-	OpPoolRejected       int64 `json:"op_pool_rejected"`
+	// OpShedQoS0* count QoS 0 PUBLISHes shed by the INBOUND op queue, by which
+	// cap fired: PerConnBytes is one connection's own byte cap
+	// (mqtt.max_op_queue_bytes), so it names the client responsible; TotalBytes is
+	// the broker-wide ceiling (mqtt.max_total_op_queue_bytes), which penalises
+	// whichever connection publishes next rather than the one at fault; Depth is
+	// the entry backstop firing before either byte cap, expected only with small
+	// payloads. Shedding QoS 0 is spec-legal and is what keeps the reactor loop
+	// off a wedged NATS write.
+	OpShedQoS0PerConnBytes int64 `json:"op_shed_qos0_per_conn_bytes"`
+	OpShedQoS0TotalBytes   int64 `json:"op_shed_qos0_total_bytes"`
+	OpShedQoS0Depth        int64 `json:"op_shed_qos0_depth"`
+	// OpDispatchMessages divided by OpDispatchBatches is the average QoS 0 batch
+	// size, and THE RATIO IS THE SIGNAL: 1.0 means batching never engaged, which
+	// by throughput alone is indistinguishable from batching not helping.
+	OpDispatchBatches  int64 `json:"op_dispatch_batches"`
+	OpDispatchMessages int64 `json:"op_dispatch_messages"`
+	// OpSuspendEvents counts read-suspension EPISODES. It pairs with the
+	// OpSuspendedConns gauge above, which cannot distinguish rapid flapping from a
+	// sustained stall because an episode contained between two scrapes never
+	// appears in it.
+	OpSuspendEvents  int64 `json:"op_suspend_events"`
+	OpPoolQueueDepth int64 `json:"op_pool_queue_depth"`
+	OpPoolRejected   int64 `json:"op_pool_rejected"`
+	// OpQueueDropped* count queued-but-not-yet-processed ops discarded
+	// wholesale by dropOpQueue, labelled by why (#160). reason=close_race is
+	// the message-loss defect: a batch still queued behind an in-flight op
+	// when the connection flips to Disconnecting/Closed — no per-message
+	// rejection, no ack. The others are narrower shedding already visible
+	// elsewhere (pool_full pairs with OpPoolRejected above). No umbrella
+	// series on the wire; OpQueueDropped is summed client-side.
+	OpQueueDropped             int64 `json:"op_queue_dropped"`
+	OpQueueDroppedPoolFull     int64 `json:"op_queue_dropped_pool_full"`
+	OpQueueDroppedHandlerError int64 `json:"op_queue_dropped_handler_error"`
+	OpQueueDroppedSlotClosed   int64 `json:"op_queue_dropped_slot_closed"`
+	OpQueueDroppedCloseRace    int64 `json:"op_queue_dropped_close_race"`
+	OpQueueDroppedOther        int64 `json:"op_queue_dropped_other,omitempty"`
 
 	// --- Session / consumer persistence ---
 	ConsumerSeqMapEntries  int64 `json:"consumer_seq_map_entries"`
@@ -322,13 +397,18 @@ type MQTTMetrics struct {
 	// sessions reconnect after an upgrade, so a floor that never clears means
 	// those sessions are not coming back or their consumers were orphaned.
 	LegacyNamedConsumers int64 `json:"legacy_named_consumers"`
-	// JetStreamAPIErrors and JetStreamAPITotal are the JetStream ACCOUNT's
-	// cumulative counters as the NATS server reports them — account-wide, shared
-	// by every broker on the account, and refreshed by the bridge health probe
-	// every 30s rather than sampled per request. They are a ratio, not a rate:
-	// errors climbing against a flat total means the API is rejecting work.
+	// JetStreamAPIErrors / JetStreamAPIRequests are the JetStream ACCOUNT's
+	// cumulative totals as the NATS server reports them — account-wide rather than
+	// this instance's own, and gauges holding a cumulative total, so they must not
+	// be rate()d. Refreshed every 30s by the bridge health probe. Read the pair as
+	// a ratio and watch the LEVEL: a non-zero error baseline is normal, since the
+	// broker's startup stream-existence check 404s by design.
+	//
+	// The request side was machmqtt_jetstream_api_total until the broker renamed
+	// it to machmqtt_jetstream_api_requests: the _total suffix falsely implied
+	// Prometheus counter semantics for a gauge. The old name is no longer emitted.
 	JetStreamAPIErrors              int64 `json:"jetstream_api_errors"`
-	JetStreamAPITotal               int64 `json:"jetstream_api_total"`
+	JetStreamAPIRequests            int64 `json:"jetstream_api_requests"`
 	JetStreamHealthProbeFailures    int64 `json:"jetstream_health_probe_failures"`
 	SessionDeletesDropped           int64 `json:"session_deletes_dropped"`
 	SessionPersistFailedWriteFailed int64 `json:"session_persist_failed_write_failed"`
@@ -337,6 +417,14 @@ type MQTTMetrics struct {
 	// recovered per-session; it arrives under the same
 	// machmqtt_session_persist_failed_total family with reason="panic".
 	SessionPersistPanics int64 `json:"session_persist_panics"`
+	// SessionQoS2PurgeFailures* count session-discard QoS 2 stream purges that
+	// exhausted their retry budget, split by path. SyncConnect is the synchronous
+	// clean-start path and the one with client impact: every increment is a
+	// CONNECT refused with 0x88 (fail-closed), so a sustained rise means
+	// clean-start CONNECTs are being rejected fleet-wide. AsyncDeath is the
+	// background session-death path (expiry / SEI=0 disconnect) — log-only.
+	SessionQoS2PurgeFailuresSyncConnect int64 `json:"session_qos2_purge_failures_sync_connect"`
+	SessionQoS2PurgeFailuresAsyncDeath  int64 `json:"session_qos2_purge_failures_async_death"`
 
 	// --- Reliability extras ---
 	// CredentialExpiryDisconnects counts clients disconnected because their
@@ -419,11 +507,31 @@ type MQTTMetrics struct {
 	DispatchWaitBuckets            [MQTTHistogramBucketCount]int64 `json:"dispatch_wait_buckets"`
 	TLSHandshakeDurationBuckets    [MQTTHistogramBucketCount]int64 `json:"tls_handshake_duration_buckets"`
 
+	// --- Process resources ---
+	// ProcessOpenFDs over ProcessMaxFDs is descriptor headroom, and it must be
+	// alerted on well before 1: exhaustion is abrupt and total (accept(2) starts
+	// failing with EMFILE and the broker stops taking connections, with no gradual
+	// degradation first). Open FDs should track SocketsOpen with a small constant
+	// offset, so a gap that grows while SocketsOpen is flat is a descriptor leak
+	// rather than load. ProcessMaxFDs is the effective in-process soft
+	// RLIMIT_NOFILE, and 0 means unlimited. Either reads -1 when the value could
+	// not be read — an instrument failure, not a count of zero.
+	ProcessOpenFDs int64 `json:"process_open_fds"`
+	ProcessMaxFDs  int64 `json:"process_max_fds"`
+
 	// --- Go runtime ---
 	GoGoroutines     int64 `json:"go_goroutines"`
 	GoHeapInuseBytes int64 `json:"go_heap_inuse_bytes"`
-	GoGCCycles       int64 `json:"go_gc_cycles"`
-	GoGCPauseNsTotal int64 `json:"go_gc_pause_ns_total"`
+	// GoAllocBytesTotal is cumulative and only ever rises. Read it as a rate
+	// alongside GoHeapInuseBytes to separate the two memory problems neither
+	// series can distinguish alone: a high allocation rate with a FLAT heap is
+	// churn (a hot path allocating per message — fix the allocation site), while a
+	// heap climbing without a matching allocation rate is retention (a leak — fix
+	// whatever holds the reference). Sampled from the same 60s-cached ReadMemStats
+	// as the other go_* series, so the finest meaningful window is a few minutes.
+	GoAllocBytesTotal int64 `json:"go_alloc_bytes_total"`
+	GoGCCycles        int64 `json:"go_gc_cycles"`
+	GoGCPauseNsTotal  int64 `json:"go_gc_pause_ns_total"`
 
 	// --- Instance identity ---
 	// InstanceID is the value of the instance_id label from machmqtt_instance_info.
@@ -557,6 +665,19 @@ type MQTTMetricsReactor struct {
 	// LoopDeaths counts event loops that exited permanently on a fatal poller
 	// error; their connections are force-closed and new ones steered elsewhere.
 	LoopDeaths int64 `json:"loop_deaths"`
+	// RegisteredSlots is the connections currently registered with the reactor's
+	// epoll loops. DIVERGENCE is the signal: it should track ConnectionsActive
+	// closely, and a gap that persists after connections drain means slots are
+	// outliving their connections, each one pinning a whole client object graph
+	// the collector cannot reclaim. A steadily climbing gap under churn is a leak,
+	// not load.
+	RegisteredSlots int64 `json:"registered_slots"`
+	// StaleEvents counts harvested epoll events discarded because the fd had been
+	// reused by a different connection between the event firing and the loop
+	// processing it. Each one PREVENTED a brand-new connection from being torn
+	// down by its predecessor's hangup. Near-zero is normal; a sustained rise
+	// means heavy off-loop closes racing accepts.
+	StaleEvents int64 `json:"stale_events"`
 }
 
 // MQTTMetricsPool is the NATS connection-pool group (machmqtt_pool_*), including
