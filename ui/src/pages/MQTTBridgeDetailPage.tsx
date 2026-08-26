@@ -689,7 +689,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           />
           <DI
             label="JetStream (Live)"
-            value={fmtState(data.jetstream_available === 0 ? 1 : 0, 'Unavailable', 'Available')}
+            value={fmtState(data.jetstream_available, 'Available', 'Unavailable')}
             valueClass={data.jetstream_available === 0 ? 'text-red-600 dark:text-red-400' : ''}
             hint="Sampled from the bridge's current handle on this scrape — state right now, not history. While Unavailable, QoS 2 publishes and durable session writes fail; QoS 0 is unaffected."
           />

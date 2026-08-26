@@ -719,14 +719,14 @@ machmqtt_drained 2107
 # TYPE machmqtt_nats_connected gauge
 machmqtt_nats_connected 1
 # HELP machmqtt_jetstream_degraded 1 when JetStream is unhealthy while the NATS socket is still up, else 0. Flips after consecutive infrastructure failures on real traffic (not a single blip). While 1, /readyz reports jetstream-degraded (503) and Clean Start=0 CONNECTs are refused 0x88, so sessions, retained messages and QoS 1/2 are unavailable on this instance.
+# TYPE machmqtt_jetstream_degraded gauge
+machmqtt_jetstream_degraded 1
 # HELP machmqtt_jetstream_available Whether JetStream is usable RIGHT NOW: 1 available, 0 degraded. Live sample, state not history.
 # TYPE machmqtt_jetstream_available gauge
 machmqtt_jetstream_available 1
 # HELP machmqtt_jetstream_transitions_total Healthy<->degraded flips since start.
 # TYPE machmqtt_jetstream_transitions_total counter
 machmqtt_jetstream_transitions_total 30013
-# TYPE machmqtt_jetstream_degraded gauge
-machmqtt_jetstream_degraded 1
 # HELP machmqtt_consumers_awaiting_reattach Clients whose durable QoS 1/2 consumers are dead pending re-attach after a bridge rebuild that completed while JetStream was still down. Non-zero means this instance CANNOT deliver QoS 1/2 to that many sessions right now; it clears when a re-attach sweep completes. Sustained non-zero with machmqtt_jetstream_degraded back at 0 means recovery did not trigger a sweep — restart the instance.
 # TYPE machmqtt_consumers_awaiting_reattach gauge
 machmqtt_consumers_awaiting_reattach 2029

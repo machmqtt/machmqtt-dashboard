@@ -170,25 +170,16 @@ type MQTTMetrics struct {
 	// crashes first. RetainPersistFailedPut means a retained message is served
 	// from memory but is not durable; RetainPersistFailedDelete means a deleted
 	// retained message's KV entry survives and resurrects on the next restart.
-	WillPersistFailedWrite int64 `json:"will_persist_failed_write"`
-	// JetStreamAvailable is a LIVE 0/1 gauge sampled from the bridge's current
-	// handle on every scrape: 1 = JetStream usable right now, 0 = degraded
-	// (QoS 2 publishes and durable session writes failing; QoS 0 unaffected).
-	// State, not history — the historical counterpart is JetStreamTransitions.
-	// Render as a level/state chip, never a rate.
-	JetStreamAvailable int64 `json:"jetstream_available"`
-	// JetStreamTransitions is a monotonic counter of healthy<->degraded flips
-	// since broker start. Counter: plot as a rate (flap detector); plotting the
-	// raw level misleads.
-	JetStreamTransitions int64 `json:"jetstream_transitions"`
-	// WillStaleClearAttempted / Skipped split machmqtt_will_stale_clear_total
-	// by outcome ("issued" / "skipped"): stale-will clears the broker issued on
-	// session resume vs ones it skipped as unnecessary. Counters.
-	WillStaleClearAttempted    int64 `json:"will_stale_clear_attempted"`
-	WillStaleClearSkipped      int64 `json:"will_stale_clear_skipped"`
+	WillPersistFailedWrite     int64 `json:"will_persist_failed_write"`
 	WillPersistFailedQueueFull int64 `json:"will_persist_failed_queue_full"`
 	RetainPersistFailedPut     int64 `json:"retain_persist_failed_put"`
 	RetainPersistFailedDelete  int64 `json:"retain_persist_failed_delete"`
+
+	// WillStaleClearAttempted / Skipped split machmqtt_will_stale_clear_total
+	// by outcome ("issued" / "skipped"): stale-will clears the broker issued on
+	// session resume vs ones it skipped as unnecessary. Counters.
+	WillStaleClearAttempted int64 `json:"will_stale_clear_attempted"`
+	WillStaleClearSkipped   int64 `json:"will_stale_clear_skipped"`
 
 	// --- Protocol ops ---
 	Subscribes         int64 `json:"subscribes"`
@@ -611,6 +602,16 @@ type MQTTMetrics struct {
 	// bridge's displayed state. See MQTTBridgeStatus.JetStreamDegraded.
 	NATSConnected     int64 `json:"nats_connected"`
 	JetStreamDegraded int64 `json:"jetstream_degraded"`
+	// JetStreamAvailable is a LIVE 0/1 gauge sampled from the bridge's current
+	// handle on every scrape: 1 = JetStream usable right now, 0 = degraded
+	// (QoS 2 publishes and durable session writes failing; QoS 0 unaffected).
+	// State, not history — the historical counterpart is JetStreamTransitions.
+	// Render as a level/state chip, never a rate.
+	JetStreamAvailable int64 `json:"jetstream_available"`
+	// JetStreamTransitions is a monotonic counter of healthy<->degraded flips
+	// since broker start. Counter: plot as a rate (flap detector); plotting the
+	// raw level misleads.
+	JetStreamTransitions int64 `json:"jetstream_transitions"`
 	// ConsumersAwaitingReattach is how many clients have dead durable QoS 1/2
 	// consumers pending re-attach after a degraded rebuild: non-zero means this
 	// instance cannot deliver QoS 1/2 to that many sessions right now.
