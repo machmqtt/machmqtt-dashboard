@@ -519,6 +519,11 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Sent QoS 1" value={fmtNum(data.msgs_sent_qos1)} />
           <DI label="Sent QoS 2" value={fmtNum(data.msgs_sent_qos2)} />
           <DI label="Redelivered" value={fmtNum(data.msgs_redelivered)} />
+          <DI
+            label="Redelivery Suppressed"
+            value={fmtNum(data.msgs_redelivery_suppressed)}
+            hint="AckWait redeliveries withheld because the message was still in flight on the same live connection — the spec forbids resending there. Counter; a rising rate just means slow ackers, not loss."
+          />
         </Grid>
       </Section>
       <Section title="Server Messages (Broker ↔ NATS)">
@@ -545,6 +550,8 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Verify Failures" value={fmtNum(data.will_verify_failures)} />
           <DI label="Persist Failed: Write" value={fmtNum(data.will_persist_failed_write)} />
           <DI label="Persist Failed: Queue Full" value={fmtNum(data.will_persist_failed_queue_full)} />
+          <DI label="Stale Clears Issued" value={fmtNum(data.will_stale_clear_attempted)} hint="Stale-will clears the broker issued on session resume." />
+          <DI label="Stale Clears Skipped" value={fmtNum(data.will_stale_clear_skipped)} hint="Resumes where a stale-will clear was judged unnecessary and skipped." />
         </Grid>
         <p className="text-xs text-gray-400 mt-2">A one-time burst of <em>Verify Failures</em> is expected after upgrading the broker across the signed-wills boundary; a sustained rise means stored wills are failing verification and not firing.</p>
       </Section>
@@ -628,6 +635,12 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
       <Section title="Capacity & Memory">
         <Grid>
           <DI label="Retained Messages" value={fmtNum(data.retained_messages)} />
+          <DI
+            label="Retained Delivery Truncated"
+            value={fmtNum(data.retained_delivery_truncated)}
+            valueClass={(data.retained_delivery_truncated ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : ''}
+            hint="SUBSCRIBE filters whose retained matches exceeded the per-subscribe cap — those subscribers silently received only part of the retained state. Any sustained rise deserves a look at the cap."
+          />
           <DI label="Inflight Out Messages" value={fmtNum(data.inflight_out_messages)} />
           <DI label="Active Subscriptions" value={fmtNum(data.subscriptions_active)} />
           <DI label="Outbound Queue Bytes" value={fmtBytes(data.outbound_bytes)} />
@@ -675,6 +688,18 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
             hint="Degraded means JetStream is unhealthy while the NATS socket is still up — the failure mode with no other live signal, because the disconnect counters stay flat throughout it."
           />
           <DI
+            label="JetStream (Live)"
+            value={fmtState(data.jetstream_available === 0 ? 1 : 0, 'Unavailable', 'Available')}
+            valueClass={data.jetstream_available === 0 ? 'text-red-600 dark:text-red-400' : ''}
+            hint="Sampled from the bridge's current handle on this scrape — state right now, not history. While Unavailable, QoS 2 publishes and durable session writes fail; QoS 0 is unaffected."
+          />
+          <DI
+            label="JetStream Flips"
+            value={fmtNum(data.jetstream_transitions)}
+            valueClass={(data.jetstream_transitions ?? 0) > 2 ? 'text-amber-600 dark:text-amber-400' : ''}
+            hint="Healthy↔degraded transitions since broker start — a cumulative counter, so read its RATE: a rising rate means JetStream is flapping, which the live state chip alone cannot show."
+          />
+          <DI
             label="Consumers Awaiting Re-Attach"
             value={fmtNum(data.consumers_awaiting_reattach)}
             valueClass={(data.consumers_awaiting_reattach ?? 0) > 0 ? 'text-red-600 dark:text-red-400' : ''}
@@ -717,6 +742,17 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Worker Pool Queue" value={fmtNum(data.worker_pool_queue_depth)} />
           <DI label="Op Queue Depth" value={fmtNum(data.op_queue_depth)} />
           <DI label="Op Queue Bytes" value={fmtBytes(data.op_queue_bytes)} />
+          <DI
+            label="Dropped: Worker Abort"
+            value={fmtNum(data.op_queue_dropped_worker_abort)}
+            valueClass={(data.op_queue_dropped_worker_abort ?? 0) > 0 ? 'text-red-600 dark:text-red-400' : ''}
+            hint="Accepted ops discarded because their worker aborted — like close_race, a message-loss event, not shedding."
+          />
+          <DI
+            label="Drain: Ack Unwritable"
+            value={fmtNum(data.drain_ack_unwritable)}
+            hint="Acks that could not be written back to a draining connection; the client re-resolves these by retransmit on reconnect."
+          />
           <DI label="Op Suspended Conns" value={fmtNum(data.op_suspended_conns)} />
           <DI label="Op Pool Queue" value={fmtNum(data.op_pool_queue_depth)} />
           <DI label="Op Pool Rejected" value={fmtNum(data.op_pool_rejected)} />

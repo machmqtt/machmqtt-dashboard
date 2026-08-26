@@ -216,6 +216,41 @@ describe('MQTTBridgeDetailPage', () => {
     expect(screen.queryByRole('button', { name: 'Admin' })).not.toBeInTheDocument()
   })
 
+  it('renders the JetStream health pair unhealthy arms (#164)', async () => {
+    // Plain object, not the rich test's Proxy: JSON.stringify serializes only
+    // explicit keys anyway, and these four are exactly the arms under test.
+    const unhealthyMetrics = {
+      jetstream_available: 0,
+      jetstream_transitions: 5,
+      op_queue_dropped_worker_abort: 0,
+      retained_delivery_truncated: 0,
+      connack_rejected_by_reason: {}, suback_rejected_by_reason: {}, disconnects_sent_by_reason: {},
+      uncurated: {}, uncurated_help: {},
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/metrics/mqtt')) return json({ points: [] })
+      if (url.endsWith('/diag')) return json(nats)
+      if (url.endsWith('/metrics')) return json(unhealthyMetrics)
+      if (url.endsWith('/pool')) return json(pool)
+      if (url.endsWith('/license')) return json(license)
+      if (url.endsWith('/cluster')) return json(cluster)
+      if (url.endsWith('/readyz')) return json({})
+      return json({}, 404)
+    })
+
+    renderPage('viewer')
+    await screen.findByText('JetStream Account')
+    fireEvent.click(screen.getByRole('button', { name: 'Metrics' }))
+    // Live gauge: 0 must render the Unavailable arm with the alert class;
+    // flips at 5 (>2) takes the flapping-amber arm. Both are the opposite
+    // arms from the rich-render test, whose fixture leaves these fields at 1
+    // or absent.
+    expect(await screen.findByText('Unavailable')).toBeInTheDocument()
+    expect(screen.getByText('JetStream Flips')).toBeInTheDocument()
+    expect(screen.getByText('Dropped: Worker Abort')).toBeInTheDocument()
+  })
+
   it('renders sparse but valid provider payloads using safe defaults', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)

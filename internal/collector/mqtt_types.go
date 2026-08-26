@@ -66,6 +66,11 @@ type MQTTMetrics struct {
 	SocketsAccepted   int64 `json:"sockets_accepted"`
 	WSSocketsOpen     int64 `json:"ws_sockets_open"`
 	WSSocketsAccepted int64 `json:"ws_sockets_accepted"`
+	// MaxConnections is the configured mqtt.max_connections ceiling that
+	// SocketsOpen is enforced against — the denominator for a headroom ratio.
+	// The broker exposed the numerator only until machmqtt#192, so proximity to
+	// the limit was invisible until it was breached. Live value, tracks a reload.
+	MaxConnections int64 `json:"max_connections"`
 
 	// Connection rejections broken out by remediation path
 	// (machmqtt_connections_rejected_by_reason_total{reason=...}).
@@ -130,6 +135,15 @@ type MQTTMetrics struct {
 	MsgsSentQoS1    int64 `json:"msgs_sent_qos1"`
 	MsgsSentQoS2    int64 `json:"msgs_sent_qos2"`
 	MsgsRedelivered int64 `json:"msgs_redelivered"`
+	// MsgsRedeliverySuppressed counts AckWait redeliveries the broker withheld
+	// from the wire because the message was still in flight on the same live
+	// connection ([MQTT-4.4.0-1]'s MUST-NOT half). Counter: render as a rate.
+	MsgsRedeliverySuppressed int64 `json:"msgs_redelivery_suppressed"`
+	// RetainedDeliveryTruncated counts SUBSCRIBE filters whose retained matches
+	// exceeded the per-subscribe cap — the subscriber received only the cap's
+	// worth. Counter; any sustained rise means clients are silently missing
+	// retained state.
+	RetainedDeliveryTruncated int64 `json:"retained_delivery_truncated"`
 
 	// --- Server messages (broker ↔ NATS) ---
 	ServerPublishedQoS0 int64 `json:"server_published_qos0"`
@@ -156,7 +170,22 @@ type MQTTMetrics struct {
 	// crashes first. RetainPersistFailedPut means a retained message is served
 	// from memory but is not durable; RetainPersistFailedDelete means a deleted
 	// retained message's KV entry survives and resurrects on the next restart.
-	WillPersistFailedWrite     int64 `json:"will_persist_failed_write"`
+	WillPersistFailedWrite int64 `json:"will_persist_failed_write"`
+	// JetStreamAvailable is a LIVE 0/1 gauge sampled from the bridge's current
+	// handle on every scrape: 1 = JetStream usable right now, 0 = degraded
+	// (QoS 2 publishes and durable session writes failing; QoS 0 unaffected).
+	// State, not history — the historical counterpart is JetStreamTransitions.
+	// Render as a level/state chip, never a rate.
+	JetStreamAvailable int64 `json:"jetstream_available"`
+	// JetStreamTransitions is a monotonic counter of healthy<->degraded flips
+	// since broker start. Counter: plot as a rate (flap detector); plotting the
+	// raw level misleads.
+	JetStreamTransitions int64 `json:"jetstream_transitions"`
+	// WillStaleClearAttempted / Skipped split machmqtt_will_stale_clear_total
+	// by outcome ("issued" / "skipped"): stale-will clears the broker issued on
+	// session resume vs ones it skipped as unnecessary. Counters.
+	WillStaleClearAttempted    int64 `json:"will_stale_clear_attempted"`
+	WillStaleClearSkipped      int64 `json:"will_stale_clear_skipped"`
 	WillPersistFailedQueueFull int64 `json:"will_persist_failed_queue_full"`
 	RetainPersistFailedPut     int64 `json:"retain_persist_failed_put"`
 	RetainPersistFailedDelete  int64 `json:"retain_persist_failed_delete"`
@@ -386,7 +415,11 @@ type MQTTMetrics struct {
 	OpQueueDroppedHandlerError int64 `json:"op_queue_dropped_handler_error"`
 	OpQueueDroppedSlotClosed   int64 `json:"op_queue_dropped_slot_closed"`
 	OpQueueDroppedCloseRace    int64 `json:"op_queue_dropped_close_race"`
-	OpQueueDroppedOther        int64 `json:"op_queue_dropped_other,omitempty"`
+	OpQueueDroppedWorkerAbort  int64 `json:"op_queue_dropped_worker_abort"`
+	// DrainAckUnwritable counts acks that could not be written to a draining
+	// connection during the #160 accepted-work drain. Counter.
+	DrainAckUnwritable  int64 `json:"drain_ack_unwritable"`
+	OpQueueDroppedOther int64 `json:"op_queue_dropped_other,omitempty"`
 
 	// --- Session / consumer persistence ---
 	ConsumerSeqMapEntries  int64 `json:"consumer_seq_map_entries"`

@@ -167,6 +167,19 @@ machmqtt_will_retry_pending 1442
 # TYPE machmqtt_will_persist_failed_total counter
 machmqtt_will_persist_failed_total{reason="write_failed"} 2114
 machmqtt_will_persist_failed_total{reason="queue_full"} 2121
+# HELP machmqtt_will_stale_clear_total Stale-will clears on session resume, by outcome: issued vs skipped-as-unnecessary.
+# TYPE machmqtt_will_stale_clear_total counter
+machmqtt_will_stale_clear_total{outcome="issued"} 30014
+machmqtt_will_stale_clear_total{outcome="skipped"} 30015
+# HELP machmqtt_client_messages_redelivery_suppressed_total AckWait redeliveries withheld from the wire because the message was still in flight on the same live connection.
+# TYPE machmqtt_client_messages_redelivery_suppressed_total counter
+machmqtt_client_messages_redelivery_suppressed_total 30016
+# HELP machmqtt_retained_delivery_truncated_total SUBSCRIBE filters whose retained matches exceeded the per-subscribe cap.
+# TYPE machmqtt_retained_delivery_truncated_total counter
+machmqtt_retained_delivery_truncated_total 30017
+# HELP machmqtt_max_connections Configured mqtt.max_connections ceiling.
+# TYPE machmqtt_max_connections gauge
+machmqtt_max_connections 30018
 # HELP machmqtt_retain_persist_failed_total Retained-message KV operation failures by op. put: the retained message is served from memory but is not durable (lost on restart). delete: a deleted/evicted retained message's KV entry remains and resurrects on the next restart's load.
 # TYPE machmqtt_retain_persist_failed_total counter
 machmqtt_retain_persist_failed_total{op="put"} 2128
@@ -385,6 +398,10 @@ machmqtt_op_queue_dropped_total{reason="pool_full"} 9232
 machmqtt_op_queue_dropped_total{reason="handler_error"} 9233
 machmqtt_op_queue_dropped_total{reason="slot_closed"} 9234
 machmqtt_op_queue_dropped_total{reason="other"} 9235
+machmqtt_op_queue_dropped_total{reason="worker_abort"} 30011
+# HELP machmqtt_drain_ack_unwritable_total Acks that could not be written to a draining connection during the accepted-work drain.
+# TYPE machmqtt_drain_ack_unwritable_total counter
+machmqtt_drain_ack_unwritable_total 30012
 # HELP machmqtt_publish_latency_seconds End-to-end PUBLISH latency from packet receipt to bridge store completion, in seconds.
 # TYPE machmqtt_publish_latency_seconds histogram
 machmqtt_publish_latency_seconds_bucket{le="0.0005"} 11
@@ -702,6 +719,12 @@ machmqtt_drained 2107
 # TYPE machmqtt_nats_connected gauge
 machmqtt_nats_connected 1
 # HELP machmqtt_jetstream_degraded 1 when JetStream is unhealthy while the NATS socket is still up, else 0. Flips after consecutive infrastructure failures on real traffic (not a single blip). While 1, /readyz reports jetstream-degraded (503) and Clean Start=0 CONNECTs are refused 0x88, so sessions, retained messages and QoS 1/2 are unavailable on this instance.
+# HELP machmqtt_jetstream_available Whether JetStream is usable RIGHT NOW: 1 available, 0 degraded. Live sample, state not history.
+# TYPE machmqtt_jetstream_available gauge
+machmqtt_jetstream_available 1
+# HELP machmqtt_jetstream_transitions_total Healthy<->degraded flips since start.
+# TYPE machmqtt_jetstream_transitions_total counter
+machmqtt_jetstream_transitions_total 30013
 # TYPE machmqtt_jetstream_degraded gauge
 machmqtt_jetstream_degraded 1
 # HELP machmqtt_consumers_awaiting_reattach Clients whose durable QoS 1/2 consumers are dead pending re-attach after a bridge rebuild that completed while JetStream was still down. Non-zero means this instance CANNOT deliver QoS 1/2 to that many sessions right now; it clears when a re-attach sweep completes. Sustained non-zero with machmqtt_jetstream_degraded back at 0 means recovery did not trigger a sweep — restart the instance.

@@ -322,6 +322,12 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.WillPending = parseInt(value)
 		case name == "machmqtt_will_retry_pending":
 			m.WillRetryPending = parseInt(value)
+		case name == "machmqtt_client_messages_redelivery_suppressed_total":
+			m.MsgsRedeliverySuppressed = parseInt(value)
+		case name == "machmqtt_retained_delivery_truncated_total":
+			m.RetainedDeliveryTruncated = parseInt(value)
+		case name == "machmqtt_max_connections":
+			m.MaxConnections = parseInt(value)
 		case name == "machmqtt_will_persist_failed_total":
 			switch extractLabel(line, "reason") {
 			case "write_failed":
@@ -375,6 +381,19 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.NATSConnected = parseInt(value)
 		case name == "machmqtt_jetstream_degraded":
 			m.JetStreamDegraded = parseInt(value)
+		case name == "machmqtt_jetstream_available":
+			// LIVE 0/1 gauge (state), unlike the _transitions counter below.
+			m.JetStreamAvailable = parseInt(value)
+		case name == "machmqtt_jetstream_transitions_total":
+			m.JetStreamTransitions = parseInt(value)
+		case name == "machmqtt_will_stale_clear_total":
+			// Labeled by outcome; no unlabeled total is emitted.
+			switch extractLabel(line, "outcome") {
+			case "issued":
+				m.WillStaleClearAttempted = parseInt(value)
+			case "skipped":
+				m.WillStaleClearSkipped = parseInt(value)
+			}
 		case name == "machmqtt_shared_consumer_recreated_total":
 			m.SharedConsumerRecreated = parseInt(value)
 		case name == "machmqtt_consumer_deleted_under_consume_total":
@@ -705,9 +724,14 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.OpQueueDroppedSlotClosed = v
 			case "close_race":
 				m.OpQueueDroppedCloseRace = v
+			case "worker_abort":
+				m.OpQueueDroppedWorkerAbort = v
 			case "other":
 				m.OpQueueDroppedOther = v
 			}
+
+		case name == "machmqtt_drain_ack_unwritable_total":
+			m.DrainAckUnwritable = parseInt(value)
 
 		// --- Session / consumer persistence (the four consumer/session families
 		// below are absent unless the bridge is up, which is what BridgeUp

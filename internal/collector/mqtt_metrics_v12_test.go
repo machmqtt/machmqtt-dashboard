@@ -115,7 +115,19 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		{"OpQueueDroppedHandlerError", m.OpQueueDroppedHandlerError, 9233},
 		{"OpQueueDroppedSlotClosed", m.OpQueueDroppedSlotClosed, 9234},
 		{"OpQueueDroppedOther", m.OpQueueDroppedOther, 9235},
-		{"OpQueueDropped", m.OpQueueDropped, 9231 + 9232 + 9233 + 9234 + 9235},
+		{"OpQueueDroppedWorkerAbort", m.OpQueueDroppedWorkerAbort, 30011},
+		{"OpQueueDropped", m.OpQueueDropped, 9231 + 9232 + 9233 + 9234 + 9235 + 30011},
+		// #164: the eight v1.2 fields the parity gate flagged, plus the
+		// max_connections denominator (machmqtt#192). jetstream_available is a
+		// LIVE gauge (state), jetstream_transitions its counter counterpart.
+		{"DrainAckUnwritable", m.DrainAckUnwritable, 30012},
+		{"JetStreamAvailable", m.JetStreamAvailable, 1},
+		{"JetStreamTransitions", m.JetStreamTransitions, 30013},
+		{"WillStaleClearAttempted", m.WillStaleClearAttempted, 30014},
+		{"WillStaleClearSkipped", m.WillStaleClearSkipped, 30015},
+		{"MsgsRedeliverySuppressed", m.MsgsRedeliverySuppressed, 30016},
+		{"RetainedDeliveryTruncated", m.RetainedDeliveryTruncated, 30017},
+		{"MaxConnections", m.MaxConnections, 30018},
 		// The remainder of the cross-repo parity gap: byte, op-queue shedding,
 		// dispatch-batching, process-descriptor, Go-allocation, QoS 2 purge and
 		// session-signing families. Each carries its own distinct fixture value,
