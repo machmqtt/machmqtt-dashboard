@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -128,6 +129,10 @@ func TestParseV12FixtureScalarFields(t *testing.T) {
 		{"MsgsRedeliverySuppressed", m.MsgsRedeliverySuppressed, 30016},
 		{"RetainedDeliveryTruncated", m.RetainedDeliveryTruncated, 30017},
 		{"MaxConnections", m.MaxConnections, 30018},
+		{"OutboundOverCeilingSweeps", m.OutboundOverCeilingSweeps, 30019},
+		{"OutboundEvictNoCandidateSweeps", m.OutboundEvictNoCandidateSweeps, 30020},
+		{"TopicLevelsExceeded", m.TopicLevelsExceeded, 30021},
+		{"QoS2AwaitRelExpired", m.QoS2AwaitRelExpired, 30022},
 		// The remainder of the cross-repo parity gap: byte, op-queue shedding,
 		// dispatch-batching, process-descriptor, Go-allocation, QoS 2 purge and
 		// session-signing families. Each carries its own distinct fixture value,
@@ -892,5 +897,82 @@ func TestMQTTMetricsUnmarshalCapturesUnknownKeys(t *testing.T) {
 		if m.Uncurated[k] != v {
 			t.Errorf("Uncurated[%q] = %v, want %v", k, m.Uncurated[k], v)
 		}
+	}
+}
+
+// TestParsePrometheusUnknownLabelValueCaptured pins the label-switch default on
+// every curated family that switches on a label: a value the broker adds after
+// this build must land in Uncurated under the family plus its label block, not
+// vanish. The families are DERIVED from the fixture rather than listed here, so
+// a family that gains a switch is covered the day it enters the fixture, and a
+// family whose label is an identity rather than an enum (slot numbers, instance
+// ids, the reason-code maps that keep every value) fails this test until it is
+// classified below — a loud default, where a hand-kept list would stay silent.
+//
+// Each body carries the fixture's own known arm beside the unknown one; the
+// known arm must NOT appear in Uncurated, which proves the default did not
+// swallow a curated case. The three families that add every arm into a total
+// before switching must count the unknown arm too, because the broker's total
+// includes every arm whether or not the dashboard has a field for it.
+func TestParsePrometheusUnknownLabelValueCaptured(t *testing.T) {
+	identityLabelled := map[string]bool{
+		"machmqtt_instance_info":                    true, // instance_id is the identity, read as a string
+		"machmqtt_cluster_hmac_failures_total":      true, // keyed by source_instance_id into a map
+		"machmqtt_connack_rejected_by_reason_total": true, // reason-code maps keep every value
+		"machmqtt_suback_rejected_by_reason_total":  true,
+		"machmqtt_disconnects_sent_by_reason_total": true,
+		"machmqtt_pool_slot_buffered_bytes":         true, // slot= is the identity of a pool slot
+		"machmqtt_pool_slot_in_msgs_total":          true,
+		"machmqtt_pool_slot_out_msgs_total":         true,
+	}
+	accumulated := map[string]func(*MQTTMetrics) int64{
+		"machmqtt_auth_failure_total":           func(m *MQTTMetrics) int64 { return m.AuthFailure },
+		"machmqtt_publish_rejected_state_total": func(m *MQTTMetrics) int64 { return m.PublishRejectedState },
+		"machmqtt_op_queue_dropped_total":       func(m *MQTTMetrics) int64 { return m.OpQueueDropped },
+	}
+
+	fixture, err := os.ReadFile(v12Fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	sample := regexp.MustCompile(`^(machmqtt_[a-z0-9_]+)\{([a-z_]+)="([^"]*)"\} `)
+	for _, line := range strings.Split(string(fixture), "\n") {
+		m := sample.FindStringSubmatch(line)
+		if m == nil || strings.HasSuffix(m[1], "_bucket") || identityLabelled[m[1]] || seen[m[1]] {
+			continue
+		}
+		family, label, known := m[1], m[2], m[3]
+		seen[family] = true
+		t.Run(family, func(t *testing.T) {
+			body := "# HELP " + family + " Per-label arms.\n" +
+				"# TYPE " + family + " counter\n" +
+				family + `{` + label + `="` + known + `"} 7` + "\n" +
+				family + `{` + label + `="added_after_this_build"} 11` + "\n"
+			p := parsePrometheusMetrics(body)
+			key := family + `{` + label + `="added_after_this_build"}`
+			if got := p.Uncurated[key]; got != 11 {
+				t.Fatalf("Uncurated[%s] = %v (Uncurated = %v): the unknown label value was dropped", key, got, p.Uncurated)
+			}
+			if len(p.Uncurated) != 1 {
+				t.Fatalf("Uncurated = %v, want only the unknown arm: the default swallowed the curated %s=%q case", p.Uncurated, label, known)
+			}
+			if got := p.UncuratedHelp[family]; got != "Per-label arms." {
+				t.Fatalf("UncuratedHelp[%s] = %q, want the family's HELP text", family, got)
+			}
+			if total, ok := accumulated[family]; ok {
+				if got := total(p); got != 7+11 {
+					t.Fatalf("family total = %d, want 18: the unknown arm must still count toward the total", got)
+				}
+			}
+		})
+	}
+	for family := range accumulated {
+		if !seen[family] {
+			t.Errorf("%s never appeared in the fixture with a label, so its total accumulation was not exercised", family)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("no labelled family was derived from the fixture: the sample pattern matched nothing")
 	}
 }

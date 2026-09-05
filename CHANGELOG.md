@@ -87,13 +87,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   verification failures, lease revision regressions, cluster heartbeat publish
   failures, session-persist panics, OAuth2 token-cache evictions, and the
   credential-lockout tracker size.
+- **Parity with the v1.2 tag tip** — the four counters the broker added after
+  the previous sync: `outbound_over_ceiling_sweeps` and
+  `outbound_evict_no_candidate_sweeps` (the aggregate outbound-memory backstop's
+  diagnostic pair), `topic_levels_exceeded` and `qos2_await_rel_expired` (the
+  topic-depth and PUBREL-timeout resource policies). All four render on the
+  bridge Metrics tab.
 
 ### Changed
 - The bridge `/metrics` parser now resolves Prometheus label escapes (`\\`, `\"`,
   `\n`), matches label keys whole (so `instance_id` no longer matches
   `source_instance_id`), accepts every exposition float form for counters
-  (`1e+06`, `1.5`), and ignores an optional trailing sample timestamp. Unknown
-  metric families are still ignored, unchanged.
+  (`1e+06`, `1.5`), and ignores an optional trailing sample timestamp.
+- **A new label value on a curated family is no longer dropped.** Every
+  label switch in the bridge `/metrics` parser now routes an unrecognised
+  value (a `reason=` the broker added after this build, say) into `uncurated`
+  under `family{label="value"}`, the same capture unknown families already
+  get. Previously such a series fell through the switch and vanished, so a
+  broker-side addition read as "never happened" on the dashboard.
 - Drained bridges stay on the fleet as **Draining** (with their live session
   counts) until their metrics publishes stop, instead of vanishing the moment
   the drain begins.

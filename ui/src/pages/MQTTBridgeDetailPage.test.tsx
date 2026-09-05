@@ -251,6 +251,45 @@ describe('MQTTBridgeDetailPage', () => {
     expect(screen.getByText('Dropped: Worker Abort')).toBeInTheDocument()
   })
 
+  it('renders the four v1.2 tag-tip counters under their own labels', async () => {
+    // One table drives both the payload and the assertions, with four DISTINCT
+    // values, and each value is looked up inside its own row's container: a
+    // page-wide lookup would pass a pairwise binding swap, since all four
+    // numbers would still be somewhere on the page. Values stay below 1,000
+    // because formatNumber abbreviates from there ("30.0K"), which would
+    // collapse four distinct inputs into one rendering.
+    const rows: Array<[string, string, number]> = [
+      ['outbound_over_ceiling_sweeps', 'Over-Ceiling Sweeps', 119],
+      ['outbound_evict_no_candidate_sweeps', 'No-Candidate Sweeps', 227],
+      ['topic_levels_exceeded', 'Topic Levels Exceeded', 331],
+      ['qos2_await_rel_expired', 'QoS 2 PUBREL Timeouts', 449],
+    ]
+    const tagTipMetrics = {
+      ...Object.fromEntries(rows.map(([key, , value]) => [key, value])),
+      connack_rejected_by_reason: {}, suback_rejected_by_reason: {}, disconnects_sent_by_reason: {},
+      uncurated: {}, uncurated_help: {},
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/metrics/mqtt')) return json({ points: [] })
+      if (url.endsWith('/diag')) return json(nats)
+      if (url.endsWith('/metrics')) return json(tagTipMetrics)
+      if (url.endsWith('/pool')) return json(pool)
+      if (url.endsWith('/license')) return json(license)
+      if (url.endsWith('/cluster')) return json(cluster)
+      if (url.endsWith('/readyz')) return json({})
+      return json({}, 404)
+    })
+
+    renderPage('viewer')
+    await screen.findByText('JetStream Account')
+    fireEvent.click(screen.getByRole('button', { name: 'Metrics' }))
+    for (const [, label, value] of rows) {
+      const row = (await screen.findByText(label)).parentElement!
+      expect(within(row).getByText(String(value))).toBeInTheDocument()
+    }
+  })
+
   it('renders sparse but valid provider payloads using safe defaults', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)

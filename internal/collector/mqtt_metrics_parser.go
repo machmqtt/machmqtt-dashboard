@@ -151,6 +151,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.RejectedAuthTimeout = parseInt(value)
 			case "worker_pool":
 				m.RejectedWorkerPool = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// Post-CONNECT CONNACK rejections, keyed by reason code (hex, e.g. "0x88").
@@ -188,6 +190,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.DispatchSlotsTLS = parseInt(value)
 			case "websocket":
 				m.DispatchSlotsWS = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// --- Authentication ---
@@ -221,6 +225,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.AuthFailWebhookDenied = v
 			case "webhook_unavailable":
 				m.AuthFailWebhookUnavailable = v
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_scram_sessions_active":
 			m.ScramSessionsActive = parseInt(value)
@@ -253,6 +259,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.LicenseRejectedRetain = parseInt(value)
 			case "proxy_protocol":
 				m.LicenseRejectedProxyProtocol = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// --- Client messages (MQTT client ↔ broker) ---
@@ -264,6 +272,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.MsgsRecvQoS1 = parseInt(value)
 			case "2":
 				m.MsgsRecvQoS2 = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_client_messages_sent_total":
 			switch extractLabel(line, "qos") {
@@ -273,6 +283,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.MsgsSentQoS1 = parseInt(value)
 			case "2":
 				m.MsgsSentQoS2 = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_client_messages_redelivered_total":
 			m.MsgsRedelivered = parseInt(value)
@@ -286,6 +298,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.ServerPublishedQoS1 = parseInt(value)
 			case "2":
 				m.ServerPublishedQoS2 = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_server_messages_consumed_total":
 			switch extractLabel(line, "qos") {
@@ -295,6 +309,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.ServerConsumedQoS1 = parseInt(value)
 			case "2":
 				m.ServerConsumedQoS2 = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// --- Will (Last-Will-and-Testament) ---
@@ -310,6 +326,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.WillDroppedInvalidTopic = parseInt(value)
 			case "shutdown":
 				m.WillDroppedShutdown = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_will_suppressed_total":
 			switch extractLabel(line, "reason") {
@@ -317,6 +335,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.WillSuppressedReconnect = parseInt(value)
 			case "shutdown":
 				m.WillSuppressedShutdown = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_will_pending":
 			m.WillPending = parseInt(value)
@@ -334,6 +354,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.WillPersistFailedWrite = parseInt(value)
 			case "queue_full":
 				m.WillPersistFailedQueueFull = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_retain_persist_failed_total":
 			switch extractLabel(line, "op") {
@@ -341,6 +363,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.RetainPersistFailedPut = parseInt(value)
 			case "delete":
 				m.RetainPersistFailedDelete = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// --- Protocol ops ---
@@ -393,6 +417,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.WillStaleClearAttempted = parseInt(value)
 			case "skipped":
 				m.WillStaleClearSkipped = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_shared_consumer_recreated_total":
 			m.SharedConsumerRecreated = parseInt(value)
@@ -406,6 +432,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.SysPublishBlocked = parseInt(value)
 		case name == "machmqtt_publish_refused_topic_total":
 			m.PublishRefusedTopic = parseInt(value)
+		case name == "machmqtt_topic_levels_exceeded_total":
+			m.TopicLevelsExceeded = parseInt(value)
 		case name == "machmqtt_publish_rejected_state_total":
 			// machmqtt emits only per-state labeled series; sum them into the
 			// total and also keep each state distinct.
@@ -422,6 +450,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.PublishRejectedStateClosed = v
 			case "other":
 				m.PublishRejectedStateOther = v
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_publish_rejected_qos_total":
 			switch extractLabel(line, "qos") {
@@ -433,6 +463,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.PublishRejectedQoS2 = parseInt(value)
 			case "3":
 				m.PublishRejectedQoS3 = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_tls_handshake_failures_total":
 			m.TLSHandshakeFailures = parseInt(value)
@@ -454,6 +486,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.MTLSIdentityFallbackNoMatch = parseInt(value)
 			case "no_cert":
 				m.MTLSIdentityFallbackNoCert = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_otel_histogram_skew_clamped_total":
 			m.OTelHistogramSkewClamped = parseInt(value)
@@ -470,6 +504,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.QoS2ClientSendFailed = parseInt(value)
 		case name == "machmqtt_qos2_sync_persist_failed_total":
 			m.QoS2SyncPersistFailed = parseInt(value)
+		case name == "machmqtt_qos2_await_rel_expired_total":
+			m.QoS2AwaitRelExpired = parseInt(value)
 		case name == "machmqtt_server_publish_failed_total":
 			switch extractLabel(line, "qos") {
 			case "0":
@@ -478,6 +514,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.ServerPublishFailedQoS1 = parseInt(value)
 			case "2":
 				m.ServerPublishFailedQoS2 = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_qos0_messages_shed_total":
 			m.QoS0MessagesShed = parseInt(value)
@@ -499,6 +537,10 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 			m.OutboundEvictions = parseInt(value)
 		case name == "machmqtt_outbound_stall_evictions_total":
 			m.OutboundStallEvictions = parseInt(value)
+		case name == "machmqtt_outbound_over_ceiling_sweeps_total":
+			m.OutboundOverCeilingSweeps = parseInt(value)
+		case name == "machmqtt_outbound_evict_no_candidate_sweeps_total":
+			m.OutboundEvictNoCandidateSweeps = parseInt(value)
 		case name == "machmqtt_outbound_stalled_connections":
 			m.OutboundStalledConns = parseInt(value)
 		case name == "machmqtt_outbound_bytes":
@@ -609,6 +651,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.BridgeConsumerForceDisconnected = parseInt(value)
 			case "push_force_disconnected":
 				m.BridgeConsumerPushForceDisconnected = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// --- Throttling & ACL ---
@@ -620,6 +664,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.PublishThrottledPerClient = parseInt(value)
 			case "aggregate":
 				m.PublishThrottledAggregate = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 		case name == "machmqtt_acl_denied_total":
 			switch extractLabel(line, "action") {
@@ -627,6 +673,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.ACLDeniedPublish = parseInt(value)
 			case "subscribe":
 				m.ACLDeniedSubscribe = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		// --- Cluster counters (the whole group is absent unless clustering is
@@ -728,6 +776,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.OpQueueDroppedWorkerAbort = v
 			case "other":
 				m.OpQueueDroppedOther = v
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 
 		case name == "machmqtt_drain_ack_unwritable_total":
@@ -773,6 +823,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.SessionQoS2PurgeFailuresSyncConnect = parseInt(value)
 			case "async_death":
 				m.SessionQoS2PurgeFailuresAsyncDeath = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 			m.BridgeUp = true
 		case name == "machmqtt_session_deletes_dropped_total":
@@ -786,6 +838,8 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 				m.SessionPersistFailedQueueFull = parseInt(value)
 			case "panic":
 				m.SessionPersistPanics = parseInt(value)
+			default:
+				m.captureUncurated(name, line, value, help)
 			}
 			m.SessionsUp = true
 
@@ -936,22 +990,7 @@ func parsePrometheusMetrics(body string) *MQTTMetrics {
 		// non-machmqtt families (a proxy's own metrics, say) stay ignored.
 		default:
 			if strings.HasPrefix(name, "machmqtt_") {
-				if m.Uncurated == nil {
-					m.Uncurated = make(map[string]float64)
-				}
-				key := name
-				if i := strings.IndexByte(line, '{'); i >= 0 {
-					if end := labelBlockEnd(line, i); end > i {
-						key = name + line[i:end+1]
-					}
-				}
-				m.Uncurated[key] = parseFloat(value)
-				if h, ok := help[name]; ok {
-					if m.UncuratedHelp == nil {
-						m.UncuratedHelp = make(map[string]string)
-					}
-					m.UncuratedHelp[name] = h
-				}
+				m.captureUncurated(name, line, value, help)
 			}
 		}
 	}
@@ -1027,6 +1066,32 @@ func labelBlockEnd(line string, open int) int {
 		}
 	}
 	return -1
+}
+
+// captureUncurated records a sample this build has no curated field for under
+// its wire name plus label block, with the family's HELP text when one was
+// seen. It serves two cases that used to be treated differently: a family the
+// dashboard does not know at all, and a NEW LABEL VALUE on a family it does
+// know (a reason= the broker added after this build). The second used to fall
+// through a label switch with no default and vanish without trace, which is
+// exactly the silent gap the broker's own reason counters were built to close.
+func (m *MQTTMetrics) captureUncurated(name, line, value string, help map[string]string) {
+	if m.Uncurated == nil {
+		m.Uncurated = make(map[string]float64)
+	}
+	key := name
+	if i := strings.IndexByte(line, '{'); i >= 0 {
+		if end := labelBlockEnd(line, i); end > i {
+			key = name + line[i:end+1]
+		}
+	}
+	m.Uncurated[key] = parseFloat(value)
+	if h, ok := help[name]; ok {
+		if m.UncuratedHelp == nil {
+			m.UncuratedHelp = make(map[string]string)
+		}
+		m.UncuratedHelp[name] = h
+	}
 }
 
 // extractLabel returns the unescaped value of a single label key from the

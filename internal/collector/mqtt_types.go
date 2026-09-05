@@ -219,6 +219,11 @@ type MQTTMetrics struct {
 	// invalid) because the topic, while well-formed MQTT, contains a character
 	// the broker cannot map onto a NATS subject ('*', '>', space, DEL, control).
 	PublishRefusedTopic int64 `json:"publish_refused_topic"`
+	// TopicLevelsExceeded counts PUBLISH topics, SUBSCRIBE filters and Will
+	// topics refused for exceeding mqtt.max_topic_levels. Those refusals also
+	// increment PublishRefusedTopic / the 0x8F SUBACK reason, neither of which
+	// says WHICH topic policy fired; this one does.
+	TopicLevelsExceeded int64 `json:"topic_levels_exceeded"`
 	// PublishRejectedState/PublishRejectedQoS* count PUBLISH packets rejected
 	// because the connection was not in StateConnected when they arrived
 	// (#160) — the same events, in two independent breakdowns rather than
@@ -256,7 +261,12 @@ type MQTTMetrics struct {
 	// QoS2SyncPersistFailed counts qos2_sync_persist binding writes that failed;
 	// the message was NOT sent, so there is no duplicate risk.
 	QoS2SyncPersistFailed int64 `json:"qos2_sync_persist_failed"`
-	ServerPublishDropped  int64 `json:"server_publish_dropped"`
+	// QoS2AwaitRelExpired counts inbound QoS 2 receive slots reclaimed because
+	// PUBREL never arrived within mqtt.await_rel_timeout: a client abandoning
+	// the flow after PUBREC, which would otherwise pin the slot for the life
+	// of the connection.
+	QoS2AwaitRelExpired  int64 `json:"qos2_await_rel_expired"`
+	ServerPublishDropped int64 `json:"server_publish_dropped"`
 	// ServerPublishFailedQoS* is the machmqtt_server_publish_failed_total{qos=...}
 	// family: inbound PUBLISH that could not be stored/forwarded to NATS because
 	// of a transient error, counted once per failed PUBLISH.
@@ -277,7 +287,15 @@ type MQTTMetrics struct {
 	// in that write-backpressure state.
 	OutboundStallEvictions int64 `json:"outbound_stall_evictions"`
 	OutboundStalledConns   int64 `json:"outbound_stalled_conns"`
-	RetainVerifyFailures   int64 `json:"retained_verify_failures"`
+	// OutboundOverCeilingSweeps counts outbound sweeps that saw the broker-wide
+	// total above mqtt.max_total_outbound_bytes; OutboundEvictNoCandidateSweeps
+	// is the subset that found nothing eligible to evict (a connection
+	// qualifies only if its queue was non-empty in the previous sweep too).
+	// Both rising while OutboundEvictions stays flat means the ceiling is being
+	// crossed and the backstop cannot act.
+	OutboundOverCeilingSweeps      int64 `json:"outbound_over_ceiling_sweeps"`
+	OutboundEvictNoCandidateSweeps int64 `json:"outbound_evict_no_candidate_sweeps"`
+	RetainVerifyFailures           int64 `json:"retained_verify_failures"`
 	// WillVerifyFailures counts pending-will entries skipped because their
 	// envelope did not verify (unsigned legacy record, client-id/key mismatch, or
 	// HMAC mismatch). Those wills are NOT fired.

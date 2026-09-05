@@ -592,6 +592,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="WS Upgrade Failures" value={fmtNum(data.ws_upgrade_failures)} />
           <DI label="WS Protocol Violations" value={fmtNum(data.ws_protocol_violations)} />
           <DI label="Publish Refused (Topic)" value={fmtNum(data.publish_refused_topic)} />
+          <DI label="Topic Levels Exceeded" value={fmtNum(data.topic_levels_exceeded)} hint="Topics and filters refused for exceeding mqtt.max_topic_levels — the only counter that names this policy." />
           <DI label="Flow-Control Overflow" value={fmtNum(data.flowcontrol_overflow)} />
           <DI label="OAuth2 Token Cache Evictions" value={fmtNum(data.oauth2_token_cache_evictions)} />
         </Grid>
@@ -625,9 +626,12 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Outbound Evictions" value={fmtNum(data.outbound_evictions)} />
           <DI label="Outbound Stall Evictions" value={fmtNum(data.outbound_stall_evictions)} />
           <DI label="Outbound Stalled Conns" value={fmtNum(data.outbound_stalled_conns)} />
+          <DI label="Over-Ceiling Sweeps" value={fmtNum(data.outbound_over_ceiling_sweeps)} hint="Outbound sweeps that found the broker-wide total above mqtt.max_total_outbound_bytes." />
+          <DI label="No-Candidate Sweeps" value={fmtNum(data.outbound_evict_no_candidate_sweeps)} hint="Over-ceiling sweeps with nothing eligible to evict. Equal to the over-ceiling count means the backstop cannot act." />
           <DI label="Retained Verify Failures" value={fmtNum(data.retained_verify_failures)} />
           <DI label="Retain Persist Failed: Put" value={fmtNum(data.retain_persist_failed_put)} />
           <DI label="Retain Persist Failed: Delete" value={fmtNum(data.retain_persist_failed_delete)} />
+          <DI label="QoS 2 PUBREL Timeouts" value={fmtNum(data.qos2_await_rel_expired)} hint="Inbound QoS 2 receive slots reclaimed because PUBREL never arrived within mqtt.await_rel_timeout." />
           <DI label="QoS 2 Sync-Persist Failed" value={fmtNum(data.qos2_sync_persist_failed)} />
         </Grid>
         <p className="text-xs text-gray-400 mt-2">A failed QoS 2 sync-persist write defers the delivery until the write succeeds; the counter rising means JetStream writes are failing, not that messages were lost.</p>
