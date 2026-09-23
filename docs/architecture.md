@@ -95,6 +95,17 @@ about what a metric means. Three consequences worth knowing:
   Observations above the last bound live only in the histogram's `_count` in both
   representations, so `sum(buckets) <= count` by design and the last bucket is
   never back-filled from `+Inf`.
+- The push payload carries each histogram as a bare, positional array, so its
+  **length** says which bounds it uses. v1.2 brokers send ten
+  (`0.5ms … 10ms, 25ms, 50ms … 5s`); earlier brokers sent nine, with no 25 ms
+  bound. A nine-element array is spread onto the bounds it shares with the
+  current layout and leaves the 25 ms bucket empty; any other length is left
+  empty (and logged once) rather than copied position-by-position, which would
+  file every count from the first new bound upward under the wrong bound. On the
+  poll path a bound the exposition omits is filled from its predecessor before
+  differencing, so its observations are not handed to the next bound. The
+  broker's `make test-dashboard-parity` compares `MQTTHistogramBounds` with its
+  own bounds.
 - `connections_rejected` is the broker's deprecated umbrella counter and is the
   sum of eight rejection reasons only; `rejected_mem_budget` is deliberately
   outside it and is read on its own.

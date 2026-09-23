@@ -536,18 +536,19 @@ type MQTTMetrics struct {
 
 	// --- Histogram buckets ---
 	// RAW (non-cumulative) per-bucket observation counts, aligned with
-	// MQTTHistogramBounds. The push payload carries these raw counts directly;
+	// MQTTHistogramBounds (see MQTTHistogramBuckets for how an older broker's
+	// shorter layout is placed). The push payload carries these raw counts directly;
 	// the Prometheus exposition renders them cumulatively, so the poll parser
 	// differences the le= series back to raw. Observations above the last bound
 	// appear only in the *Count total, so sum(buckets) <= Count by design.
-	PublishLatencyBuckets          [MQTTHistogramBucketCount]int64 `json:"publish_latency_buckets"`
-	AuthDurationBuckets            [MQTTHistogramBucketCount]int64 `json:"auth_duration_buckets"`
-	AuthWebhookDurationBuckets     [MQTTHistogramBucketCount]int64 `json:"auth_webhook_duration_buckets"`
-	JSPublishDurationBuckets       [MQTTHistogramBucketCount]int64 `json:"jetstream_publish_duration_buckets"`
-	QoS2SyncPersistDurationBuckets [MQTTHistogramBucketCount]int64 `json:"qos2_sync_persist_duration_buckets"`
-	SubscribeDurationBuckets       [MQTTHistogramBucketCount]int64 `json:"subscribe_duration_buckets"`
-	DispatchWaitBuckets            [MQTTHistogramBucketCount]int64 `json:"dispatch_wait_buckets"`
-	TLSHandshakeDurationBuckets    [MQTTHistogramBucketCount]int64 `json:"tls_handshake_duration_buckets"`
+	PublishLatencyBuckets          MQTTHistogramBuckets `json:"publish_latency_buckets"`
+	AuthDurationBuckets            MQTTHistogramBuckets `json:"auth_duration_buckets"`
+	AuthWebhookDurationBuckets     MQTTHistogramBuckets `json:"auth_webhook_duration_buckets"`
+	JSPublishDurationBuckets       MQTTHistogramBuckets `json:"jetstream_publish_duration_buckets"`
+	QoS2SyncPersistDurationBuckets MQTTHistogramBuckets `json:"qos2_sync_persist_duration_buckets"`
+	SubscribeDurationBuckets       MQTTHistogramBuckets `json:"subscribe_duration_buckets"`
+	DispatchWaitBuckets            MQTTHistogramBuckets `json:"dispatch_wait_buckets"`
+	TLSHandshakeDurationBuckets    MQTTHistogramBuckets `json:"tls_handshake_duration_buckets"`
 
 	// --- Process resources ---
 	// ProcessOpenFDs over ProcessMaxFDs is descriptor headroom, and it must be
@@ -661,13 +662,24 @@ type MQTTMetrics struct {
 // MQTTHistogramBucketCount is the number of explicit histogram buckets every
 // machmqtt latency histogram uses; MQTTHistogramBounds holds their upper bounds
 // in seconds. The +Inf bucket is not stored — it equals the histogram's *Count.
-const MQTTHistogramBucketCount = 9
+const MQTTHistogramBucketCount = 10
 
 // MQTTHistogramBounds are the upper bounds (seconds) of the explicit buckets, in
-// ascending order, matching the bridge's histogram configuration.
+// ascending order, matching the broker's HistogramBounds(). The broker's
+// TestDashboardMetricParity compares the two.
 var MQTTHistogramBounds = [MQTTHistogramBucketCount]float64{
-	0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5,
+	0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.5, 1, 5,
 }
+
+// legacyHistogramBounds is the layout of brokers released before v1.2, which
+// had no 25 ms bound (the broker added it as an exact p99 gate threshold). The
+// push payload carries bucket arrays positionally with no bounds, so an array's
+// length is the only thing that says which layout it is in.
+var legacyHistogramBounds = [...]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5}
+
+// MQTTHistogramBuckets holds raw per-bucket counts aligned with
+// MQTTHistogramBounds, whichever broker layout they arrived in.
+type MQTTHistogramBuckets [MQTTHistogramBucketCount]int64
 
 // MQTTMetricsLicense is the license-manager gauge/counter group
 // (machmqtt_license_*), absent entirely when no license manager is configured.

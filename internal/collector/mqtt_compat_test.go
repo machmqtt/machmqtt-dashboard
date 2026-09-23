@@ -2,6 +2,9 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
+	"slices"
 	"testing"
 
 	nats "github.com/nats-io/nats.go"
@@ -146,5 +149,101 @@ func TestMQTTSubscriberAcceptsLegacyV0(t *testing.T) {
 	// sentinel rather than reporting pending=0.
 	if inst.Status.Metrics.ConsumerPendingMessages != -1 {
 		t.Errorf("ConsumerPendingMessages = %d, want -1 (sentinel)", inst.Status.Metrics.ConsumerPendingMessages)
+	}
+}
+
+// bucketJSONTag returns the push-payload key of the bucket field histBuckets
+// hands back for family, found by address so the mapping is derived from the
+// struct rather than restated here.
+func bucketJSONTag(t *testing.T, m *MQTTMetrics, family string) string {
+	t.Helper()
+	target := reflect.ValueOf(m.histBuckets(family)).Pointer()
+	v := reflect.ValueOf(m).Elem()
+	for i := range v.NumField() {
+		if v.Field(i).Addr().Pointer() == target {
+			return v.Type().Field(i).Tag.Get("json")
+		}
+	}
+	t.Fatalf("no MQTTMetrics field backs histogram family %s", family)
+	return ""
+}
+
+// TestHistogramBucketLayouts pins both broker bucket layouts on both ingestion
+// paths, for every histogram family. Brokers before v1.2 had nine bounds (no
+// 25 ms); the push payload carries bucket arrays positionally, so a length the
+// dashboard misreads files every count from 25 ms up under the wrong bound, and
+// a scrape without the 25 ms series must not hand its observations to 50 ms.
+func TestHistogramBucketLayouts(t *testing.T) {
+	legacyAt := func(bound float64) int { return slices.Index(legacyHistogramBounds[:], bound) }
+	for k, family := range histogramFamilies {
+		scale := int64(k + 1)
+		current := make([]int64, MQTTHistogramBucketCount)
+		var wantCurrent MQTTHistogramBuckets
+		for i := range current {
+			current[i] = scale * int64(i+1)
+			wantCurrent[i] = current[i]
+		}
+		// The same observations as an older broker would report them: nothing
+		// at 25 ms, and every other bound carrying the current layout's count.
+		legacy := make([]int64, len(legacyHistogramBounds))
+		var wantLegacy MQTTHistogramBuckets
+		for i, bound := range MQTTHistogramBounds {
+			if j := legacyAt(bound); j >= 0 {
+				legacy[j] = current[i]
+				wantLegacy[i] = current[i]
+			}
+		}
+		if wantLegacy[slices.Index(MQTTHistogramBounds[:], 0.025)] != 0 {
+			t.Fatal("test setup: the legacy layout must leave the 25 ms bucket empty")
+		}
+
+		for _, layout := range []struct {
+			name   string
+			bounds []float64
+			raw    []int64
+			want   MQTTHistogramBuckets
+		}{
+			{"current", MQTTHistogramBounds[:], current, wantCurrent},
+			{"pre-v1.2", legacyHistogramBounds[:], legacy, wantLegacy},
+		} {
+			var count int64
+			for _, v := range layout.raw {
+				count += v
+			}
+			count += 7 // observations above the last bound live only in _count
+
+			scraped := parsePrometheusMetrics(renderHistogram(family, layout.bounds, layout.raw, count, 1))
+			if got := *scraped.histBuckets(family); got != layout.want {
+				t.Errorf("%s %s scrape: buckets = %v, want %v", family, layout.name, got, layout.want)
+			}
+
+			var pushed MQTTMetrics
+			payload, _ := json.Marshal(map[string][]int64{bucketJSONTag(t, &pushed, family): layout.raw})
+			if err := json.Unmarshal(payload, &pushed); err != nil {
+				t.Fatalf("%s %s push: %v", family, layout.name, err)
+			}
+			if got := *pushed.histBuckets(family); got != layout.want {
+				t.Errorf("%s %s push: buckets = %v, want %v", family, layout.name, got, layout.want)
+			}
+		}
+	}
+}
+
+// An array of a length no broker layout has is left empty rather than copied
+// positionally; null and an empty array decode to empty without complaint.
+func TestHistogramBucketsUnknownLengthIsNotPlaced(t *testing.T) {
+	for _, body := range []string{"[1,2,3]", "[1,2,3,4,5,6,7,8,9,10,11]", "null", "[]"} {
+		var h MQTTHistogramBuckets
+		h[0] = 99 // a stale value must not survive the decode
+		if err := json.Unmarshal([]byte(body), &h); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		if h != (MQTTHistogramBuckets{}) {
+			t.Errorf("decode %s = %v, want empty", body, h)
+		}
+	}
+	var h MQTTHistogramBuckets
+	if err := json.Unmarshal([]byte(`"x"`), &h); err == nil {
+		t.Error("decode of a non-array succeeded, want an error")
 	}
 }

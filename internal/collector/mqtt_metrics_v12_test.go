@@ -377,26 +377,26 @@ func TestParseV12FixtureHistogramBucketsRoundTrip(t *testing.T) {
 
 	tests := []struct {
 		family string
-		got    [MQTTHistogramBucketCount]int64
+		got    MQTTHistogramBuckets
 		count  int64
-		want   [MQTTHistogramBucketCount]int64
+		want   MQTTHistogramBuckets
 	}{
 		{"publish_latency", m.PublishLatencyBuckets, m.PublishLatencyCount,
-			[9]int64{11, 12, 15, 0, 27, 36, 47, 60, 75}},
+			MQTTHistogramBuckets{11, 12, 15, 0, 10, 17, 36, 47, 60, 75}},
 		{"auth_duration", m.AuthDurationBuckets, m.AuthDurationCount,
-			[9]int64{22, 24, 30, 0, 54, 72, 94, 120, 150}},
+			MQTTHistogramBuckets{22, 24, 30, 0, 20, 34, 72, 94, 120, 150}},
 		{"auth_webhook_duration", m.AuthWebhookDurationBuckets, m.AuthWebhookDurationCount,
-			[9]int64{33, 36, 45, 0, 81, 108, 141, 180, 225}},
+			MQTTHistogramBuckets{33, 36, 45, 0, 30, 51, 108, 141, 180, 225}},
 		{"jetstream_publish_duration", m.JSPublishDurationBuckets, m.JSPublishDurationCount,
-			[9]int64{44, 48, 60, 0, 108, 144, 188, 240, 300}},
+			MQTTHistogramBuckets{44, 48, 60, 0, 40, 68, 144, 188, 240, 300}},
 		{"qos2_sync_persist_duration", m.QoS2SyncPersistDurationBuckets, m.QoS2SyncPersistDurationCount,
-			[9]int64{55, 60, 75, 0, 135, 180, 235, 300, 375}},
+			MQTTHistogramBuckets{55, 60, 75, 0, 50, 85, 180, 235, 300, 375}},
 		{"subscribe_duration", m.SubscribeDurationBuckets, m.SubscribeDurationCount,
-			[9]int64{66, 72, 90, 0, 162, 216, 282, 360, 450}},
+			MQTTHistogramBuckets{66, 72, 90, 0, 60, 102, 216, 282, 360, 450}},
 		{"dispatch_wait", m.DispatchWaitBuckets, m.DispatchWaitCount,
-			[9]int64{77, 84, 105, 0, 189, 252, 329, 420, 525}},
+			MQTTHistogramBuckets{77, 84, 105, 0, 70, 119, 252, 329, 420, 525}},
 		{"tls_handshake_duration", m.TLSHandshakeDurationBuckets, m.TLSHandshakeDurationCount,
-			[9]int64{88, 96, 120, 0, 216, 288, 376, 480, 600}},
+			MQTTHistogramBuckets{88, 96, 120, 0, 80, 136, 288, 376, 480, 600}},
 	}
 	for _, tc := range tests {
 		if tc.got != tc.want {
@@ -415,9 +415,9 @@ func TestParseV12FixtureHistogramBucketsRoundTrip(t *testing.T) {
 	// The adversarial shape the fixture cannot show: every explicit bucket
 	// empty while the +Inf total is large. Back-filling the last bucket from
 	// +Inf would report 900 observations at or below 5s that never happened.
-	body := renderHistogram("machmqtt_publish_latency_seconds", [9]int64{}, 900, 4.5)
+	body := renderHistogram("machmqtt_publish_latency_seconds", MQTTHistogramBounds[:], make([]int64, MQTTHistogramBucketCount), 900, 4.5)
 	empty := parsePrometheusMetrics(body)
-	if empty.PublishLatencyBuckets != ([9]int64{}) {
+	if empty.PublishLatencyBuckets != (MQTTHistogramBuckets{}) {
 		t.Errorf("all-overflow histogram buckets = %v, want all zero", empty.PublishLatencyBuckets)
 	}
 	if empty.PublishLatencyCount != 900 {
@@ -467,13 +467,13 @@ func TestV12FixtureHistogramBoundsMatchBroker(t *testing.T) {
 }
 
 // renderHistogram reproduces the broker's histogram exposition for one family:
-// cumulative bucket series over the standard bounds, then +Inf (the total),
-// _sum and _count.
-func renderHistogram(name string, raw [MQTTHistogramBucketCount]int64, count int64, sum float64) string {
+// cumulative bucket series over the given bounds, then +Inf (the total), _sum
+// and _count. Passing legacyHistogramBounds renders an older broker's layout.
+func renderHistogram(name string, bounds []float64, raw []int64, count int64, sum float64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# TYPE %s histogram\n", name)
 	var cum int64
-	for i, bound := range MQTTHistogramBounds {
+	for i, bound := range bounds {
 		cum += raw[i]
 		fmt.Fprintf(&b, "%s_bucket{le=\"%g\"} %d\n", name, bound, cum)
 	}
@@ -672,7 +672,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 			"cluster_heartbeat_publish_failures": 100,
 			"consumer_pending_messages": 2,
 			"suback_rejected_by_reason": {"0x87": 41, "0xA2": 43},
-			"publish_latency_buckets": [1, 2, 3, 0, 5, 6, 7, 8, 9],
+			"publish_latency_buckets": [1, 2, 3, 0, 4, 5, 6, 7, 8, 9],
 			"publish_latency_count": 50,
 			"qos2_sync_persist_duration_count": 11,
 			"qos2_sync_persist_duration_sum_seconds": 0.25,
@@ -755,7 +755,7 @@ func TestMQTTSubscriberV12NestedMetrics(t *testing.T) {
 
 	// The push path carries raw bucket counts verbatim — no cumulative
 	// differencing, which is what makes the poll path's conversion necessary.
-	if want := [9]int64{1, 2, 3, 0, 5, 6, 7, 8, 9}; m.PublishLatencyBuckets != want {
+	if want := (MQTTHistogramBuckets{1, 2, 3, 0, 4, 5, 6, 7, 8, 9}); m.PublishLatencyBuckets != want {
 		t.Errorf("PublishLatencyBuckets = %v, want %v", m.PublishLatencyBuckets, want)
 	}
 	if want := (map[string]int64{"0x87": 41, "0xA2": 43}); !reflect.DeepEqual(m.SubackRejectedByReason, want) {

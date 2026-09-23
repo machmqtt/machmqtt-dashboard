@@ -3,6 +3,7 @@ package collector
 import (
 	"cmp"
 	"encoding/json"
+	"log/slog"
 	"math"
 	"reflect"
 	"slices"
@@ -1191,7 +1192,7 @@ func parseFloat(s string) float64 {
 // histBuckets returns the bucket array for a histogram family name (the metric
 // name without its _bucket suffix), or nil for a family the dashboard does not
 // track.
-func (m *MQTTMetrics) histBuckets(family string) *[MQTTHistogramBucketCount]int64 {
+func (m *MQTTMetrics) histBuckets(family string) *MQTTHistogramBuckets {
 	switch family {
 	case "machmqtt_publish_latency_seconds":
 		return &m.PublishLatencyBuckets
@@ -1222,24 +1223,56 @@ func histBucketIndex(le string) int {
 	if err != nil || math.IsInf(b, 0) || math.IsNaN(b) {
 		return -1
 	}
-	for i, bound := range MQTTHistogramBounds {
-		if b == bound {
-			return i
-		}
-	}
-	return -1
+	return slices.Index(MQTTHistogramBounds[:], b)
 }
+
+// UnmarshalJSON places a push-payload bucket array by its length: the current
+// layout is copied as-is, an older broker's layout is spread onto the bounds it
+// shares with the current one, and any other length is left empty rather than
+// copied positionally, which would file every count under the wrong bound.
+func (h *MQTTHistogramBuckets) UnmarshalJSON(b []byte) error {
+	var raw []int64
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*h = MQTTHistogramBuckets{}
+	switch len(raw) {
+	case 0:
+		// null or [] — nothing observed, nothing to place.
+	case MQTTHistogramBucketCount:
+		copy(h[:], raw)
+	case len(legacyHistogramBounds):
+		for i, bound := range legacyHistogramBounds {
+			h[slices.Index(MQTTHistogramBounds[:], bound)] = raw[i]
+		}
+	default:
+		unknownBucketLayoutOnce.Do(func() {
+			slog.Default().Warn("machmqtt histogram bucket array has an unrecognised length; "+
+				"its buckets are left empty (a newer broker? upgrade the dashboard)",
+				"len", len(raw), "supported", MQTTHistogramBucketCount)
+		})
+	}
+	return nil
+}
+
+var unknownBucketLayoutOnce sync.Once
 
 // bucketsCumulativeToRaw differences an in-place cumulative bucket series into
 // the raw per-bucket counts the push path carries. Observations above the last
 // bound live only in the histogram's _count, in both representations, so the
-// last bucket is never back-filled from the +Inf series. A non-monotonic series
-// (an inconsistent scrape) clamps to zero rather than yielding a negative count.
-func bucketsCumulativeToRaw(cum *[MQTTHistogramBucketCount]int64) {
-	for i := MQTTHistogramBucketCount - 1; i > 0; i-- {
+// last bucket is never back-filled from the +Inf series.
+//
+// A cumulative series never decreases, so a bound reading below its predecessor
+// is one the exposition did not render — an older broker has no 25 ms bound —
+// or an inconsistent scrape. Carrying the previous count forward gives that
+// bucket zero observations and leaves the next bucket's count exact; clamping
+// only the negative difference would instead hand the missing bucket's
+// observations to the next bound.
+func bucketsCumulativeToRaw(cum *MQTTHistogramBuckets) {
+	for i := 1; i < len(cum); i++ {
+		cum[i] = max(cum[i], cum[i-1])
+	}
+	for i := len(cum) - 1; i > 0; i-- {
 		cum[i] -= cum[i-1]
-		if cum[i] < 0 {
-			cum[i] = 0
-		}
 	}
 }
