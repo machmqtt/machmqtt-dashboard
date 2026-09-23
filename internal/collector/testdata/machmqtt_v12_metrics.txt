@@ -113,7 +113,7 @@ machmqtt_suback_rejected_by_reason_total{reason="0xA2"} 43
 # HELP machmqtt_credential_expiry_disconnects_total Clients disconnected because their authentication credential (e.g. an OAuth2 JWT exp) elapsed mid-session. Distinct from keepalive timeouts; a spike indicates a broken token-refresh flow or IdP misconfiguration.
 # TYPE machmqtt_credential_expiry_disconnects_total counter
 machmqtt_credential_expiry_disconnects_total 2009
-# HELP machmqtt_mtls_identity_fallback_total Connections that fell back to the CONNECT-supplied username while mqtt.tls.identity_source was configured. reason=
+# HELP machmqtt_mtls_identity_fallback_total Connections that fell back to the CONNECT-supplied username while mqtt.tls.identity_source was configured. reason="license": mqtt.tls.identity_source requires a Scale-band license. reason="no_match": the verified certificate carried no usable or an ambiguous CN/SAN. reason="no_cert": the client presented no client certificate at all (plain/WS listener, or TLS without a client cert) — the security-relevant case, as no certificate identity was verified.
 # TYPE machmqtt_mtls_identity_fallback_total counter
 machmqtt_mtls_identity_fallback_total{reason="license"} 2016
 machmqtt_mtls_identity_fallback_total{reason="no_match"} 2023
@@ -403,7 +403,7 @@ machmqtt_op_pool_rejected_total 1953
 # HELP machmqtt_op_pool_queue_depth Current number of tasks queued in the op pool. Sustained near nats.op_worker_queue_size indicates pool starvation; consider raising nats.op_worker_pool_size. Updated every 15 s.
 # TYPE machmqtt_op_pool_queue_depth gauge
 machmqtt_op_pool_queue_depth 1946
-# HELP machmqtt_op_queue_dropped_total Queued ops discarded wholesale by dropOpQueue, in messages, labelled by why. reason=
+# HELP machmqtt_op_queue_dropped_total Queued ops discarded wholesale by dropOpQueue, in messages, labelled by why. reason="close_race" is a message-loss event: work already accepted onto the per-connection op queue destroyed by a state transition to Disconnecting/Closed, with no per-message rejection and no ack. reason="worker_abort" is the same loss one step earlier -- the batch had already been dequeued when the state flipped, so it never reached dropOpQueue and until v1.2.1 was counted nowhere at all. The others are narrower and mostly already visible elsewhere -- see machmqtt_op_pool_rejected_total for pool_full.
 # TYPE machmqtt_op_queue_dropped_total counter
 machmqtt_op_queue_dropped_total{reason="close_race"} 9231
 machmqtt_op_queue_dropped_total{reason="pool_full"} 9232
@@ -636,7 +636,7 @@ machmqtt_stream_ensure_retries_total 2015
 # HELP machmqtt_stream_ensure_stalls_total Stream creates that were still outstanding when the stall watchdog fired (5s). LEADING indicator for machmqtt_stream_ensure_retries_total: this increments even when the create then SUCCEEDS, so a cluster beginning to drop JetStream API replies shows up here before any restart actually fails. Each stall also logs whether an independent request on the same connection answered, which separates a lost reply from a connection-level JetStream failure.
 # TYPE machmqtt_stream_ensure_stalls_total counter
 machmqtt_stream_ensure_stalls_total 2022
-# HELP machmqtt_session_qos2_purge_failures_total QoS 2 session-discard stream purges (#163, [MQTT-3.1.2-4]) that exhausted their retry budget, split by path (#176). path=
+# HELP machmqtt_session_qos2_purge_failures_total QoS 2 session-discard stream purges (#163, [MQTT-3.1.2-4]) that exhausted their retry budget, split by path (#176). path="sync_connect" is the synchronous clean-start path: every increment means a CONNECT was rejected with 0x88 ServerUnavailable (fail-closed) rather than risk delivering a stale message under a colliding packet ID — a sustained rise means clean-start CONNECTs are being rejected fleet-wide. path="async_death" is the background session-death path (expiry/SEI=0 disconnect): log-only, no client impact. Either rising means JetStream is unavailable for longer than the purge's retry budget (nats.qos2_purge_attempt_timeout) — distinct from an isolated blip, which the retry already absorbs invisibly.
 # TYPE machmqtt_session_qos2_purge_failures_total counter
 machmqtt_session_qos2_purge_failures_total{path="sync_connect"} 20141
 machmqtt_session_qos2_purge_failures_total{path="async_death"} 20148
@@ -703,7 +703,7 @@ machmqtt_reactor_task_queue_depth_max 911
 # HELP machmqtt_reactor_loop_panics_total Panics recovered in an event-loop iteration (the loop survived and continued). Non-zero signals a bug in packet/flush handling and warrants investigation.
 # TYPE machmqtt_reactor_loop_panics_total counter
 machmqtt_reactor_loop_panics_total 912
-# HELP machmqtt_reactor_read_continuations_total Reads deferred to a later event-loop pass because the connection hit the per-call read budget. This is the read-fairness mechanism engaging: it rises when one or more connections push sustained heavy read load, and is the signal that distinguishes
+# HELP machmqtt_reactor_read_continuations_total Reads deferred to a later event-loop pass because the connection hit the per-call read budget. This is the read-fairness mechanism engaging: it rises when one or more connections push sustained heavy read load, and is the signal that distinguishes "a flooder is being throttled" from generic CPU or latency symptoms. Non-zero is normal under load.
 # TYPE machmqtt_reactor_read_continuations_total counter
 machmqtt_reactor_read_continuations_total 913
 # HELP machmqtt_reactor_loop_deaths_total Event loops that exited permanently on a fatal epoll error. The dead loop's connections are force-closed and new connections are steered to surviving loops; any non-zero value warrants investigation and a restart during the next maintenance window.
