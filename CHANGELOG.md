@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security
+- **Built with Go 1.26.10**, closing eleven reachable standard-library advisories
+  that `govulncheck` reported against 1.26.6: GO-2026-6809 (`crypto/x509` now
+  refuses known compromised intermediate certificates; `govulncheck` traces it
+  through the LDAP provider's StartTLS), and ten fixed in 1.26.9 across
+  `net/http` (HTTP/2 server crash, memory and CPU exhaustion, HTTP/1 connection
+  desynchronization, unbounded `Range` parsing), `net/textproto` and `crypto/tls`.
+  Building from source with `GOTOOLCHAIN=local` now needs Go 1.26.10 or newer.
 - **Every GitHub Actions dependency is pinned to an immutable commit SHA.** The
   CI and release workflows referenced floating tags such as `@v7` and `@v0`, so a
   moved or compromised tag would have run unreviewed code in the build — in the
