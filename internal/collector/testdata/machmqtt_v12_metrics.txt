@@ -25,7 +25,7 @@ machmqtt_ws_sockets_accepted_total 1057
 # HELP machmqtt_connections_rejected_total DEPRECATED — use machmqtt_connections_rejected_by_reason_total. Total MQTT connections rejected at accept (sum of all reasons).
 # TYPE machmqtt_connections_rejected_total counter
 machmqtt_connections_rejected_total 8757
-# HELP machmqtt_connections_rejected_by_reason_total MQTT connections rejected at accept, labelled by remediation path.
+# HELP machmqtt_connections_rejected_by_reason_total MQTT connections rejected at accept, labelled by remediation path. reason="pool_full" cannot increment since v1.2.0 (a full handshake pool queues arrivals in the kernel backlog instead of closing them); it is retained for dashboard compatibility.
 # TYPE machmqtt_connections_rejected_by_reason_total counter
 machmqtt_connections_rejected_by_reason_total{reason="max_conns"} 1064
 machmqtt_connections_rejected_by_reason_total{reason="mem_budget"} 1071
@@ -51,7 +51,7 @@ machmqtt_publish_throttled_total{scope="aggregate"} 1813
 # HELP machmqtt_aggregate_publish_limit_msgs_per_sec Effective deployment-wide inbound-PUBLISH ceiling enforced on this instance (msg/s); 0 = no aggregate limit (Fleet tier).
 # TYPE machmqtt_aggregate_publish_limit_msgs_per_sec gauge
 machmqtt_aggregate_publish_limit_msgs_per_sec 1799
-# HELP machmqtt_dispatch_slots_active Concurrently-held dispatch slots per pool (TLS handshake / WebSocket upgrade).
+# HELP machmqtt_dispatch_slots_active Handshakes in flight per pool (TLS handshake / WebSocket upgrade); at the pool size, the listener is pausing Accept() and arrivals queue in the kernel backlog.
 # TYPE machmqtt_dispatch_slots_active gauge
 machmqtt_dispatch_slots_active{pool="tls"} 1127
 machmqtt_dispatch_slots_active{pool="websocket"} 1134
@@ -403,7 +403,7 @@ machmqtt_op_pool_rejected_total 1953
 # HELP machmqtt_op_pool_queue_depth Current number of tasks queued in the op pool. Sustained near nats.op_worker_queue_size indicates pool starvation; consider raising nats.op_worker_pool_size. Updated every 15 s.
 # TYPE machmqtt_op_pool_queue_depth gauge
 machmqtt_op_pool_queue_depth 1946
-# HELP machmqtt_op_queue_dropped_total Queued ops discarded wholesale by dropOpQueue, in messages, labelled by why. reason="close_race" is a message-loss event: work already accepted onto the per-connection op queue destroyed by a state transition to Disconnecting/Closed, with no per-message rejection and no ack. reason="worker_abort" is the same loss one step earlier -- the batch had already been dequeued when the state flipped, so it never reached dropOpQueue and until v1.2.1 was counted nowhere at all. The others are narrower and mostly already visible elsewhere -- see machmqtt_op_pool_rejected_total for pool_full.
+# HELP machmqtt_op_queue_dropped_total Queued ops discarded wholesale by dropOpQueue, in messages, labelled by why. reason="close_race" is a message-loss event: work already accepted onto the per-connection op queue destroyed by a state transition to Disconnecting/Closed, with no per-message rejection and no ack. reason="worker_abort" is the same loss one step earlier -- the batch had already been dequeued when the state flipped, so it never reached dropOpQueue and before v1.2.0 was counted nowhere at all. The others are narrower and mostly already visible elsewhere -- see machmqtt_op_pool_rejected_total for pool_full.
 # TYPE machmqtt_op_queue_dropped_total counter
 machmqtt_op_queue_dropped_total{reason="close_race"} 9231
 machmqtt_op_queue_dropped_total{reason="pool_full"} 9232
@@ -504,7 +504,7 @@ machmqtt_subscribe_duration_seconds_bucket{le="5"} 1698
 machmqtt_subscribe_duration_seconds_bucket{le="+Inf"} 1705
 machmqtt_subscribe_duration_seconds_sum 19.75
 machmqtt_subscribe_duration_seconds_count 1705
-# HELP machmqtt_dispatch_wait_seconds Wait time for a TLS-handshake or WS-upgrade dispatch-pool slot, in seconds; samples ~2s correspond to pool-full timeouts.
+# HELP machmqtt_dispatch_wait_seconds How long a listener paused Accept() waiting for a free TLS-handshake / WS-upgrade pool slot before accepting a connection, in seconds (one sample per accepted connection; ~0 unless the pool was full, while arrivals wait in the kernel backlog).
 # TYPE machmqtt_dispatch_wait_seconds histogram
 machmqtt_dispatch_wait_seconds_bucket{le="0.0005"} 77
 machmqtt_dispatch_wait_seconds_bucket{le="0.001"} 161

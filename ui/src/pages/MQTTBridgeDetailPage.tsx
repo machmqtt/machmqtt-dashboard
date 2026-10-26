@@ -472,7 +472,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="TLS Slots Active" value={fmtNum(data.dispatch_slots_tls)} />
           <DI label="WebSocket Slots Active" value={fmtNum(data.dispatch_slots_ws)} />
         </Grid>
-        <p className="text-xs text-gray-400 mt-2">Sustained proximity to the configured handshake pool size precedes <span className="font-mono">pool_full</span> rejections.</p>
+        <p className="text-xs text-gray-400 mt-2">At the configured handshake pool size, a v1.2+ broker pauses <span className="font-mono">Accept()</span> and new connections queue in the kernel backlog; older brokers reject them as <span className="font-mono">pool_full</span>.</p>
       </Section>
       <Section title="Authentication">
         <Grid>
@@ -855,7 +855,7 @@ function MetricsTab({ data, tsMetrics }: { data: any; tsMetrics: ReturnType<type
           <DI label="Dispatch Wait" value={fmtMs(data.dispatch_wait_sum_seconds, data.dispatch_wait_count)} />
           <DI label="TLS Handshake" value={fmtMs(data.tls_handshake_duration_sum_seconds, data.tls_handshake_duration_count)} />
         </Grid>
-        <p className="text-xs text-gray-400 mt-2">All values are process-lifetime averages (sum/count from histogram). High dispatch wait correlates with <span className="font-mono">pool_full</span> events.</p>
+        <p className="text-xs text-gray-400 mt-2">All values are process-lifetime averages (sum/count from histogram). High dispatch wait means the listener waited for a free handshake slot: on a v1.2+ broker, connections queued in the kernel backlog meanwhile; on older brokers, it correlates with <span className="font-mono">pool_full</span> rejections.</p>
       </Section>
       <Section title="Go Runtime">
         <Grid>

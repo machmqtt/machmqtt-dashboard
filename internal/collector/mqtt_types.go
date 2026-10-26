@@ -88,7 +88,8 @@ type MQTTMetrics struct {
 	RejectedWorkerPool     int64 `json:"rejected_worker_pool"`
 
 	// Dispatch-pool saturation (machmqtt_dispatch_slots_active{pool=...}).
-	// Sustained proximity to the configured pool size precedes pool_full rejections.
+	// At the pool size a v1.2+ broker pauses Accept() (arrivals queue in the kernel
+	// backlog); older brokers reject them as pool_full instead.
 	DispatchSlotsTLS int64 `json:"dispatch_slots_tls"`
 	DispatchSlotsWS  int64 `json:"dispatch_slots_ws"`
 
